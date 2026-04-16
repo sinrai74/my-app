@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 <!DOCTYPE html>
 <html>
 <head>
@@ -94,4 +95,102 @@ function calcMulti(){
 </script>
 
 </body>
+=======
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>予想アプリ</title>
+<style>
+body { font-family: sans-serif; padding: 20px; }
+input { width: 100%; padding: 10px; margin: 5px 0; }
+button { padding: 15px; width: 100%; font-size: 16px; }
+.card { border:1px solid #ccc; padding:10px; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<h2>予想アプリ</h2>
+
+<div class="card">
+オッズ<input id="odds">
+確率(%)<input id="prob">
+資金<input id="bankroll">
+</div>
+
+<button onclick="calc()">計算</button>
+
+<div class="card">
+<p id="result"></p>
+</div>
+
+<script>
+function calc(){
+  fetch("https://yosou-app.onrender.com/predict", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      odds: document.getElementById("odds").value,
+      prob: document.getElementById("prob").value,
+      bankroll: document.getElementById("bankroll").value
+    })
+  })
+  .then(res=>res.json())
+  .then(data=>{
+    document.getElementById("result").innerHTML =
+      "EV: " + data.ev + "<br>" +
+      "ベット: " + data.bet + "円<br>" +
+      "判定: " + data.judge + "<br>" +
+      "適正オッズ: " + data.fair_odds + "<br>" +
+      "期待差: " + data.value_gap;
+  });
+}
+<h3>買い目入力（複数）</h3>
+
+<textarea id="bets" rows="6" placeholder="例：
+10,20
+5,30
+15,10"></textarea>
+
+<input id="bankroll" placeholder="資金">
+
+<button onclick="calcMulti()">まとめて計算</button>
+
+<div id="result"></div>
+
+<script>
+function calcMulti(){
+  let lines = document.getElementById("bets").value.split("\n");
+
+  let bets = lines.map(line => {
+    let parts = line.split(",");
+    return {
+      odds: parseFloat(parts[0]),
+      prob: parseFloat(parts[1])
+    }
+  });
+
+  fetch("https://yosou-app.onrender.com/predict_multi", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      bets: bets,
+      bankroll: document.getElementById("bankroll").value
+    })
+  })
+  .then(res=>res.json())
+  .then(data=>{
+    let html = "";
+    data.forEach(d=>{
+      html += `オッズ:${d.odds} / EV:${d.ev} / ${d.judge} / ベット:${d.bet}円<br>`;
+    });
+    document.getElementById("result").innerHTML = html;
+  });
+}
+</script>
+</script>
+
+</body>
+>>>>>>> 2180c25aca52c19900f10e6483471c31d1b1f29f
 </html>

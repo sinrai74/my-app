@@ -2,6 +2,7 @@ from odds_fetch import fetch_odds
 
 from itertools import permutations
 import math
+import os
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -35,10 +36,10 @@ def calc_score(boat):
     start     = boat["start"]
 
     course  = COURSE_BONUS.get(lane, 0.0) * W_COURSE
-    ex_inv  = (1.0 / ex_time) ** 3 * 1000  # ←強化
+    ex_inv  = (1.0 / ex_time) ** 3 * 1000
     mot     = (motor / 100.0) * W_MOTOR
     wr      = (win_rate / 10.0) * W_WIN_RATE
-    st_inv  = (1.0 / (start + 0.01)) * 0.2 * W_START  # ←強化
+    st_inv  = (1.0 / (start + 0.01)) * 0.2 * W_START
 
     return course + ex_inv + mot + wr + st_inv
 
@@ -64,15 +65,13 @@ def predict():
         data     = request.get_json(force=True)
         boats    = data.get("boats", [])
         bankroll = float(data.get("bankroll", 10000))
-        # 自動取得（優先）
+
         auto_odds = fetch_odds()
 
         if auto_odds:
             odds_map = auto_odds
         else:
             odds_map = data.get("odds", {})
-
-       print(odds_map)
 
         if len(boats) != 6:
             return jsonify({"error": "boats は6艇必須です"}), 400
@@ -89,7 +88,7 @@ def predict():
             })
 
         sorted_boats = sorted(boat_data, key=lambda x: x["score"], reverse=True)
-        top4_lanes   = [b["lane"] for b in sorted_boats[:4]]  # ←4艇に拡張
+        top4_lanes   = [b["lane"] for b in sorted_boats[:4]]
 
         prob_map = {b["lane"]: b["win_prob"] for b in boat_data}
 
@@ -107,11 +106,10 @@ def predict():
 
             combo_key = f"{p1}-{p2}-{p3}"
 
-            # 実オッズ（なければ仮オッズ）
             implied_odds = (1.0 / max(combo_prob, 1e-9)) * 0.75
             real_odds = odds_map.get(combo_key, implied_odds)
 
-            ev = real_odds * combo_prob  # ←ここが本質
+            ev = real_odds * combo_prob
 
             bet = kelly_bet(combo_prob, real_odds, bankroll)
             bet = round(bet / 100) * 100
@@ -141,4 +139,5 @@ def health():
     return jsonify({"status": "ok"})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
