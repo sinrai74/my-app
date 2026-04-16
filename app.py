@@ -4,7 +4,7 @@ from itertools import permutations
 import math
 import os
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -141,6 +141,10 @@ def health():
 @app.route("/")
 def home():
     return open("index.html", encoding="utf-8").read()
+
+@app.route("/")
+def home():
+    return send_file("index.html")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
