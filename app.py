@@ -140,10 +140,6 @@ def health():
 
 @app.route("/")
 def home():
-    return open("index.html", encoding="utf-8").read()
-
-@app.route("/")
-def home():
     return send_file("index.html")
 
 if __name__ == "__main__":
