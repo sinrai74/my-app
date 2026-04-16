@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>予想アプリ</title>
+<style>
+body { font-family: sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
+input, textarea { width: 100%; padding: 10px; margin: 5px 0; box-sizing: border-box; }
+button { padding: 15px; width: 100%; font-size: 16px; margin-top: 8px; cursor: pointer; }
+.card { border: 1px solid #ccc; padding: 10px; margin-top: 10px; border-radius: 6px; }
+h2 { margin-bottom: 4px; }
+label { font-size: 13px; color: #555; }
+</style>
+</head>
+<body>
+
+<h2>🚤 予想アプリ</h2>
+
+<!-- ── 単体計算 ── -->
+<div class="card">
+  <h3>単体計算</h3>
+  <label>オッズ</label>
+  <input id="odds" type="number" step="0.1" placeholder="例: 10.5">
+  <label>確率（%）</label>
+  <input id="prob" type="number" step="0.1" placeholder="例: 12">
+  <label>資金（円）</label>
+  <input id="bankroll" type="number" placeholder="例: 10000">
+  <button onclick="calcSingle()">計算</button>
+  <div class="card" id="result_single"></div>
+</div>
+
+<!-- ── 複数まとめて計算 ── -->
+<div class="card">
+  <h3>複数まとめて計算</h3>
+  <label>買い目（1行に「オッズ,確率(%)」形式で入力）</label>
+  <textarea id="bets" rows="6" placeholder="例：
+10,20
+5,30
+15,10"></textarea>
+  <label>資金（円）</label>
+  <input id="bankroll_multi" type="number" placeholder="例: 10000">
+  <button onclick="calcMulti()">まとめて計算</button>
+  <div class="card" id="result_multi"></div>
+</div>
+
+<script>
+const API = "https://yosou-app.onrender.com";
+
+function calcSingle() {
+  fetch(API + "/predict", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      odds:     document.getElementById("odds").value,
+      prob:     document.getElementById("prob").value,
+      bankroll: document.getElementById("bankroll").value
+    })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.error) {
+      document.getElementById("result_single").innerHTML = "エラー: " + data.error;
+      return;
+    }
+    document.getElementById("result_single").innerHTML =
+      "EV: " + data.ev + "<br>" +
+      "ベット: " + data.bet + "円<br>" +
+      "判定: " + data.judge + "<br>" +
+      "適正オッズ: " + data.fair_odds + "<br>" +
+      "期待差: " + data.value_gap;
+  })
+  .catch(e => {
+    document.getElementById("result_single").innerHTML = "通信エラー: " + e;
+  });
+}
+
+function calcMulti() {
+  const lines = document.getElementById("bets").value.split("\n").filter(l => l.trim());
+  const bets = lines.map(line => {
+    const parts = line.split(",");
+    return {
+      odds: parseFloat(parts[0]),
+      prob: parseFloat(parts[1])
+    };
+  });
+
+  fetch(API + "/predict_multi", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      bets:     bets,
+      bankroll: document.getElementById("bankroll_multi").value
+    })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.error) {
+      document.getElementById("result_multi").innerHTML = "エラー: " + data.error;
+      return;
+    }
+    let html = "";
+    data.forEach(d => {
+      html += `オッズ:${d.odds} / EV:${d.ev} / ${d.judge} / ベット:${d.bet}円<br>`;
+    });
+    document.getElementById("result_multi").innerHTML = html || "結果なし";
+  })
+  .catch(e => {
+    document.getElementById("result_multi").innerHTML = "通信エラー: " + e;
+  });
+}
+</script>
+
+</body>
+</html>
