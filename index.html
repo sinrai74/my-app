@@ -1,120 +1,122 @@
 <!DOCTYPE html>
+
 <html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>予想アプリ</title>
+<title>競艇AI予想</title>
+
 <style>
-body { font-family: sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
-input, textarea { width: 100%; padding: 10px; margin: 5px 0; box-sizing: border-box; }
-button { padding: 15px; width: 100%; font-size: 16px; margin-top: 8px; cursor: pointer; }
-.card { border: 1px solid #ccc; padding: 10px; margin-top: 10px; border-radius: 6px; }
-h2 { margin-bottom: 4px; }
-label { font-size: 13px; color: #555; }
+body {
+  font-family: sans-serif;
+  padding: 15px;
+  max-width: 700px;
+  margin: auto;
+}
+h2 { margin-bottom: 10px; }
+.card {
+  border: 1px solid #ccc;
+  padding: 10px;
+  margin-bottom: 10px;
+  border-radius: 6px;
+}
+input {
+  width: 100%;
+  padding: 6px;
+  margin: 3px 0;
+}
+button {
+  width: 100%;
+  padding: 12px;
+  font-size: 16px;
+  margin-top: 10px;
+}
 </style>
+
 </head>
+
 <body>
 
-<h2>🚤 予想アプリ</h2>
+<h2>🚤 競艇AI予想</h2>
 
-<!-- ── 単体計算 ── -->
 <div class="card">
-  <h3>単体計算</h3>
-  <label>オッズ</label>
-  <input id="odds" type="number" step="0.1" placeholder="例: 10.5">
-  <label>確率（%）</label>
-  <input id="prob" type="number" step="0.1" placeholder="例: 12">
-  <label>資金（円）</label>
-  <input id="bankroll" type="number" placeholder="例: 10000">
-  <button onclick="calcSingle()">計算</button>
-  <div class="card" id="result_single"></div>
+  <h3>6艇データ入力</h3>
+  <div id="boats"></div>
+
+<label>資金（円）</label> <input id="bankroll" type="number" value="10000">
+
+<button onclick="predict()">予想する</button>
+
 </div>
 
-<!-- ── 複数まとめて計算 ── -->
 <div class="card">
-  <h3>複数まとめて計算</h3>
-  <label>買い目（1行に「オッズ,確率(%)」形式で入力）</label>
-  <textarea id="bets" rows="6" placeholder="例：
-10,20
-5,30
-15,10"></textarea>
-  <label>資金（円）</label>
-  <input id="bankroll_multi" type="number" placeholder="例: 10000">
-  <button onclick="calcMulti()">まとめて計算</button>
-  <div class="card" id="result_multi"></div>
+  <h3>結果</h3>
+  <div id="result">ここに表示</div>
 </div>
 
 <script>
 
-function calcSingle() {
-  fetch("/predict", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    bankroll: 10000,
-    boats: [
-      {lane:1, ex_time:0.15, motor:50, win_rate:5.0, start:0.15},
-      {lane:2, ex_time:0.16, motor:45, win_rate:4.5, start:0.16},
-      {lane:3, ex_time:0.17, motor:40, win_rate:4.0, start:0.17},
-      {lane:4, ex_time:0.18, motor:35, win_rate:3.5, start:0.18},
-      {lane:5, ex_time:0.19, motor:30, win_rate:3.0, start:0.19},
-      {lane:6, ex_time:0.20, motor:25, win_rate:2.5, start:0.20}
-    ],
-    odds: {}
-  })
-})
-  .then(res => res.json())
-  .then(data => {
-    if (data.error) {
-      document.getElementById("result_single").innerHTML = "エラー: " + data.error;
-      return;
-    }
-    document.getElementById("result_single").innerHTML =
-      "EV: " + data.ev + "<br>" +
-      "ベット: " + data.bet + "円<br>" +
-      "判定: " + data.judge + "<br>" +
-      "適正オッズ: " + data.fair_odds + "<br>" +
-      "期待差: " + data.value_gap;
-  })
-  .catch(e => {
-    document.getElementById("result_single").innerHTML = "通信エラー: " + e;
-  });
+// 6艇入力フォーム生成
+for (let i = 1; i <= 6; i++) {
+  document.getElementById("boats").innerHTML += `
+  <div class="card">
+    <b>${i}号艇</b>
+    <input placeholder="展示タイム (例:0.15)" id="ex${i}">
+    <input placeholder="モーター (%)" id="motor${i}">
+    <input placeholder="勝率" id="win${i}">
+    <input placeholder="スタート (例:0.15)" id="start${i}">
+  </div>`;
 }
 
-function calcMulti() {
-  const lines = document.getElementById("bets").value.split("\n").filter(l => l.trim());
-  const bets = lines.map(line => {
-    const parts = line.split(",");
-    return {
-      odds: parseFloat(parts[0]),
-      prob: parseFloat(parts[1])
-    };
-  });
+// 送信
+function predict() {
+  const boats = [];
 
-  fetch("/predict_multi", {
+  for (let i = 1; i <= 6; i++) {
+    boats.push({
+      lane: i,
+      ex_time: parseFloat(document.getElementById("ex"+i).value),
+      motor: parseFloat(document.getElementById("motor"+i).value),
+      win_rate: parseFloat(document.getElementById("win"+i).value),
+      start: parseFloat(document.getElementById("start"+i).value)
+    });
+  }
+
+  fetch("/predict", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {"Content-Type": "application/json"},
     body: JSON.stringify({
-      bets:     bets,
-      bankroll: document.getElementById("bankroll_multi").value
+      bankroll: parseFloat(document.getElementById("bankroll").value),
+      boats: boats,
+      odds: {}
     })
   })
   .then(res => res.json())
   .then(data => {
     if (data.error) {
-      document.getElementById("result_multi").innerHTML = "エラー: " + data.error;
+      document.getElementById("result").innerHTML = "エラー: " + data.error;
       return;
     }
-    let html = "";
-    data.forEach(d => {
-      html += `オッズ:${d.odds} / EV:${d.ev} / ${d.judge} / ベット:${d.bet}円<br>`;
+
+    let html = "<b>買い目（おすすめ）</b><br>";
+
+    data.buy.forEach(p => {
+      html += `${p.combo} / EV:${p.ev} / ${p.verdict} / ${p.bet}円<br>`;
     });
-    document.getElementById("result_multi").innerHTML = html || "結果なし";
+
+    html += "<hr><b>全候補</b><br>";
+
+    data.all.slice(0,10).forEach(p => {
+      html += `${p.combo} / EV:${p.ev}<br>`;
+    });
+
+    document.getElementById("result").innerHTML = html;
   })
   .catch(e => {
-    document.getElementById("result_multi").innerHTML = "通信エラー: " + e;
+    document.getElementById("result").innerHTML = "通信エラー: " + e;
   });
 }
+
 </script>
 
 </body>
