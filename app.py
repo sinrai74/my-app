@@ -63,7 +63,7 @@ def predict():
                             score += b["win_rate"] * 1
                             score += b["motor"] * 1
 
-                    prob = max(0.001, score / 300)
+                    prob = max(0.001, min(0.99, score / 300))
 
                     odds = odds_map.get(combo, 0)
 
@@ -75,6 +75,9 @@ def predict():
                     kelly = kelly_fraction(prob, odds)
                     bet = int(bankroll * kelly * 0.3)
 
+                    total = sum([p["prob"] for p in all_patterns])
+                    for p in all_patterns:
+                        p["prob"] = p["prob"] / total
                     all_patterns.append({
                         "combo": combo,
                         "prob": round(prob, 4),
