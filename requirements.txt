@@ -1,4 +1,11 @@
+<<<<<<< HEAD
 flask
 flask-cors
 requests
 beautifulsoup4
+=======
+flask
+flask-cors
+requests
+beautifulsoup4
+>>>>>>> 2409d2423f589258f0f9d31216699a0dfe1aec99

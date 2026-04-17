@@ -131,10 +131,17 @@ def predict():
 def health():
     return jsonify({"status": "ok"})
 
+<<<<<<< HEAD
 @app.route("/")
 def home():
     return send_file("index.html")
 
+=======
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
+    
+>>>>>>> 2409d2423f589258f0f9d31216699a0dfe1aec99
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)

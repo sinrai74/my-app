@@ -45,10 +45,9 @@ label { font-size: 13px; color: #555; }
 </div>
 
 <script>
-const API = "https://yosou-app.onrender.com";
 
 function calcSingle() {
-  fetch(API + "/predict", {
+  fetch("/predict", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -85,7 +84,7 @@ function calcMulti() {
     };
   });
 
-  fetch(API + "/predict_multi", {
+  fetch("/predict_multi", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
