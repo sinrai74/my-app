@@ -89,12 +89,18 @@ function predict() {
     for (let j = 1; j <= 6; j++) {
       for (let k = 1; k <= 6; k++) {
         if (i !== j && j !== k && i !== k) {
-          odds[`${i}-${j}-${k}`] = Math.random() * 50 + 5;
+
+          // 強い組み合わせほどオッズ低く（逆張り）
+          let base = Math.random() * 30 + 5;
+
+          // 1号艇が絡むと妙に高オッズにする（歪み作る）
+          if (i === 1) base += 20;
+
+          odds[`${i}-${j}-${k}`] = base;
         }
       }
     }
   }
-
   fetch("/predict", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
