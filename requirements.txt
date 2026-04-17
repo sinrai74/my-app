@@ -1,4 +1,21 @@
+# ── Web API（app.py） ──────────────────────────────────────
 flask
 flask-cors
+gunicorn
+
+# ── オッズ取得（odds_fetch.py） ────────────────────────────
 requests
 beautifulsoup4
+
+# ── データ処理（features.py / parsers.py / betting.py） ────
+numpy
+pandas
+
+# ── Excel出力（output.py） ─────────────────────────────────
+openpyxl
+
+# ── 機械学習（models.py） ──────────────────────────────────
+scikit-learn
+
+# ── LightGBM（models.py / 任意・なくても動作する） ─────────
+# lightgbm
