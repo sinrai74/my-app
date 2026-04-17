@@ -68,7 +68,7 @@ for (let i = 1; i <= 6; i++) {
   </div>`;
 }
 
-// メイン処理（全部入り）
+// 予想処理
 function predict() {
 
   const boats = [];
@@ -83,7 +83,7 @@ function predict() {
     });
   }
 
-  // ★全通りオッズ自動生成（ここが重要）
+  // 全オッズ生成（120通り）
   const odds = {};
   for (let i = 1; i <= 6; i++) {
     for (let j = 1; j <= 6; j++) {
