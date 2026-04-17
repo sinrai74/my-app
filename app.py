@@ -50,12 +50,15 @@ def predict():
         # ★EV計算（これが核心）
         ev = prob * odds
 
+        k = kelly_fraction(prob, odds)
+        bet = int(bankroll * k * 0.3)  # 0.3 = 安全係数
+
         all_patterns.append({
             "combo": combo,
             "prob": round(prob, 4),
             "odds": odds,
             "ev": round(ev, 3),
-            "bet": int(bankroll * ev / 10),
+            "bet": bet,
             "verdict": "買い" if ev > 1 else "見送り"
         })
 
@@ -66,6 +69,14 @@ def predict():
         "buy": all_patterns[:5],
         "all": all_patterns
     })
+
+def kelly_fraction(p, odds):
+    b = odds - 1
+    q = 1 - p
+    if b <= 0:
+        return 0
+    k = (b * p - q) / b
+    return max(0, min(k, 1))
 
 # 起動
 if __name__ == "__main__":
