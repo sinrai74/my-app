@@ -1,143 +1,423 @@
 <!DOCTYPE html>
-
-<html>
+<html lang="ja">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>競艇AI予想</title>
-
 <style>
+/* ── リセット・ベース ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: sans-serif;
-  padding: 15px;
-  max-width: 700px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f0f4f8;
+  color: #222;
+  padding: 16px;
+  max-width: 780px;
   margin: auto;
 }
-h2 { margin-bottom: 10px; }
+
+/* ── ヘッダー ── */
+h1 {
+  font-size: 1.4rem;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── カード ── */
 .card {
-  border: 1px solid #ccc;
-  padding: 10px;
+  background: #fff;
+  border: 1px solid #dde3ea;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.card h3 {
+  font-size: 0.95rem;
+  color: #555;
   margin-bottom: 10px;
-  border-radius: 6px;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 6px;
 }
-input {
+
+/* ── 艇グリッド ── */
+.boats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+.boat-card {
+  background: #f7f9fc;
+  border: 1px solid #dde3ea;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.boat-card .boat-label {
+  font-weight: 700;
+  font-size: 0.9rem;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.boat-num {
+  display: inline-block;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  text-align: center;
+  line-height: 22px;
+  font-size: 0.8rem;
+  color: #fff;
+  font-weight: 700;
+}
+/* 艇番カラー（競艇公式色） */
+.c1{background:#fff;color:#222;border:1px solid #ccc;}
+.c2{background:#000;}
+.c3{background:#e00;}
+.c4{background:#006be6;}
+.c5{background:#f0c800;color:#222;}
+.c6{background:#008a00;}
+
+.boat-card input {
   width: 100%;
-  padding: 6px;
+  padding: 5px 8px;
   margin: 3px 0;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  font-size: 0.85rem;
 }
-button {
+.boat-card input.error { border-color: #e00; background: #fff5f5; }
+.boat-card label {
+  font-size: 0.75rem;
+  color: #666;
+  display: block;
+  margin-top: 4px;
+}
+
+/* ── 資金・ボタン ── */
+.footer-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.footer-row > div { flex: 1; min-width: 140px; }
+.footer-row label { font-size: 0.82rem; color: #555; display: block; margin-bottom: 4px; }
+.footer-row input {
   width: 100%;
-  padding: 12px;
-  font-size: 16px;
-  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+.btn-predict {
+  flex: 2;
+  padding: 10px 0;
+  font-size: 1rem;
+  font-weight: 700;
+  background: #1a6ef5;
+  color: #fff;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.2s;
+  min-width: 140px;
+}
+.btn-predict:hover { background: #0d54c7; }
+.btn-predict:disabled { background: #aaa; cursor: not-allowed; }
+
+/* ── ローディング ── */
+#loading {
+  display: none;
+  text-align: center;
+  padding: 20px;
+  color: #666;
+  font-size: 0.9rem;
+}
+.spinner {
+  display: inline-block;
+  width: 20px; height: 20px;
+  border: 3px solid #ddd;
+  border-top-color: #1a6ef5;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── 結果テーブル ── */
+#result { min-height: 40px; }
+.result-section { margin-bottom: 16px; }
+.result-section h4 {
+  font-size: 0.9rem;
+  color: #444;
+  margin-bottom: 8px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+th {
+  background: #1a3a6e;
+  color: #fff;
+  padding: 7px 8px;
+  text-align: center;
+  font-weight: 600;
+}
+td {
+  padding: 6px 8px;
+  text-align: center;
+  border-bottom: 1px solid #eee;
+}
+tr:hover td { background: #f5f8ff; }
+.verdict-strong { color: #0a8c2a; font-weight: 700; }
+.verdict-buy    { color: #d47000; font-weight: 600; }
+.verdict-skip   { color: #999; }
+.ev-high { color: #0a8c2a; font-weight: 700; }
+.ev-mid  { color: #d47000; }
+.ev-low  { color: #999; }
+.combo-cell { font-family: monospace; font-weight: 700; letter-spacing: 1px; }
+
+.error-msg {
+  color: #c00;
+  background: #fff5f5;
+  border: 1px solid #f5c0c0;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 0.88rem;
 }
 </style>
-
 </head>
-
 <body>
 
-<h2>🚤 競艇AI予想</h2>
+<h1>🚤 競艇AI予想</h1>
 
+<!-- ── 入力カード ── -->
 <div class="card">
   <h3>6艇データ入力</h3>
-  <div id="boats"></div>
+  <div class="boats-grid" id="boatsGrid"></div>
 
-<label>資金（円）</label> <input id="bankroll" type="number" value="10000">
-
-<button onclick="predict()">予想する</button>
-
+  <div class="footer-row" style="margin-top:12px;">
+    <div>
+      <label for="bankroll">資金（円）</label>
+      <input id="bankroll" type="number" value="10000" min="100" step="100">
+    </div>
+    <button class="btn-predict" id="btnPredict" onclick="predict()">予想する</button>
+  </div>
 </div>
 
+<!-- ── ローディング ── -->
+<div id="loading">
+  <span class="spinner"></span>予想計算中…
+</div>
+
+<!-- ── 結果カード ── -->
 <div class="card">
   <h3>結果</h3>
-  <div id="result">ここに表示</div>
+  <div id="result"><span style="color:#aaa;font-size:0.88rem;">入力後「予想する」を押してください</span></div>
 </div>
 
 <script>
+// ══════════════════════════════════════════════
+// 艇番カラー
+// ══════════════════════════════════════════════
+const LANE_COLORS = ["c1","c2","c3","c4","c5","c6"];
 
-// 入力フォーム生成
-for (let i = 1; i <= 6; i++) {
-  document.getElementById("boats").innerHTML += `
-  <div class="card">
-    <b>${i}号艇</b>
-    <input placeholder="展示タイム (例:0.15)" id="ex${i}">
-    <input placeholder="モーター (%)" id="motor${i}">
-    <input placeholder="勝率" id="win${i}">
-    <input placeholder="スタート (例:0.15)" id="start${i}">
-  </div>`;
-}
-
-// 予想処理
-function predict() {
-
-  const boats = [];
-
+// ══════════════════════════════════════════════
+// フォーム生成
+// ══════════════════════════════════════════════
+(function buildForm() {
+  const grid = document.getElementById("boatsGrid");
   for (let i = 1; i <= 6; i++) {
-    boats.push({
-      lane: i,
-      ex_time: parseFloat(document.getElementById("ex"+i).value),
-      motor: parseFloat(document.getElementById("motor"+i).value),
-      win_rate: parseFloat(document.getElementById("win"+i).value),
-      start: parseFloat(document.getElementById("start"+i).value)
+    const div = document.createElement("div");
+    div.className = "boat-card";
+    div.innerHTML = `
+      <div class="boat-label">
+        <span class="boat-num ${LANE_COLORS[i-1]}">${i}</span>
+        <span>${i}号艇</span>
+      </div>
+      <label>展示タイム（例: 6.70）</label>
+      <input type="number" step="0.01" id="ex${i}"     placeholder="6.70">
+      <label>モーター2着率（%）</label>
+      <input type="number" step="0.1"  id="motor${i}"  placeholder="35.0">
+      <label>選手全国勝率</label>
+      <input type="number" step="0.01" id="win${i}"    placeholder="6.50">
+      <label>平均スタートタイミング</label>
+      <input type="number" step="0.01" id="start${i}"  placeholder="0.15">
+    `;
+    grid.appendChild(div);
+  }
+})();
+
+// ══════════════════════════════════════════════
+// 入力バリデーション
+// ══════════════════════════════════════════════
+function validateInputs() {
+  let ok = true;
+  const fields = ["ex","motor","win","start"];
+  // エラークラスをリセット
+  for (let i = 1; i <= 6; i++) {
+    fields.forEach(f => {
+      document.getElementById(f+i).classList.remove("error");
     });
   }
+  for (let i = 1; i <= 6; i++) {
+    fields.forEach(f => {
+      const el  = document.getElementById(f+i);
+      const val = parseFloat(el.value);
+      if (isNaN(val)) {
+        el.classList.add("error");
+        ok = false;
+      }
+    });
+  }
+  return ok;
+}
 
-  // 全オッズ生成（120通り）
+// ══════════════════════════════════════════════
+// オッズ生成（フロント側で送る暫定オッズ）
+// ※ app.py 側で odds_fetch が成功すれば上書きされる
+// ※ 毎回ランダムにならないよう入力値ベースで決定論的に生成
+// ══════════════════════════════════════════════
+function buildOdds(boats) {
   const odds = {};
+  // 各艇のスコアを簡易計算して組み合わせ確率を近似
+  const baseScore = {};
+  boats.forEach(b => {
+    baseScore[b.lane] = b.win_rate * 2 + b.motor * 0.5 - b.ex_time * 3 - b.start * 10;
+  });
+
   for (let i = 1; i <= 6; i++) {
     for (let j = 1; j <= 6; j++) {
       for (let k = 1; k <= 6; k++) {
-        if (i !== j && j !== k && i !== k) {
-
-          // 強い組み合わせほどオッズ低く（逆張り）
-          let base = Math.random() * 30 + 5;
-
-          // 1号艇が絡むと妙に高オッズにする（歪み作る）
-          if (i === 1) base += 20;
-
-          odds[`${i}-${j}-${k}`] = base;
-        }
+        if (i === j || j === k || i === k) continue;
+        const combo = `${i}-${j}-${k}`;
+        // スコアが高い組み合わせほど低オッズ
+        const s = (baseScore[i] || 0) * 3 + (baseScore[j] || 0) * 2 + (baseScore[k] || 0);
+        // シグモイド的に 5〜200 の範囲に収める
+        const normalized = Math.max(5, 200 / (1 + Math.exp(s / 30)));
+        odds[combo] = Math.round(normalized * 10) / 10;
       }
     }
   }
+  return odds;
+}
+
+// ══════════════════════════════════════════════
+// EV・判定のクラス
+// ══════════════════════════════════════════════
+function evClass(ev) {
+  if (ev >= 2.0) return "ev-high";
+  if (ev >= 1.2) return "ev-mid";
+  return "ev-low";
+}
+function verdictClass(v) {
+  if (v.includes("強く")) return "verdict-strong";
+  if (v.includes("買い")) return "verdict-buy";
+  return "verdict-skip";
+}
+
+// ══════════════════════════════════════════════
+// 結果テーブル描画
+// ══════════════════════════════════════════════
+function renderTable(rows, showBet = true) {
+  if (!rows || rows.length === 0) return "<span style='color:#aaa'>該当なし</span>";
+  let html = `<table>
+    <tr>
+      <th>組番</th>
+      <th>確率</th>
+      <th>オッズ</th>
+      <th>EV</th>
+      ${showBet ? "<th>ベット</th>" : ""}
+      <th>判定</th>
+    </tr>`;
+  rows.forEach(p => {
+    html += `<tr>
+      <td class="combo-cell">${p.combo}</td>
+      <td>${(p.prob * 100).toFixed(2)}%</td>
+      <td>${p.odds.toFixed(1)}</td>
+      <td class="${evClass(p.ev)}">${p.ev.toFixed(3)}</td>
+      ${showBet ? `<td>${p.bet > 0 ? p.bet.toLocaleString()+"円" : "−"}</td>` : ""}
+      <td class="${verdictClass(p.verdict)}">${p.verdict}</td>
+    </tr>`;
+  });
+  html += "</table>";
+  return html;
+}
+
+// ══════════════════════════════════════════════
+// メイン予想処理
+// ══════════════════════════════════════════════
+function predict() {
+  // バリデーション
+  if (!validateInputs()) {
+    document.getElementById("result").innerHTML =
+      `<div class="error-msg">⚠️ 赤枠の入力欄を確認してください（数値を入力してください）</div>`;
+    return;
+  }
+
+  // 艇データ収集
+  const boats = [];
+  for (let i = 1; i <= 6; i++) {
+    boats.push({
+      lane:     i,
+      ex_time:  parseFloat(document.getElementById("ex"+i).value),
+      motor:    parseFloat(document.getElementById("motor"+i).value),
+      win_rate: parseFloat(document.getElementById("win"+i).value),
+      start:    parseFloat(document.getElementById("start"+i).value),
+    });
+  }
+
+  const bankroll = parseFloat(document.getElementById("bankroll").value) || 10000;
+  const odds     = buildOdds(boats);  // 決定論的に生成
+
+  // UI: ローディング開始
+  document.getElementById("loading").style.display = "block";
+  document.getElementById("result").innerHTML = "";
+  document.getElementById("btnPredict").disabled = true;
+
   fetch("/predict", {
-    method: "POST",
+    method:  "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({
-      bankroll: parseFloat(document.getElementById("bankroll").value),
-      boats: boats,
-      odds: odds
-    })
+    body:    JSON.stringify({ bankroll, boats, odds }),
   })
   .then(res => res.json())
   .then(data => {
+    document.getElementById("loading").style.display = "none";
+    document.getElementById("btnPredict").disabled = false;
 
     if (data.error) {
-      document.getElementById("result").innerHTML = "エラー: " + data.error;
+      document.getElementById("result").innerHTML =
+        `<div class="error-msg">⚠️ ${data.error}</div>`;
       return;
     }
 
-    let html = "<b>買い目（おすすめ）</b><br>";
+    let html = "";
 
-    data.buy.forEach(p => {
-      html += `${p.combo} / EV:${p.ev} / ${p.verdict} / ${p.bet}円<br>`;
-    });
+    // 買い推奨
+    html += `<div class="result-section">
+      <h4>✅ 買い推奨（EV ≥ 1.2）</h4>
+      ${renderTable(data.buy, true)}
+    </div>`;
 
-    html += "<hr><b>全候補</b><br>";
-
-    data.all.slice(0,10).forEach(p => {
-      html += `${p.combo} / EV:${p.ev}<br>`;
-    });
+    // 全候補上位10
+    html += `<div class="result-section">
+      <h4>📋 全候補 上位10件</h4>
+      ${renderTable((data.all || []).slice(0, 10), false)}
+    </div>`;
 
     document.getElementById("result").innerHTML = html;
   })
   .catch(e => {
-    document.getElementById("result").innerHTML = "通信エラー: " + e;
+    document.getElementById("loading").style.display = "none";
+    document.getElementById("btnPredict").disabled = false;
+    document.getElementById("result").innerHTML =
+      `<div class="error-msg">🔌 通信エラー: ${e}</div>`;
   });
 }
-
 </script>
-
 </body>
 </html>
