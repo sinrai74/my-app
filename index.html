@@ -48,14 +48,21 @@ label { font-size: 13px; color: #555; }
 
 function calcSingle() {
   fetch("/predict", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      odds:     document.getElementById("odds").value,
-      prob:     document.getElementById("prob").value,
-      bankroll: document.getElementById("bankroll").value
-    })
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    bankroll: 10000,
+    boats: [
+      {lane:1, ex_time:0.15, motor:50, win_rate:5.0, start:0.15},
+      {lane:2, ex_time:0.16, motor:45, win_rate:4.5, start:0.16},
+      {lane:3, ex_time:0.17, motor:40, win_rate:4.0, start:0.17},
+      {lane:4, ex_time:0.18, motor:35, win_rate:3.5, start:0.18},
+      {lane:5, ex_time:0.19, motor:30, win_rate:3.0, start:0.19},
+      {lane:6, ex_time:0.20, motor:25, win_rate:2.5, start:0.20}
+    ],
+    odds: {}
   })
+})
   .then(res => res.json())
   .then(data => {
     if (data.error) {
