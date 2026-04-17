@@ -1,5 +1,3 @@
-from odds_fetch import fetch_odds
-
 from itertools import permutations
 import math
 import os
@@ -66,12 +64,7 @@ def predict():
         boats    = data.get("boats", [])
         bankroll = float(data.get("bankroll", 10000))
 
-        auto_odds = fetch_odds()
-
-        if auto_odds:
-            odds_map = auto_odds
-        else:
-            odds_map = data.get("odds", {})
+        odds_map = data.get("odds", {})
 
         if len(boats) != 6:
             return jsonify({"error": "boats は6艇必須です"}), 400
