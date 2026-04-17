@@ -56,7 +56,7 @@ button {
 
 <script>
 
-// 6艇入力フォーム生成
+// 入力フォーム生成
 for (let i = 1; i <= 6; i++) {
   document.getElementById("boats").innerHTML += `
   <div class="card">
@@ -68,8 +68,9 @@ for (let i = 1; i <= 6; i++) {
   </div>`;
 }
 
-// 送信
+// メイン処理（全部入り）
 function predict() {
+
   const boats = [];
 
   for (let i = 1; i <= 6; i++) {
@@ -82,26 +83,30 @@ function predict() {
     });
   }
 
-  fetch("/predict", {
-  method: "POST",
-  headers: {"Content-Type": "application/json"},
-  body: JSON.stringify({
-    bankroll: parseFloat(document.getElementById("bankroll").value),
-    boats: boats,
-    odds: {
-      "1-2-3": 10,
-      "1-2-4": 15,
-      "1-3-2": 20,
-      "1-3-4": 25,
-      "1-4-2": 30,
-      "1-4-3": 35,
-      "2-1-3": 40
+  // ★全通りオッズ自動生成（ここが重要）
+  const odds = {};
+  for (let i = 1; i <= 6; i++) {
+    for (let j = 1; j <= 6; j++) {
+      for (let k = 1; k <= 6; k++) {
+        if (i !== j && j !== k && i !== k) {
+          odds[`${i}-${j}-${k}`] = Math.random() * 50 + 5;
+        }
+      }
     }
-  })
-})
+  }
 
+  fetch("/predict", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      bankroll: parseFloat(document.getElementById("bankroll").value),
+      boats: boats,
+      odds: odds
+    })
+  })
   .then(res => res.json())
   .then(data => {
+
     if (data.error) {
       document.getElementById("result").innerHTML = "エラー: " + data.error;
       return;
