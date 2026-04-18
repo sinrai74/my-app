@@ -18,7 +18,7 @@ openpyxl
 scikit-learn
 
 # ── Turso（クラウドSQLite永続化） ──────────────────────────
-libsql-client
+libsql-experimental
 
 # ── LightGBM（任意・なくても動作する） ─────────────────────
 lightgbm
