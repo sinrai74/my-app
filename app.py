@@ -1,8 +1,10 @@
 """
 app.py  ── 競艇予想API (Flask / Render + Turso対応)
 
-DB: Turso (libsql) → 環境変数 TURSO_URL / TURSO_TOKEN で接続
-    未設定の場合はローカルSQLite (records.db) にフォールバック
+DB接続: libsql-experimental (HTTPS) を使用
+  TURSO_URL   … libsql:// または https:// どちらでも可
+  TURSO_TOKEN … Tursoで発行したToken
+  未設定時はローカルSQLite (records.db) にフォールバック
 """
 
 from flask import Flask, request, jsonify
@@ -12,7 +14,6 @@ import json
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
-from contextlib import contextmanager
 
 try:
     from boat_api import fetch_race, fetch_available_races
@@ -30,18 +31,18 @@ app = Flask(__name__)
 CORS(app)
 
 # ════════════════════════════════════════════════════════════
-# DB接続設定
-#   TURSO_URL / TURSO_TOKEN が設定されていれば Turso を使用
-#   未設定ならローカル SQLite にフォールバック
+# DB設定
 # ════════════════════════════════════════════════════════════
-TURSO_URL   = os.environ.get("TURSO_URL",   "")
-TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
-USE_TURSO   = bool(TURSO_URL and TURSO_TOKEN)
-LOCAL_DB    = Path(os.environ.get("DB_PATH", "records.db"))
-LEGACY_JSON = Path(os.environ.get("RECORD_PATH", "records.json"))
+_TURSO_URL_RAW = os.environ.get("TURSO_URL",   "")
+TURSO_TOKEN    = os.environ.get("TURSO_TOKEN", "")
+LOCAL_DB       = Path(os.environ.get("DB_PATH", "records.db"))
+LEGACY_JSON    = Path(os.environ.get("RECORD_PATH", "records.json"))
+
+# libsql:// → https:// に正規化（libsql-experimental はhttpsで接続）
+TURSO_URL = _TURSO_URL_RAW.replace("libsql://", "https://", 1) if _TURSO_URL_RAW else ""
+USE_TURSO = bool(TURSO_URL and TURSO_TOKEN)
 
 if USE_TURSO:
-    import libsql_client
     print(f"[DB] Turso使用: {TURSO_URL}")
 else:
     print(f"[DB] ローカルSQLite使用: {LOCAL_DB}")
@@ -78,62 +79,55 @@ CREATE_TABLE_SQL = """
 # DB操作の共通関数
 # ════════════════════════════════════════════════════════════
 
+def _get_turso_con():
+    """libsql-experimental で Turso に接続"""
+    import libsql_experimental as libsql
+    return libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
+
+
+def _get_local_con():
+    """ローカルSQLite に接続"""
+    LOCAL_DB.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(LOCAL_DB)
+    con.row_factory = sqlite3.Row
+    return con
+
+
 def db_execute(sql: str, params: tuple = (), fetch: str = "none"):
     """
-    Turso / ローカルSQLite を透過的に扱う実行関数。
+    Turso / ローカルSQLite を透過的に扱う。
     fetch: "none" | "one" | "all"
     """
-    if USE_TURSO:
-        import libsql_client
-        with libsql_client.create_client_sync(
-            url=TURSO_URL, auth_token=TURSO_TOKEN
-        ) as client:
-            # パラメータをlibsql形式に変換
-            result = client.execute(sql, list(params))
-            if fetch == "all":
-                # ResultSet → list[dict]
-                cols = [c.name for c in result.columns] if result.columns else []
-                return [dict(zip(cols, row)) for row in result.rows]
-            elif fetch == "one":
-                cols = [c.name for c in result.columns] if result.columns else []
-                if result.rows:
-                    return dict(zip(cols, result.rows[0]))
+    con = _get_turso_con() if USE_TURSO else _get_local_con()
+    try:
+        cur = con.execute(sql, list(params))
+        con.commit()
+        if fetch == "all":
+            cols = [d[0] for d in cur.description] if cur.description else []
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+        elif fetch == "one":
+            cols = [d[0] for d in cur.description] if cur.description else []
+            row  = cur.fetchone()
+            if row is None:
                 return None
-            else:
-                return result.rows_affected
-    else:
-        # ローカルSQLite
-        con = sqlite3.connect(LOCAL_DB)
-        con.row_factory = sqlite3.Row
-        try:
-            cur = con.execute(sql, params)
-            con.commit()
-            if fetch == "all":
-                return [dict(r) for r in cur.fetchall()]
-            elif fetch == "one":
-                r = cur.fetchone()
-                return dict(r) if r else None
-            else:
-                return cur.rowcount
-        finally:
-            con.close()
+            # sqlite3.Row or tuple どちらでも対応
+            if hasattr(row, "keys"):
+                return dict(row)
+            return dict(zip(cols, row))
+        else:
+            return cur.rowcount if hasattr(cur, "rowcount") else 0
+    finally:
+        con.close()
 
 
 def init_db() -> None:
-    """テーブルが存在しなければ作成"""
-    if not USE_TURSO:
-        LOCAL_DB.parent.mkdir(parents=True, exist_ok=True)
+    """テーブルとインデックスを作成（初回起動時）"""
     db_execute(CREATE_TABLE_SQL)
-    if USE_TURSO:
-        # インデックスは個別に実行
-        try:
-            db_execute("CREATE INDEX IF NOT EXISTS idx_race_date  ON records(race_date)")
-            db_execute("CREATE INDEX IF NOT EXISTS idx_venue_name ON records(venue_name)")
-        except Exception:
-            pass
-    else:
+    try:
         db_execute("CREATE INDEX IF NOT EXISTS idx_race_date  ON records(race_date)")
         db_execute("CREATE INDEX IF NOT EXISTS idx_venue_name ON records(venue_name)")
+    except Exception:
+        pass
     print("[DB] 初期化完了")
 
 
@@ -143,54 +137,49 @@ def init_db() -> None:
 
 def calc_stats() -> dict:
     rows = db_execute("SELECT * FROM records", fetch="all") or []
-
     if not rows:
         return {
-            "total_races": 0, "total_bet": 0, "total_return": 0,
-            "roi": 0.0, "hit_count": 0, "hit_rate": 0.0, "profit": 0,
-            "by_venue": {}, "by_month": {}, "streak_win": 0, "streak_lose": 0,
+            "total_races":0,"total_bet":0,"total_return":0,
+            "roi":0.0,"hit_count":0,"hit_rate":0.0,"profit":0,
+            "by_venue":{},"by_month":{},"streak_win":0,"streak_lose":0,
         }
 
     n            = len(rows)
-    total_bet    = sum(r.get("bet_amount", 0)    for r in rows)
-    total_return = sum(r.get("return_amount", 0) for r in rows)
+    total_bet    = sum(r.get("bet_amount",0)    for r in rows)
+    total_return = sum(r.get("return_amount",0) for r in rows)
     hit_count    = sum(1 for r in rows if r.get("hit"))
     profit       = total_return - total_bet
     roi          = round(total_return / total_bet * 100, 1) if total_bet > 0 else 0.0
-    hit_rate     = round(hit_count / n * 100, 1) if n > 0 else 0.0
 
-    # 場別集計
     by_venue: dict = {}
     for r in rows:
-        vn = r.get("venue_name", "不明")
+        vn = r.get("venue_name","不明")
         if vn not in by_venue:
-            by_venue[vn] = {"races":0, "bet":0, "return":0, "hits":0}
+            by_venue[vn] = {"races":0,"bet":0,"return":0,"hits":0}
         by_venue[vn]["races"]  += 1
-        by_venue[vn]["bet"]    += r.get("bet_amount", 0)
-        by_venue[vn]["return"] += r.get("return_amount", 0)
+        by_venue[vn]["bet"]    += r.get("bet_amount",0)
+        by_venue[vn]["return"] += r.get("return_amount",0)
         by_venue[vn]["hits"]   += 1 if r.get("hit") else 0
     for vn in by_venue:
         b = by_venue[vn]["bet"]
-        by_venue[vn]["roi"] = round(by_venue[vn]["return"] / b * 100, 1) if b > 0 else 0.0
+        by_venue[vn]["roi"] = round(by_venue[vn]["return"]/b*100,1) if b>0 else 0.0
 
-    # 月別集計
     by_month: dict = {}
     for r in rows:
-        m = str(r.get("race_date", ""))[:6]
+        m = str(r.get("race_date",""))[:6]
         if not m: continue
         if m not in by_month:
-            by_month[m] = {"races":0, "bet":0, "return":0, "hits":0}
+            by_month[m] = {"races":0,"bet":0,"return":0,"hits":0}
         by_month[m]["races"]  += 1
-        by_month[m]["bet"]    += r.get("bet_amount", 0)
-        by_month[m]["return"] += r.get("return_amount", 0)
+        by_month[m]["bet"]    += r.get("bet_amount",0)
+        by_month[m]["return"] += r.get("return_amount",0)
         by_month[m]["hits"]   += 1 if r.get("hit") else 0
     for m in by_month:
         b = by_month[m]["bet"]
-        by_month[m]["roi"] = round(by_month[m]["return"] / b * 100, 1) if b > 0 else 0.0
+        by_month[m]["roi"] = round(by_month[m]["return"]/b*100,1) if b>0 else 0.0
 
-    # 連勝・連敗
-    sorted_rows  = sorted(rows, key=lambda x: x.get("recorded_at",""), reverse=True)
-    streak_win   = streak_lose = 0
+    sorted_rows = sorted(rows, key=lambda x: x.get("recorded_at",""), reverse=True)
+    streak_win = streak_lose = 0
     for r in sorted_rows[:20]:
         if r.get("hit"):
             if streak_lose == 0: streak_win += 1
@@ -200,10 +189,11 @@ def calc_stats() -> dict:
             else: break
 
     return {
-        "total_races": n, "total_bet": total_bet, "total_return": total_return,
-        "roi": roi, "hit_count": hit_count, "hit_rate": hit_rate, "profit": profit,
-        "by_venue": by_venue, "by_month": by_month,
-        "streak_win": streak_win, "streak_lose": streak_lose,
+        "total_races":n,"total_bet":total_bet,"total_return":total_return,
+        "roi":roi,"hit_count":hit_count,
+        "hit_rate":round(hit_count/n*100,1) if n>0 else 0.0,
+        "profit":profit,"by_venue":by_venue,"by_month":by_month,
+        "streak_win":streak_win,"streak_lose":streak_lose,
     }
 
 
@@ -223,9 +213,9 @@ def home():
 @app.route("/health")
 def health():
     return jsonify({
-        "status": "ok",
+        "status":  "ok",
         "db_mode": "turso" if USE_TURSO else "local_sqlite",
-        "db": TURSO_URL if USE_TURSO else str(LOCAL_DB),
+        "db":      TURSO_URL if USE_TURSO else str(LOCAL_DB),
     })
 
 
@@ -270,46 +260,45 @@ def add_record():
     except Exception:
         return jsonify({"error": "JSONパース失敗"}), 400
 
-    required = {"race_date", "venue_name", "race_no", "combo", "bet_amount", "hit"}
+    required = {"race_date","venue_name","race_no","combo","bet_amount","hit"}
     missing  = required - set(data.keys())
     if missing:
         return jsonify({"error": f"必須フィールドが不足: {missing}"}), 400
 
     hit           = bool(data["hit"])
-    bet_amount    = int(data.get("bet_amount", 0))
-    return_amount = int(data.get("return_amount", 0)) if hit else 0
+    bet_amount    = int(data.get("bet_amount",0))
+    return_amount = int(data.get("return_amount",0)) if hit else 0
     profit        = return_amount - bet_amount
     recorded_at   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     new_id        = datetime.now().strftime("%Y%m%d%H%M%S%f")
 
     db_execute("""
         INSERT INTO records
-          (id, race_date, venue_name, race_no, combo,
-           bet_amount, hit, return_amount, profit,
-           odds, ev, memo, recorded_at)
+          (id,race_date,venue_name,race_no,combo,
+           bet_amount,hit,return_amount,profit,
+           odds,ev,memo,recorded_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         new_id, str(data["race_date"]), str(data["venue_name"]),
         int(data["race_no"]), str(data["combo"]),
-        bet_amount, 1 if hit else 0,
-        return_amount, profit,
-        float(data.get("odds", 0)), float(data.get("ev", 0)),
-        str(data.get("memo", "")), recorded_at,
+        bet_amount, 1 if hit else 0, return_amount, profit,
+        float(data.get("odds",0)), float(data.get("ev",0)),
+        str(data.get("memo","")), recorded_at,
     ))
 
     total_row = db_execute("SELECT COUNT(*) AS cnt FROM records", fetch="one")
     total     = total_row["cnt"] if total_row else 0
 
     return jsonify({
-        "status": "ok",
-        "record": {
-            "id": new_id, "race_date": str(data["race_date"]),
-            "venue_name": str(data["venue_name"]), "race_no": int(data["race_no"]),
-            "combo": str(data["combo"]), "bet_amount": bet_amount,
-            "hit": hit, "return_amount": return_amount, "profit": profit,
-            "recorded_at": recorded_at,
+        "status":"ok",
+        "record":{
+            "id":new_id,"race_date":str(data["race_date"]),
+            "venue_name":str(data["venue_name"]),"race_no":int(data["race_no"]),
+            "combo":str(data["combo"]),"bet_amount":bet_amount,
+            "hit":hit,"return_amount":return_amount,"profit":profit,
+            "recorded_at":recorded_at,
         },
-        "total": total,
+        "total":total,
     })
 
 
@@ -319,15 +308,15 @@ def add_record():
 
 @app.route("/history")
 def history():
-    venue = request.args.get("venue", "")
-    dt    = request.args.get("date",  "")
-    limit = int(request.args.get("limit", 100))
+    venue = request.args.get("venue","")
+    dt    = request.args.get("date", "")
+    limit = int(request.args.get("limit",100))
 
     where  = []
     params: list = []
-    if venue: where.append("venue_name = ?"); params.append(venue)
-    if dt:    where.append("race_date LIKE ?"); params.append(dt + "%")
-    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    if venue: where.append("venue_name = ?");   params.append(venue)
+    if dt:    where.append("race_date LIKE ?");  params.append(dt+"%")
+    where_sql = ("WHERE "+" AND ".join(where)) if where else ""
     params.append(limit)
 
     rows = db_execute(
@@ -338,7 +327,7 @@ def history():
     for r in rows:
         r["hit"] = bool(r.get("hit"))
 
-    return jsonify({"records": rows, "count": len(rows)})
+    return jsonify({"records":rows,"count":len(rows)})
 
 
 # ════════════════════════════════════════════════════════════
@@ -356,49 +345,46 @@ def stats():
 
 @app.route("/record/<record_id>", methods=["DELETE"])
 def delete_record(record_id: str):
-    affected = db_execute(
-        "DELETE FROM records WHERE id = ?", (record_id,)
-    )
+    affected  = db_execute("DELETE FROM records WHERE id = ?", (record_id,))
     if not affected:
-        return jsonify({"error": "該当IDが見つかりません"}), 404
+        return jsonify({"error":"該当IDが見つかりません"}), 404
     total_row = db_execute("SELECT COUNT(*) AS cnt FROM records", fetch="one")
-    return jsonify({"status": "ok", "deleted": record_id,
-                    "remaining": total_row["cnt"] if total_row else 0})
+    return jsonify({"status":"ok","deleted":record_id,
+                    "remaining":total_row["cnt"] if total_row else 0})
 
 
 # ════════════════════════════════════════════════════════════
 # records.json → Turso/SQLite 移行
-# POST /migrate
 # ════════════════════════════════════════════════════════════
 
 @app.route("/migrate", methods=["POST"])
 def migrate_from_json():
     if not LEGACY_JSON.exists():
-        return jsonify({"message": "records.json が存在しないためスキップ"}), 200
+        return jsonify({"message":"records.json が存在しないためスキップ"}), 200
     try:
         with open(LEGACY_JSON, encoding="utf-8") as f:
             old_records: list[dict] = json.load(f)
     except Exception as e:
-        return jsonify({"error": f"records.json 読み込み失敗: {e}"}), 500
+        return jsonify({"error":f"records.json 読み込み失敗: {e}"}), 500
 
     inserted = skipped = 0
     for r in old_records:
         try:
             db_execute("""
                 INSERT OR IGNORE INTO records
-                  (id, race_date, venue_name, race_no, combo,
-                   bet_amount, hit, return_amount, profit,
-                   odds, ev, memo, recorded_at)
+                  (id,race_date,venue_name,race_no,combo,
+                   bet_amount,hit,return_amount,profit,
+                   odds,ev,memo,recorded_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
-                r.get("id", datetime.now().strftime("%Y%m%d%H%M%S%f")),
+                r.get("id",datetime.now().strftime("%Y%m%d%H%M%S%f")),
                 r.get("race_date",""), r.get("venue_name",""),
                 int(r.get("race_no",0)), r.get("combo",""),
                 int(r.get("bet_amount",0)), 1 if r.get("hit") else 0,
                 int(r.get("return_amount",0)), int(r.get("profit",0)),
                 float(r.get("odds",0)), float(r.get("ev",0)),
                 r.get("memo",""),
-                r.get("recorded_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                r.get("recorded_at",datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             ))
             inserted += 1
         except Exception:
@@ -406,10 +392,9 @@ def migrate_from_json():
 
     backup = LEGACY_JSON.with_suffix(".json.bak")
     LEGACY_JSON.rename(backup)
-
     return jsonify({
-        "status": "ok", "inserted": inserted, "skipped": skipped,
-        "message": f"{inserted}件を移行しました。元ファイルは {backup} にバックアップしました。",
+        "status":"ok","inserted":inserted,"skipped":skipped,
+        "message":f"{inserted}件を移行しました。元ファイルは {backup} にバックアップしました。",
     })
 
 
@@ -420,15 +405,14 @@ def migrate_from_json():
 def get_course_bonus(venue_code: str) -> dict[int, float]:
     if HAS_CONFIG:
         cfg = get_venue_config(venue_code)
-        return {c: cfg.get(f"{c}コース補正", COURSE_BONUS_DEFAULT.get(c, 1.0)) for c in range(1, 7)}
+        return {c: cfg.get(f"{c}コース補正", COURSE_BONUS_DEFAULT.get(c,1.0)) for c in range(1,7)}
     return COURSE_BONUS_DEFAULT
 
 
 def kelly_fraction(p: float, odds: float) -> float:
     b = odds - 1.0
-    if b <= 0 or p <= 0:
-        return 0.0
-    return max(0.0, min((b * p - (1.0 - p)) / b, 1.0))
+    if b <= 0 or p <= 0: return 0.0
+    return max(0.0, min((b*p-(1.0-p))/b, 1.0))
 
 
 def calc_combo_score(boats, lane1, lane2, lane3, course_bonus):
@@ -436,16 +420,11 @@ def calc_combo_score(boats, lane1, lane2, lane3, course_bonus):
     for b in boats:
         cb = course_bonus.get(b["lane"], 1.0)
         if b["lane"] == lane1:
-            score += b["win_rate"] * 3.0 * cb
-            score += b["motor"]    * 2.0
-            score -= b["ex_time"]  * 10.0
-            score -= b["start"]    * 5.0
+            score += b["win_rate"]*3.0*cb + b["motor"]*2.0 - b["ex_time"]*10.0 - b["start"]*5.0
         elif b["lane"] == lane2:
-            score += b["win_rate"] * 2.0
-            score += b["motor"]    * 1.5
+            score += b["win_rate"]*2.0 + b["motor"]*1.5
         elif b["lane"] == lane3:
-            score += b["win_rate"] * 1.0
-            score += b["motor"]    * 1.0
+            score += b["win_rate"]*1.0 + b["motor"]*1.0
     return score
 
 
@@ -466,7 +445,7 @@ def predict():
     try:
         data = request.get_json(force=True)
     except Exception:
-        return jsonify({"error": "JSONのパースに失敗しました"}), 400
+        return jsonify({"error":"JSONのパースに失敗しました"}), 400
 
     boats      = data.get("boats", [])
     bankroll   = float(data.get("bankroll", 10000))
@@ -477,18 +456,18 @@ def predict():
     odds_map   = data.get("odds", {})
 
     if len(boats) != 6:
-        return jsonify({"error": "boats は6艇必須です"}), 400
+        return jsonify({"error":"boats は6艇必須です"}), 400
 
-    required_keys = {"lane", "ex_time", "motor", "win_rate", "start"}
+    required_keys = {"lane","ex_time","motor","win_rate","start"}
     for i, b in enumerate(boats):
         for k in required_keys - set(b.keys()):
-            return jsonify({"error": f"boats[{i}] にキーが不足: {k}"}), 400
+            return jsonify({"error":f"boats[{i}] にキーが不足: {k}"}), 400
         for k in required_keys:
             try:
                 if b[k] is None: raise ValueError
                 float(b[k])
             except (TypeError, ValueError):
-                return jsonify({"error": f"boats[{i}][{k}] が数値ではありません"}), 400
+                return jsonify({"error":f"boats[{i}][{k}] が数値ではありません"}), 400
 
     vc           = resolve_venue_code(venue_name, venue_code)
     course_bonus = get_course_bonus(vc)
@@ -499,18 +478,18 @@ def predict():
     else:                       odds_source = "暫定推定"
 
     raw_patterns = []
-    for i in range(1, 7):
-        for j in range(1, 7):
-            for k in range(1, 7):
-                if i == j or j == k or i == k: continue
+    for i in range(1,7):
+        for j in range(1,7):
+            for k in range(1,7):
+                if i==j or j==k or i==k: continue
                 raw_patterns.append({
-                    "combo": f"{i}-{j}-{k}",
-                    "score": calc_combo_score(boats, i, j, k, course_bonus),
-                    "lanes": [i, j, k],
+                    "combo":f"{i}-{j}-{k}",
+                    "score":calc_combo_score(boats,i,j,k,course_bonus),
+                    "lanes":[i,j,k],
                 })
 
     score_min = min(p["score"] for p in raw_patterns)
-    score_adj = [p["score"] - score_min + 1e-6 for p in raw_patterns]
+    score_adj = [p["score"]-score_min+1e-6 for p in raw_patterns]
     score_sum = sum(score_adj)
 
     all_patterns = []
@@ -519,33 +498,32 @@ def predict():
         prob  = adj / score_sum
 
         if combo in odds_map and float(odds_map[combo]) > 0:
-            real_odds = float(odds_map[combo])
-            true_ev   = prob * real_odds
+            real_odds = float(odds_map[combo]); true_ev = prob * real_odds
         else:
-            real_odds = (1.0 / max(prob, 1e-9)) * 0.75
-            true_ev   = prob * real_odds * (1.0 + (1.0 / lanes[0]) * 0.15)
+            real_odds = (1.0/max(prob,1e-9))*0.75
+            true_ev   = prob * real_odds * (1.0+(1.0/lanes[0])*0.15)
 
         kelly = kelly_fraction(prob, real_odds)
-        bet   = (int(bankroll * kelly * 0.3) // 100) * 100
+        bet   = (int(bankroll*kelly*0.3)//100)*100
 
         if true_ev >= 2.0:   verdict = "✅ 強く買い"
         elif true_ev >= 1.2: verdict = "⚠️ 買い"
         else:                verdict = "🚫 見送り"
 
         all_patterns.append({
-            "combo": combo, "prob": round(prob, 5),
-            "odds": round(real_odds, 2), "ev": round(true_ev, 3),
-            "bet": bet, "verdict": verdict, "odds_is_real": combo in odds_map,
+            "combo":combo,"prob":round(prob,5),"odds":round(real_odds,2),
+            "ev":round(true_ev,3),"bet":bet,"verdict":verdict,
+            "odds_is_real":combo in odds_map,
         })
 
     all_patterns.sort(key=lambda x: x["ev"], reverse=True)
 
     return jsonify({
-        "status": "ok", "venue_name": venue_name, "venue_code": vc,
-        "race_no": race_no, "race_date": race_date,
-        "odds_source": odds_source, "real_odds_count": real_odds_count,
-        "buy": [p for p in all_patterns if p["ev"] >= 1.2][:10],
-        "all": all_patterns, "bankroll": bankroll,
+        "status":"ok","venue_name":venue_name,"venue_code":vc,
+        "race_no":race_no,"race_date":race_date,
+        "odds_source":odds_source,"real_odds_count":real_odds_count,
+        "buy":[p for p in all_patterns if p["ev"]>=1.2][:10],
+        "all":all_patterns,"bankroll":bankroll,
     })
 
 
