@@ -3,11 +3,11 @@ flask
 flask-cors
 gunicorn
 
-# ── オッズ取得（odds_fetch.py） ────────────────────────────
+# ── オッズ取得・出走表取得 ──────────────────────────────────
 requests
 beautifulsoup4
 
-# ── データ処理（features.py / parsers.py / betting.py） ────
+# ── データ処理 ─────────────────────────────────────────────
 numpy
 pandas
 
@@ -17,5 +17,8 @@ openpyxl
 # ── 機械学習（models.py） ──────────────────────────────────
 scikit-learn
 
-# ── LightGBM（models.py / 任意・なくても動作する） ─────────
-# lightgbm
+# ── Turso（クラウドSQLite永続化） ──────────────────────────
+libsql-client
+
+# ── LightGBM（任意・なくても動作する） ─────────────────────
+lightgbm
