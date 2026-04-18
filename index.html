@@ -9,7 +9,7 @@
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: #f0f4f8; color: #222;
-  padding: 16px; max-width: 820px; margin: auto;
+  padding: 16px; max-width: 900px; margin: auto;
 }
 h1 { font-size: 1.4rem; margin-bottom: 14px; display:flex; align-items:center; gap:8px; }
 .card {
@@ -27,49 +27,28 @@ h1 { font-size: 1.4rem; margin-bottom: 14px; display:flex; align-items:center; g
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 10px;
 }
-.race-grid > div label {
-  font-size: 0.78rem; color: #555; display:block; margin-bottom:3px;
-}
-.race-grid select,
-.race-grid input[type="date"] {
-  width: 100%; padding: 6px 8px;
-  border: 1px solid #ccc; border-radius: 5px; font-size: 0.88rem;
+.race-grid > div label { font-size:0.78rem; color:#555; display:block; margin-bottom:3px; }
+.race-grid select, .race-grid input[type="date"] {
+  width:100%; padding:6px 8px; border:1px solid #ccc; border-radius:5px; font-size:0.88rem;
 }
 .btn-fetch {
-  width: 100%; padding: 9px; font-size: 0.95rem; font-weight:700;
-  background: #2e7d32; color: #fff; border: none;
-  border-radius: 7px; cursor: pointer; margin-top: 10px;
+  width:100%; padding:9px; font-size:0.95rem; font-weight:700;
+  background:#2e7d32; color:#fff; border:none; border-radius:7px; cursor:pointer; margin-top:10px;
 }
-.btn-fetch:hover { background: #1b5e20; }
-.btn-fetch:disabled { background: #aaa; cursor: not-allowed; }
-
-/* ── ステータスバナー ── */
-.banner {
-  padding: 8px 12px; border-radius: 6px;
-  font-size: 0.85rem; margin-bottom: 10px; display: none;
-}
-.banner-ok   { background: #d4edda; color: #155724; }
-.banner-warn { background: #fff3cd; color: #856404; }
-.banner-err  { background: #f8d7da; color: #721c24; }
+.btn-fetch:hover    { background:#1b5e20; }
+.btn-fetch:disabled { background:#aaa; cursor:not-allowed; }
+.banner { padding:8px 12px; border-radius:6px; font-size:0.85rem; margin-top:8px; display:none; }
+.banner-ok   { background:#d4edda; color:#155724; }
+.banner-warn { background:#fff3cd; color:#856404; }
+.banner-err  { background:#f8d7da; color:#721c24; }
 
 /* ── 艇グリッド ── */
-.boats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 10px;
-}
-.boat-card {
-  background: #f7f9fc; border: 1px solid #dde3ea;
-  border-radius: 8px; padding: 10px 12px;
-}
-.boat-label {
-  font-weight:700; font-size:0.9rem; margin-bottom:6px;
-  display:flex; align-items:center; gap:6px;
-}
+.boats-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:10px; }
+.boat-card { background:#f7f9fc; border:1px solid #dde3ea; border-radius:8px; padding:10px 12px; }
+.boat-label { font-weight:700; font-size:0.9rem; margin-bottom:6px; display:flex; align-items:center; gap:6px; }
 .boat-num {
   display:inline-block; width:22px; height:22px; border-radius:50%;
-  text-align:center; line-height:22px; font-size:0.8rem;
-  color:#fff; font-weight:700;
+  text-align:center; line-height:22px; font-size:0.8rem; color:#fff; font-weight:700;
 }
 .c1{background:#fff;color:#222;border:1px solid #ccc;}
 .c2{background:#000;}
@@ -86,21 +65,43 @@ h1 { font-size: 1.4rem; margin-bottom: 14px; display:flex; align-items:center; g
 .boat-card input.filled { border-color:#2e7d32; background:#f0fff0; }
 .auto-info { font-size:0.75rem; color:#2e7d32; margin-top:2px; }
 
-/* ── フッター ── */
-.footer-row {
-  display:flex; gap:10px; align-items:flex-end;
-  flex-wrap:wrap; margin-top:12px;
+/* ── オッズ入力テーブル ── */
+.odds-section { margin-top: 8px; }
+.odds-note {
+  font-size:0.8rem; color:#666; margin-bottom:8px; padding:6px 10px;
+  background:#fffde7; border-radius:5px; border-left:3px solid #f9a825;
 }
+.odds-table-wrap { overflow-x: auto; }
+.odds-table {
+  border-collapse: collapse; font-size: 0.82rem;
+  min-width: 500px; width: 100%;
+}
+.odds-table th {
+  background:#1a3a6e; color:#fff; padding:6px 8px;
+  text-align:center; font-weight:600; white-space:nowrap;
+}
+.odds-table td { padding:3px 4px; text-align:center; border:1px solid #dde3ea; }
+.odds-table input {
+  width:62px; padding:3px 4px; border:1px solid #ccc;
+  border-radius:4px; font-size:0.82rem; text-align:center;
+}
+.odds-table input.has-val { border-color:#2e7d32; background:#f0fff0; }
+/* 1着ヘッダー行のカラー */
+.th1{background:#fff;color:#222;border:1px solid #999;}
+.th2{background:#222;color:#fff;}
+.th3{background:#e00;}
+.th4{background:#006be6;}
+.th5{background:#f0c800;color:#222;}
+.th6{background:#008a00;}
+
+/* ── フッター ── */
+.footer-row { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-top:12px; }
 .footer-row > div { flex:1; min-width:130px; }
 .footer-row label { font-size:0.82rem; color:#555; display:block; margin-bottom:4px; }
-.footer-row input {
-  width:100%; padding:8px 10px;
-  border:1px solid #ccc; border-radius:6px; font-size:0.95rem;
-}
+.footer-row input { width:100%; padding:8px 10px; border:1px solid #ccc; border-radius:6px; font-size:0.95rem; }
 .btn-predict {
   flex:2; padding:10px 0; font-size:1rem; font-weight:700;
-  background:#1a6ef5; color:#fff; border:none;
-  border-radius:7px; cursor:pointer; min-width:140px;
+  background:#1a6ef5; color:#fff; border:none; border-radius:7px; cursor:pointer; min-width:140px;
 }
 .btn-predict:hover    { background:#0d54c7; }
 .btn-predict:disabled { background:#aaa; cursor:not-allowed; }
@@ -108,9 +109,8 @@ h1 { font-size: 1.4rem; margin-bottom: 14px; display:flex; align-items:center; g
 /* ── ローディング ── */
 #loading { display:none; text-align:center; padding:20px; color:#666; font-size:0.9rem; }
 .spinner {
-  display:inline-block; width:20px; height:20px;
-  border:3px solid #ddd; border-top-color:#1a6ef5;
-  border-radius:50%; animation:spin 0.7s linear infinite;
+  display:inline-block; width:20px; height:20px; border:3px solid #ddd;
+  border-top-color:#1a6ef5; border-radius:50%; animation:spin 0.7s linear infinite;
   vertical-align:middle; margin-right:8px;
 }
 @keyframes spin { to { transform:rotate(360deg); } }
@@ -119,10 +119,10 @@ h1 { font-size: 1.4rem; margin-bottom: 14px; display:flex; align-items:center; g
 #result { min-height:40px; }
 .result-section { margin-bottom:16px; }
 .result-section h4 { font-size:0.9rem; color:#444; margin-bottom:8px; }
-table { width:100%; border-collapse:collapse; font-size:0.85rem; }
-th { background:#1a3a6e; color:#fff; padding:7px 8px; text-align:center; }
-td { padding:6px 8px; text-align:center; border-bottom:1px solid #eee; }
-tr:hover td { background:#f5f8ff; }
+table.res { width:100%; border-collapse:collapse; font-size:0.85rem; }
+table.res th { background:#1a3a6e; color:#fff; padding:7px 8px; text-align:center; }
+table.res td { padding:6px 8px; text-align:center; border-bottom:1px solid #eee; }
+table.res tr:hover td { background:#f5f8ff; }
 .combo-cell   { font-family:monospace; font-weight:700; letter-spacing:1px; }
 .ev-high      { color:#0a8c2a; font-weight:700; }
 .ev-mid       { color:#d47000; }
@@ -136,9 +136,9 @@ tr:hover td { background:#f5f8ff; }
 }
 .odds-badge {
   display:inline-block; padding:3px 10px; border-radius:20px;
-  font-size:0.78rem; font-weight:600; margin-top:8px;
+  font-size:0.78rem; font-weight:600; margin-bottom:10px;
 }
-.badge-front    { background:#fff3cd; color:#856404; }
+.badge-real     { background:#d4edda; color:#155724; }
 .badge-estimate { background:#f8d7da; color:#721c24; }
 </style>
 </head>
@@ -180,10 +180,7 @@ tr:hover td { background:#f5f8ff; }
       </select>
     </div>
   </div>
-  <!-- 自動取得ボタン -->
-  <button class="btn-fetch" id="btnFetch" onclick="fetchBoats()">
-    🔄 出走表を自動取得（BoatraceOpenAPI）
-  </button>
+  <button class="btn-fetch" id="btnFetch" onclick="fetchBoats()">🔄 出走表を自動取得</button>
   <div id="fetchBanner" class="banner"></div>
 </div>
 
@@ -191,13 +188,29 @@ tr:hover td { background:#f5f8ff; }
 <div class="card">
   <h3>🚤 6艇データ <span style="font-size:0.8rem;color:#888;">（自動取得後、展示タイムのみ入力）</span></h3>
   <div class="boats-grid" id="boatsGrid"></div>
-
   <div class="footer-row">
     <div>
       <label for="bankroll">資金（円）</label>
       <input id="bankroll" type="number" value="10000" min="100" step="100">
     </div>
     <button class="btn-predict" id="btnPredict" onclick="predict()">予想する</button>
+  </div>
+</div>
+
+<!-- ── オッズ入力 ── -->
+<div class="card">
+  <h3>📊 3連単オッズ入力 <span style="font-size:0.8rem;color:#888;">（マクールや公式サイトから入力するとEVが正確になります）</span></h3>
+  <div class="odds-note">
+    💡 空欄のままだと確率から自動推定しますが精度が下がります。<br>
+    締切前に <a href="https://sp.macour.jp/toda/odds/20260418/3/" target="_blank" style="color:#1a6ef5;">マクール</a> などのオッズを見ながら入力してください。
+  </div>
+  <div class="odds-section">
+    <div class="odds-table-wrap">
+      <table class="odds-table" id="oddsTable">
+        <thead id="oddsHead"></thead>
+        <tbody id="oddsBod"></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
@@ -220,19 +233,18 @@ const LANE_COLORS = ["c1","c2","c3","c4","c5","c6"];
   document.getElementById("race_date").value = `${y}-${m}-${dd}`;
 })();
 
-// ── フォーム生成 ──
+// ── 艇フォーム生成 ──
 (function buildForm() {
   const grid = document.getElementById("boatsGrid");
   for (let i = 1; i <= 6; i++) {
     const div = document.createElement("div");
     div.className = "boat-card";
-    div.id = `boat_card_${i}`;
     div.innerHTML = `
       <div class="boat-label">
         <span class="boat-num ${LANE_COLORS[i-1]}">${i}</span>
         <span id="boat_name_${i}">${i}号艇</span>
       </div>
-      <label>展示タイム（例: 6.70）<span style="color:#e00">*要入力</span></label>
+      <label>展示タイム <span style="color:#e00">*要入力</span></label>
       <input type="number" step="0.01" min="6.40" max="7.30" id="ex${i}" placeholder="6.70">
       <label>モーター2着率（%）</label>
       <input type="number" step="0.1" id="motor${i}" placeholder="35.0">
@@ -246,39 +258,93 @@ const LANE_COLORS = ["c1","c2","c3","c4","c5","c6"];
   }
 })();
 
+// ── オッズ入力テーブル生成 ──
+(function buildOddsTable() {
+  const thClasses = ["th1","th2","th3","th4","th5","th6"];
+
+  // ヘッダー行
+  let headHtml = "<tr><th>1着↓ 2着→</th>";
+  for (let j = 1; j <= 6; j++) {
+    headHtml += `<th><span class="boat-num ${LANE_COLORS[j-1]}" style="width:18px;height:18px;line-height:18px;font-size:0.75rem;">${j}</span></th>`;
+  }
+  headHtml += "</tr>";
+  document.getElementById("oddsHead").innerHTML = headHtml;
+
+  // 各行: 1着艇番ごとに、2-3着の組み合わせを行として表示
+  // 行 = (1着, 2着) の組、列 = 3着
+  let bodyHtml = "";
+  for (let i = 1; i <= 6; i++) {
+    for (let j = 1; j <= 6; j++) {
+      if (i === j) continue;
+      bodyHtml += `<tr>`;
+      // 行ラベル: 1着-2着
+      bodyHtml += `<td style="font-weight:700;white-space:nowrap;">
+        <span class="boat-num ${LANE_COLORS[i-1]}" style="width:18px;height:18px;line-height:18px;font-size:0.72rem;">${i}</span>
+        -
+        <span class="boat-num ${LANE_COLORS[j-1]}" style="width:18px;height:18px;line-height:18px;font-size:0.72rem;">${j}</span>
+      </td>`;
+      // 3着セル
+      for (let k = 1; k <= 6; k++) {
+        if (k === i || k === j) {
+          bodyHtml += `<td style="background:#f0f0f0;color:#ccc;">−</td>`;
+        } else {
+          bodyHtml += `<td><input type="number" step="0.1" min="1" id="odds_${i}_${j}_${k}" placeholder="−" oninput="markOdds(this)"></td>`;
+        }
+      }
+      bodyHtml += "</tr>";
+    }
+  }
+  document.getElementById("oddsBod").innerHTML = bodyHtml;
+})();
+
+function markOdds(el) {
+  el.classList.toggle("has-val", el.value !== "");
+}
+
+// ── オッズマップを取得 ──
+function collectOdds() {
+  const map = {};
+  let count = 0;
+  for (let i = 1; i <= 6; i++) {
+    for (let j = 1; j <= 6; j++) {
+      if (i === j) continue;
+      for (let k = 1; k <= 6; k++) {
+        if (k === i || k === j) continue;
+        const el = document.getElementById(`odds_${i}_${j}_${k}`);
+        if (el && el.value !== "") {
+          map[`${i}-${j}-${k}`] = parseFloat(el.value);
+          count++;
+        }
+      }
+    }
+  }
+  return { map, count };
+}
+
 // ── 出走表の自動取得 ──
 async function fetchBoats() {
-  const date    = document.getElementById("race_date").value.replace(/-/g,"");
+  const dateVal = document.getElementById("race_date").value.replace(/-/g,"");
   const venue   = document.getElementById("venue_name").value;
   const raceNo  = document.getElementById("race_no").value;
-  const banner  = document.getElementById("fetchBanner");
 
-  if (!venue) {
-    showBanner("⚠️ 場名を選択してください", "warn");
-    return;
-  }
+  if (!venue) { showBanner("⚠️ 場名を選択してください", "warn"); return; }
 
   document.getElementById("btnFetch").disabled = true;
-  showBanner("🔄 BoatraceOpenAPI からデータ取得中…", "ok");
+  showBanner("🔄 取得中…", "ok");
 
   try {
-    const res  = await fetch(`/boats?date=${date}&venue=${encodeURIComponent(venue)}&race=${raceNo}`);
+    const res  = await fetch(`/boats?date=${dateVal}&venue=${encodeURIComponent(venue)}&race=${raceNo}`);
     const data = await res.json();
 
-    if (!res.ok || data.error) {
-      // 202: boats はあるが展示タイムなし → フォームに自動入力
-      if (res.status === 202 && data.boats) {
-        fillBoats(data.boats);
-        showBanner(`✅ 自動取得完了（${data.boats.length}艇）。展示タイムのみ入力してください`, "ok");
-      } else {
-        showBanner(`❌ ${data.error || "取得失敗"}`, "err");
-      }
-      return;
+    if (res.status === 202 && data.boats) {
+      fillBoats(data.boats);
+      showBanner(`✅ 自動取得完了。展示タイムのみ入力してください`, "ok");
+    } else if (!res.ok) {
+      showBanner(`❌ ${data.error || "取得失敗"}`, "err");
+    } else {
+      fillBoats(data.boats);
+      showBanner(`✅ ${venue} ${raceNo}R を自動取得しました`, "ok");
     }
-
-    fillBoats(data.boats);
-    showBanner(`✅ ${venue} ${raceNo}R の出走表を自動取得しました（展示タイムのみ入力）`, "ok");
-
   } catch(e) {
     showBanner(`🔌 通信エラー: ${e}`, "err");
   } finally {
@@ -286,73 +352,53 @@ async function fetchBoats() {
   }
 }
 
-// ── フォームに艇データをセット ──
 function fillBoats(boats) {
   boats.forEach(b => {
     const i = b.lane;
-    // 選手名
     const nameEl = document.getElementById(`boat_name_${i}`);
-    if (nameEl) nameEl.textContent = `${i}号艇 ${b.name || ""}`;
-
-    // 展示タイムは空欄のまま（要入力）
+    if (nameEl) nameEl.textContent = `${i}号艇 ${b.name||""}`;
+    // 展示タイムは空欄
     const exEl = document.getElementById(`ex${i}`);
     if (exEl) { exEl.value = ""; exEl.classList.remove("filled"); }
-
-    // 自動取得値をセット（緑枠）
     const setFilled = (id, val) => {
       const el = document.getElementById(id);
-      if (el && val !== null && val !== undefined) {
-        el.value = val;
-        el.classList.add("filled");
-      }
+      if (el && val != null) { el.value = val; el.classList.add("filled"); }
     };
     setFilled(`motor${i}`, b.motor);
     setFilled(`win${i}`,   b.win_rate);
     setFilled(`start${i}`, b.start);
-
-    // 追加情報
     const info = document.getElementById(`auto_info_${i}`);
-    if (info && b.motor_no) {
-      info.textContent = `モーターNo.${b.motor_no} / 当地勝率${b.local_win}%`;
-    }
+    if (info && b.motor_no) info.textContent = `モーターNo.${b.motor_no} / 当地勝率${b.local_win}%`;
   });
 }
 
-// ── バナー表示 ──
 function showBanner(msg, type) {
   const el = document.getElementById("fetchBanner");
-  el.textContent = msg;
-  el.className   = `banner banner-${type}`;
+  el.textContent  = msg;
+  el.className    = `banner banner-${type}`;
   el.style.display = "block";
 }
 
 // ── バリデーション ──
 function validateInputs() {
   let ok = true;
-  const fields = ["ex","motor","win","start"];
-  for (let i = 1; i <= 6; i++) {
-    fields.forEach(f => document.getElementById(f+i).classList.remove("error"));
-  }
-  for (let i = 1; i <= 6; i++) {
-    fields.forEach(f => {
+  ["ex","motor","win","start"].forEach(f => {
+    for (let i = 1; i <= 6; i++) {
       const el = document.getElementById(f+i);
-      if (isNaN(parseFloat(el.value))) {
-        el.classList.add("error");
-        ok = false;
-      }
-    });
-  }
+      el.classList.remove("error");
+      if (isNaN(parseFloat(el.value))) { el.classList.add("error"); ok = false; }
+    }
+  });
   return ok;
 }
 
-// ── EV・判定クラス ──
+// ── 表描画 ──
 function evClass(ev)     { return ev>=2.0?"ev-high":ev>=1.2?"ev-mid":"ev-low"; }
 function verdictClass(v) { return v.includes("強く")?"verdict-strong":v.includes("買い")?"verdict-buy":"verdict-skip"; }
 
-// ── テーブル描画 ──
 function renderTable(rows, showBet=true) {
-  if (!rows || rows.length === 0) return "<span style='color:#aaa'>該当なし</span>";
-  let html = `<table><tr>
+  if (!rows || rows.length===0) return "<span style='color:#aaa'>該当なし</span>";
+  let html = `<table class="res"><tr>
     <th>組番</th><th>確率</th><th>オッズ</th><th>EV</th>
     ${showBet?"<th>ベット</th>":""}<th>判定</th>
   </tr>`;
@@ -372,8 +418,7 @@ function renderTable(rows, showBet=true) {
 // ── 予想 ──
 async function predict() {
   if (!validateInputs()) {
-    document.getElementById("result").innerHTML =
-      `<div class="error-msg">⚠️ 赤枠の欄を確認してください</div>`;
+    document.getElementById("result").innerHTML = `<div class="error-msg">⚠️ 赤枠の欄を確認してください</div>`;
     return;
   }
 
@@ -388,6 +433,7 @@ async function predict() {
     });
   }
 
+  const { map: oddsMap, count: oddsCount } = collectOdds();
   const raceDate = document.getElementById("race_date").value.replace(/-/g,"");
   const venue    = document.getElementById("venue_name").value;
   const raceNo   = parseInt(document.getElementById("race_no").value);
@@ -399,21 +445,22 @@ async function predict() {
 
   try {
     const res  = await fetch("/predict", {
-      method:  "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ boats, bankroll, venue_name: venue, race_no: raceNo, race_date: raceDate }),
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ boats, bankroll, venue_name:venue, race_no:raceNo, race_date:raceDate, odds:oddsMap }),
     });
     const data = await res.json();
 
     if (data.error) {
-      document.getElementById("result").innerHTML =
-        `<div class="error-msg">⚠️ ${data.error}</div>`;
+      document.getElementById("result").innerHTML = `<div class="error-msg">⚠️ ${data.error}</div>`;
       return;
     }
 
-    const badge = data.odds_source === "フロント送信値"
-      ? `<span class="odds-badge badge-front">⚠️ 入力オッズ使用</span>`
-      : `<span class="odds-badge badge-estimate">📊 オッズ暫定推定</span>`;
+    const badge = oddsCount >= 60
+      ? `<span class="odds-badge badge-real">✅ 実オッズ使用（${oddsCount}点）</span>`
+      : oddsCount > 0
+        ? `<span class="odds-badge badge-real" style="background:#fff3cd;color:#856404;">⚠️ 実オッズ一部使用（${oddsCount}点）/ 残りは推定</span>`
+        : `<span class="odds-badge badge-estimate">📊 オッズ暫定推定 → オッズを入力するとEVが正確になります</span>`;
 
     let html = badge;
     html += `<div class="result-section" style="margin-top:10px;">
@@ -424,10 +471,8 @@ async function predict() {
     </div>`;
 
     document.getElementById("result").innerHTML = html;
-
   } catch(e) {
-    document.getElementById("result").innerHTML =
-      `<div class="error-msg">🔌 通信エラー: ${e}</div>`;
+    document.getElementById("result").innerHTML = `<div class="error-msg">🔌 通信エラー: ${e}</div>`;
   } finally {
     document.getElementById("loading").style.display = "none";
     document.getElementById("btnPredict").disabled = false;
