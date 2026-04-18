@@ -513,9 +513,23 @@ async function predict() {
         ? `<span class="odds-badge badge-real" style="background:#fff3cd;color:#856404;">⚠️ 実オッズ一部（${oddsCount}点）</span>`
         : `<span class="odds-badge badge-estimate">📊 オッズ暫定推定</span>`;
 
-    let html = badge;
+    // ── 場別設定バナー ──
+    const vc = data.venue_config || {};
+    const nightBadge = vc.is_night ? "🌙 ナイター" : "☀️ 昼間";
+    const cfgBanner  = vc.ev_min ? `
+      <div style="background:#f0f4ff;border:1px solid #c5d0e8;border-radius:6px;
+                  padding:8px 12px;font-size:0.8rem;color:#444;margin-bottom:8px;display:flex;gap:16px;flex-wrap:wrap;">
+        <span>🏟 <b>${data.venue_name||"−"}</b></span>
+        <span>${nightBadge}</span>
+        <span>EV閾値: <b style="color:#1a6ef5">${vc.ev_min}</b></span>
+        <span>Kelly係数: <b>${vc.kelly_kf}</b></span>
+        <span>Kelly上限: <b>${(vc.kelly_max*100).toFixed(0)}%</b></span>
+        <span>P下限: <b>${(vc.p_min*100).toFixed(0)}%</b></span>
+      </div>` : "";
+
+    let html = badge + cfgBanner;
     html += `<div class="result-section" style="margin-top:10px;">
-      <h4>✅ 買い推奨（EV ≥ 1.2）<span style="font-size:0.78rem;color:#888;margin-left:8px;">✅❌で結果を記録</span></h4>
+      <h4>✅ 買い推奨（EV ≥ ${vc.ev_min||1.5}）<span style="font-size:0.78rem;color:#888;margin-left:8px;">✅❌で結果を記録</span></h4>
       ${renderTable(data.buy, true, true)}
     </div>
     <div class="result-section">
