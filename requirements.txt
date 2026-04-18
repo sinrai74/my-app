@@ -3,7 +3,7 @@ flask
 flask-cors
 gunicorn
 
-# ── オッズ取得・出走表取得 ──────────────────────────────────
+# ── オッズ取得・出走表取得（Turso HTTP APIにも使用） ────────
 requests
 beautifulsoup4
 
@@ -16,9 +16,6 @@ openpyxl
 
 # ── 機械学習（models.py） ──────────────────────────────────
 scikit-learn
-
-# ── Turso（クラウドSQLite永続化） ──────────────────────────
-libsql-experimental
 
 # ── LightGBM（任意・なくても動作する） ─────────────────────
 lightgbm
