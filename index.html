@@ -5,25 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>競艇AI予想</title>
 <style>
-/* ── リセット・ベース ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: #f0f4f8;
   color: #222;
   padding: 16px;
-  max-width: 780px;
+  max-width: 820px;
   margin: auto;
 }
-
-/* ── ヘッダー ── */
-h1 {
-  font-size: 1.4rem;
-  margin-bottom: 16px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+h1 { font-size: 1.4rem; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
 
 /* ── カード ── */
 .card {
@@ -34,12 +25,47 @@ h1 {
   margin-bottom: 14px;
 }
 .card h3 {
-  font-size: 0.95rem;
+  font-size: 0.92rem;
   color: #555;
   margin-bottom: 10px;
   border-bottom: 1px solid #eee;
   padding-bottom: 6px;
 }
+
+/* ── レース情報 ── */
+.race-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+.race-info-grid > div label {
+  font-size: 0.78rem;
+  color: #555;
+  display: block;
+  margin-bottom: 3px;
+}
+.race-info-grid select,
+.race-info-grid input[type="number"],
+.race-info-grid input[type="date"] {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  font-size: 0.88rem;
+}
+
+/* ── オッズソース表示 ── */
+.odds-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  margin-top: 8px;
+}
+.badge-official { background: #d4edda; color: #155724; }
+.badge-front    { background: #fff3cd; color: #856404; }
+.badge-estimate { background: #f8d7da; color: #721c24; }
 
 /* ── 艇グリッド ── */
 .boats-grid {
@@ -53,7 +79,7 @@ h1 {
   border-radius: 8px;
   padding: 10px 12px;
 }
-.boat-card .boat-label {
+.boat-label {
   font-weight: 700;
   font-size: 0.9rem;
   margin-bottom: 6px;
@@ -71,7 +97,6 @@ h1 {
   color: #fff;
   font-weight: 700;
 }
-/* 艇番カラー（競艇公式色） */
 .c1{background:#fff;color:#222;border:1px solid #ccc;}
 .c2{background:#000;}
 .c3{background:#e00;}
@@ -88,21 +113,17 @@ h1 {
   font-size: 0.85rem;
 }
 .boat-card input.error { border-color: #e00; background: #fff5f5; }
-.boat-card label {
-  font-size: 0.75rem;
-  color: #666;
-  display: block;
-  margin-top: 4px;
-}
+.boat-card label { font-size: 0.75rem; color: #666; display: block; margin-top: 4px; }
 
-/* ── 資金・ボタン ── */
+/* ── フッター行 ── */
 .footer-row {
   display: flex;
   gap: 10px;
   align-items: flex-end;
   flex-wrap: wrap;
+  margin-top: 12px;
 }
-.footer-row > div { flex: 1; min-width: 140px; }
+.footer-row > div { flex: 1; min-width: 130px; }
 .footer-row label { font-size: 0.82rem; color: #555; display: block; margin-bottom: 4px; }
 .footer-row input {
   width: 100%;
@@ -124,17 +145,11 @@ h1 {
   transition: background 0.2s;
   min-width: 140px;
 }
-.btn-predict:hover { background: #0d54c7; }
-.btn-predict:disabled { background: #aaa; cursor: not-allowed; }
+.btn-predict:hover   { background: #0d54c7; }
+.btn-predict:disabled{ background: #aaa; cursor: not-allowed; }
 
 /* ── ローディング ── */
-#loading {
-  display: none;
-  text-align: center;
-  padding: 20px;
-  color: #666;
-  font-size: 0.9rem;
-}
+#loading { display: none; text-align: center; padding: 20px; color: #666; font-size: 0.9rem; }
 .spinner {
   display: inline-block;
   width: 20px; height: 20px;
@@ -150,37 +165,18 @@ h1 {
 /* ── 結果テーブル ── */
 #result { min-height: 40px; }
 .result-section { margin-bottom: 16px; }
-.result-section h4 {
-  font-size: 0.9rem;
-  color: #444;
-  margin-bottom: 8px;
-}
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
-}
-th {
-  background: #1a3a6e;
-  color: #fff;
-  padding: 7px 8px;
-  text-align: center;
-  font-weight: 600;
-}
-td {
-  padding: 6px 8px;
-  text-align: center;
-  border-bottom: 1px solid #eee;
-}
+.result-section h4 { font-size: 0.9rem; color: #444; margin-bottom: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th { background: #1a3a6e; color: #fff; padding: 7px 8px; text-align: center; font-weight: 600; }
+td { padding: 6px 8px; text-align: center; border-bottom: 1px solid #eee; }
 tr:hover td { background: #f5f8ff; }
+.combo-cell   { font-family: monospace; font-weight: 700; letter-spacing: 1px; }
+.ev-high      { color: #0a8c2a; font-weight: 700; }
+.ev-mid       { color: #d47000; }
+.ev-low       { color: #999; }
 .verdict-strong { color: #0a8c2a; font-weight: 700; }
 .verdict-buy    { color: #d47000; font-weight: 600; }
 .verdict-skip   { color: #999; }
-.ev-high { color: #0a8c2a; font-weight: 700; }
-.ev-mid  { color: #d47000; }
-.ev-low  { color: #999; }
-.combo-cell { font-family: monospace; font-weight: 700; letter-spacing: 1px; }
-
 .error-msg {
   color: #c00;
   background: #fff5f5;
@@ -195,12 +191,64 @@ tr:hover td { background: #f5f8ff; }
 
 <h1>🚤 競艇AI予想</h1>
 
-<!-- ── 入力カード ── -->
+<!-- ── レース情報 ── -->
 <div class="card">
-  <h3>6艇データ入力</h3>
+  <h3>📍 レース情報</h3>
+  <div class="race-info-grid">
+    <div>
+      <label for="venue_name">場名</label>
+      <select id="venue_name">
+        <option value="">選択してください</option>
+        <option value="桐生">桐生</option>
+        <option value="江戸川">江戸川</option>
+        <option value="戸田">戸田</option>
+        <option value="平和島">平和島</option>
+        <option value="多摩川">多摩川</option>
+        <option value="浜名湖">浜名湖</option>
+        <option value="蒲郡">蒲郡</option>
+        <option value="常滑">常滑</option>
+        <option value="津">津</option>
+        <option value="三国">三国</option>
+        <option value="びわこ">びわこ</option>
+        <option value="住之江">住之江</option>
+        <option value="尼崎">尼崎</option>
+        <option value="鳴門">鳴門</option>
+        <option value="丸亀">丸亀</option>
+        <option value="児島">児島</option>
+        <option value="宮島">宮島</option>
+        <option value="徳山">徳山</option>
+        <option value="下関">下関</option>
+        <option value="若松">若松</option>
+        <option value="芦屋">芦屋</option>
+        <option value="福岡">福岡</option>
+        <option value="唐津">唐津</option>
+        <option value="大村">大村</option>
+      </select>
+    </div>
+    <div>
+      <label for="race_no">レース番号</label>
+      <select id="race_no">
+        <option value="1">1R</option><option value="2">2R</option>
+        <option value="3">3R</option><option value="4">4R</option>
+        <option value="5">5R</option><option value="6">6R</option>
+        <option value="7">7R</option><option value="8">8R</option>
+        <option value="9">9R</option><option value="10">10R</option>
+        <option value="11">11R</option><option value="12">12R</option>
+      </select>
+    </div>
+    <div>
+      <label for="race_date">開催日</label>
+      <input type="date" id="race_date">
+    </div>
+  </div>
+</div>
+
+<!-- ── 艇データ入力 ── -->
+<div class="card">
+  <h3>🚤 6艇データ入力</h3>
   <div class="boats-grid" id="boatsGrid"></div>
 
-  <div class="footer-row" style="margin-top:12px;">
+  <div class="footer-row">
     <div>
       <label for="bankroll">資金（円）</label>
       <input id="bankroll" type="number" value="10000" min="100" step="100">
@@ -210,25 +258,28 @@ tr:hover td { background: #f5f8ff; }
 </div>
 
 <!-- ── ローディング ── -->
-<div id="loading">
-  <span class="spinner"></span>予想計算中…
-</div>
+<div id="loading"><span class="spinner"></span>オッズ取得・予想計算中…</div>
 
-<!-- ── 結果カード ── -->
+<!-- ── 結果 ── -->
 <div class="card">
   <h3>結果</h3>
   <div id="result"><span style="color:#aaa;font-size:0.88rem;">入力後「予想する」を押してください</span></div>
 </div>
 
 <script>
-// ══════════════════════════════════════════════
-// 艇番カラー
-// ══════════════════════════════════════════════
+// ── 今日の日付をデフォルトセット ──
+(function() {
+  const today = new Date();
+  const y = today.getFullYear();
+  const m = String(today.getMonth()+1).padStart(2,'0');
+  const d = String(today.getDate()).padStart(2,'0');
+  document.getElementById("race_date").value = `${y}-${m}-${d}`;
+})();
+
+// ── 艇番カラー ──
 const LANE_COLORS = ["c1","c2","c3","c4","c5","c6"];
 
-// ══════════════════════════════════════════════
-// フォーム生成
-// ══════════════════════════════════════════════
+// ── フォーム生成 ──
 (function buildForm() {
   const grid = document.getElementById("boatsGrid");
   for (let i = 1; i <= 6; i++) {
@@ -240,35 +291,29 @@ const LANE_COLORS = ["c1","c2","c3","c4","c5","c6"];
         <span>${i}号艇</span>
       </div>
       <label>展示タイム（例: 6.70）</label>
-      <input type="number" step="0.01" id="ex${i}"     placeholder="6.70">
+      <input type="number" step="0.01" min="6.50" max="7.20" id="ex${i}"    placeholder="6.70">
       <label>モーター2着率（%）</label>
-      <input type="number" step="0.1"  id="motor${i}"  placeholder="35.0">
+      <input type="number" step="0.1"  min="0"    max="100"  id="motor${i}" placeholder="35.0">
       <label>選手全国勝率</label>
-      <input type="number" step="0.01" id="win${i}"    placeholder="6.50">
-      <label>平均スタートタイミング</label>
-      <input type="number" step="0.01" id="start${i}"  placeholder="0.15">
+      <input type="number" step="0.01" min="0"    max="10"   id="win${i}"   placeholder="6.50">
+      <label>平均ST</label>
+      <input type="number" step="0.01" min="0"    max="0.50" id="start${i}" placeholder="0.15">
     `;
     grid.appendChild(div);
   }
 })();
 
-// ══════════════════════════════════════════════
-// 入力バリデーション
-// ══════════════════════════════════════════════
+// ── バリデーション ──
 function validateInputs() {
   let ok = true;
   const fields = ["ex","motor","win","start"];
-  // エラークラスをリセット
   for (let i = 1; i <= 6; i++) {
-    fields.forEach(f => {
-      document.getElementById(f+i).classList.remove("error");
-    });
+    fields.forEach(f => document.getElementById(f+i).classList.remove("error"));
   }
   for (let i = 1; i <= 6; i++) {
     fields.forEach(f => {
-      const el  = document.getElementById(f+i);
-      const val = parseFloat(el.value);
-      if (isNaN(val)) {
+      const el = document.getElementById(f+i);
+      if (isNaN(parseFloat(el.value))) {
         el.classList.add("error");
         ok = false;
       }
@@ -277,89 +322,45 @@ function validateInputs() {
   return ok;
 }
 
-// ══════════════════════════════════════════════
-// オッズ生成（フロント側で送る暫定オッズ）
-// ※ app.py 側で odds_fetch が成功すれば上書きされる
-// ※ 毎回ランダムにならないよう入力値ベースで決定論的に生成
-// ══════════════════════════════════════════════
-function buildOdds(boats) {
-  const odds = {};
-  // 各艇のスコアを簡易計算して組み合わせ確率を近似
-  const baseScore = {};
-  boats.forEach(b => {
-    baseScore[b.lane] = b.win_rate * 2 + b.motor * 0.5 - b.ex_time * 3 - b.start * 10;
-  });
-
-  for (let i = 1; i <= 6; i++) {
-    for (let j = 1; j <= 6; j++) {
-      for (let k = 1; k <= 6; k++) {
-        if (i === j || j === k || i === k) continue;
-        const combo = `${i}-${j}-${k}`;
-        // スコアが高い組み合わせほど低オッズ
-        const s = (baseScore[i] || 0) * 3 + (baseScore[j] || 0) * 2 + (baseScore[k] || 0);
-        // シグモイド的に 5〜200 の範囲に収める
-        const normalized = Math.max(5, 200 / (1 + Math.exp(s / 30)));
-        odds[combo] = Math.round(normalized * 10) / 10;
-      }
-    }
-  }
-  return odds;
+// ── オッズソースバッジ ──
+function oddsBadge(source) {
+  if (source === "公式サイト取得") return `<span class="odds-badge badge-official">✅ 公式サイトからオッズ取得済み</span>`;
+  if (source === "フロント送信値") return `<span class="odds-badge badge-front">⚠️ 入力オッズ使用</span>`;
+  return `<span class="odds-badge badge-estimate">📊 オッズ暫定推定（締切前に再実行推奨）</span>`;
 }
 
-// ══════════════════════════════════════════════
-// EV・判定のクラス
-// ══════════════════════════════════════════════
-function evClass(ev) {
-  if (ev >= 2.0) return "ev-high";
-  if (ev >= 1.2) return "ev-mid";
-  return "ev-low";
-}
-function verdictClass(v) {
-  if (v.includes("強く")) return "verdict-strong";
-  if (v.includes("買い")) return "verdict-buy";
-  return "verdict-skip";
-}
+// ── EV・判定クラス ──
+function evClass(ev)      { return ev>=2.0?"ev-high":ev>=1.2?"ev-mid":"ev-low"; }
+function verdictClass(v)  { return v.includes("強く")?"verdict-strong":v.includes("買い")?"verdict-buy":"verdict-skip"; }
 
-// ══════════════════════════════════════════════
-// 結果テーブル描画
-// ══════════════════════════════════════════════
-function renderTable(rows, showBet = true) {
+// ── テーブル描画 ──
+function renderTable(rows, showBet=true) {
   if (!rows || rows.length === 0) return "<span style='color:#aaa'>該当なし</span>";
-  let html = `<table>
-    <tr>
-      <th>組番</th>
-      <th>確率</th>
-      <th>オッズ</th>
-      <th>EV</th>
-      ${showBet ? "<th>ベット</th>" : ""}
-      <th>判定</th>
-    </tr>`;
+  let html = `<table><tr>
+    <th>組番</th><th>確率</th><th>オッズ</th><th>EV</th>
+    ${showBet?"<th>ベット</th>":""}<th>判定</th>
+  </tr>`;
   rows.forEach(p => {
     html += `<tr>
       <td class="combo-cell">${p.combo}</td>
-      <td>${(p.prob * 100).toFixed(2)}%</td>
+      <td>${(p.prob*100).toFixed(2)}%</td>
       <td>${p.odds.toFixed(1)}</td>
       <td class="${evClass(p.ev)}">${p.ev.toFixed(3)}</td>
-      ${showBet ? `<td>${p.bet > 0 ? p.bet.toLocaleString()+"円" : "−"}</td>` : ""}
+      ${showBet?`<td>${p.bet>0?p.bet.toLocaleString()+"円":"−"}</td>`:""}
       <td class="${verdictClass(p.verdict)}">${p.verdict}</td>
     </tr>`;
   });
-  html += "</table>";
-  return html;
+  return html + "</table>";
 }
 
-// ══════════════════════════════════════════════
-// メイン予想処理
-// ══════════════════════════════════════════════
+// ── メイン予想 ──
 function predict() {
-  // バリデーション
   if (!validateInputs()) {
     document.getElementById("result").innerHTML =
-      `<div class="error-msg">⚠️ 赤枠の入力欄を確認してください（数値を入力してください）</div>`;
+      `<div class="error-msg">⚠️ 赤枠の入力欄を確認してください</div>`;
     return;
   }
 
-  // 艇データ収集
   const boats = [];
   for (let i = 1; i <= 6; i++) {
     boats.push({
@@ -371,10 +372,13 @@ function predict() {
     });
   }
 
-  const bankroll = parseFloat(document.getElementById("bankroll").value) || 10000;
-  const odds     = buildOdds(boats);  // 決定論的に生成
+  // 日付を YYYYMMDD 形式に変換
+  const raceDateRaw  = document.getElementById("race_date").value; // YYYY-MM-DD
+  const raceDate     = raceDateRaw.replace(/-/g, "");
+  const venueName    = document.getElementById("venue_name").value;
+  const raceNo       = parseInt(document.getElementById("race_no").value);
+  const bankroll     = parseFloat(document.getElementById("bankroll").value) || 10000;
 
-  // UI: ローディング開始
   document.getElementById("loading").style.display = "block";
   document.getElementById("result").innerHTML = "";
   document.getElementById("btnPredict").disabled = true;
@@ -382,7 +386,13 @@ function predict() {
   fetch("/predict", {
     method:  "POST",
     headers: {"Content-Type": "application/json"},
-    body:    JSON.stringify({ bankroll, boats, odds }),
+    body: JSON.stringify({
+      boats,
+      bankroll,
+      venue_name: venueName,
+      race_no:    raceNo,
+      race_date:  raceDate,
+    }),
   })
   .then(res => res.json())
   .then(data => {
@@ -395,18 +405,16 @@ function predict() {
       return;
     }
 
-    let html = "";
+    let html = oddsBadge(data.odds_source);
 
-    // 買い推奨
-    html += `<div class="result-section">
+    html += `<div class="result-section" style="margin-top:12px;">
       <h4>✅ 買い推奨（EV ≥ 1.2）</h4>
       ${renderTable(data.buy, true)}
     </div>`;
 
-    // 全候補上位10
     html += `<div class="result-section">
       <h4>📋 全候補 上位10件</h4>
-      ${renderTable((data.all || []).slice(0, 10), false)}
+      ${renderTable((data.all||[]).slice(0,10), false)}
     </div>`;
 
     document.getElementById("result").innerHTML = html;
