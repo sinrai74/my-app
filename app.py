@@ -1,11 +1,24 @@
 """
 app.py  ── 競艇予想API (Flask / Render対応)
+
+エンドポイント:
+  GET  /                        … フロントエンド
+  GET  /health                  … 死活監視
+  GET  /races?date=YYYYMMDD     … 開催レース一覧
+  GET  /boats?date=YYYYMMDD&venue=XX&race=N  … 6艇データ自動取得
+  POST /predict                 … 予想
+  POST /record                  … 結果を記録
+  GET  /history                 … 記録一覧
+  GET  /stats                   … 回収率・統計
+  DELETE /record/<id>           … 記録削除
 """
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
-from datetime import date
+import json
+from datetime import date, datetime
+from pathlib import Path
 
 try:
     from boat_api import fetch_race, fetch_available_races
@@ -22,6 +35,9 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)
 
+# ── 記録ファイルパス（Renderの永続ストレージ or ローカル）──
+RECORD_FILE = Path(os.environ.get("RECORD_PATH", "records.json"))
+
 VENUE_MAP_BUILTIN: dict[str, str] = {
     "桐生":"01","江戸川":"02","戸田":"03","平和島":"04","多摩川":"05",
     "浜名湖":"06","蒲郡":"07","常滑":"08","津":"09","三国":"10",
@@ -31,6 +47,105 @@ VENUE_MAP_BUILTIN: dict[str, str] = {
 }
 COURSE_BONUS_DEFAULT = {1:1.5, 2:0.8, 3:0.4, 4:0.2, 5:-0.2, 6:-0.5}
 
+
+# ════════════════════════════════════════════════════════════
+# 記録ファイルの読み書き
+# ════════════════════════════════════════════════════════════
+
+def load_records() -> list[dict]:
+    if not RECORD_FILE.exists():
+        return []
+    try:
+        with open(RECORD_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def save_records(records: list[dict]) -> None:
+    with open(RECORD_FILE, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+
+
+def calc_stats(records: list[dict]) -> dict:
+    """記録リストから統計を計算"""
+    if not records:
+        return {
+            "total_races": 0, "total_bet": 0, "total_return": 0,
+            "roi": 0.0, "hit_count": 0, "hit_rate": 0.0,
+            "by_venue": {}, "by_month": {},
+            "streak_win": 0, "streak_lose": 0,
+        }
+
+    total_bet    = sum(r.get("bet_amount", 0) for r in records)
+    total_return = sum(r.get("return_amount", 0) for r in records)
+    hit_count    = sum(1 for r in records if r.get("hit", False))
+    n            = len(records)
+    roi          = (total_return / total_bet * 100) if total_bet > 0 else 0.0
+
+    # 場別集計
+    by_venue: dict[str, dict] = {}
+    for r in records:
+        vn = r.get("venue_name", "不明")
+        if vn not in by_venue:
+            by_venue[vn] = {"races": 0, "bet": 0, "return": 0, "hits": 0}
+        by_venue[vn]["races"]  += 1
+        by_venue[vn]["bet"]    += r.get("bet_amount", 0)
+        by_venue[vn]["return"] += r.get("return_amount", 0)
+        by_venue[vn]["hits"]   += 1 if r.get("hit") else 0
+    for vn in by_venue:
+        b = by_venue[vn]["bet"]
+        by_venue[vn]["roi"] = round(by_venue[vn]["return"] / b * 100, 1) if b > 0 else 0.0
+
+    # 月別集計
+    by_month: dict[str, dict] = {}
+    for r in records:
+        m = r.get("race_date", "")[:6]  # YYYYMM
+        if not m:
+            continue
+        if m not in by_month:
+            by_month[m] = {"races": 0, "bet": 0, "return": 0, "hits": 0}
+        by_month[m]["races"]  += 1
+        by_month[m]["bet"]    += r.get("bet_amount", 0)
+        by_month[m]["return"] += r.get("return_amount", 0)
+        by_month[m]["hits"]   += 1 if r.get("hit") else 0
+    for m in by_month:
+        b = by_month[m]["bet"]
+        by_month[m]["roi"] = round(by_month[m]["return"] / b * 100, 1) if b > 0 else 0.0
+
+    # 連勝・連敗ストリーク（最新から）
+    streak_win = streak_lose = 0
+    sorted_r = sorted(records, key=lambda x: x.get("recorded_at",""), reverse=True)
+    for r in sorted_r:
+        if r.get("hit"):
+            if streak_lose == 0:
+                streak_win += 1
+            else:
+                break
+        else:
+            if streak_win == 0:
+                streak_lose += 1
+            else:
+                break
+
+    return {
+        "total_races":  n,
+        "total_bet":    total_bet,
+        "total_return": total_return,
+        "roi":          round(roi, 1),
+        "hit_count":    hit_count,
+        "hit_rate":     round(hit_count / n * 100, 1) if n > 0 else 0.0,
+        "profit":       total_return - total_bet,
+        "by_venue":     by_venue,
+        "by_month":     by_month,
+        "streak_win":   streak_win,
+        "streak_lose":  streak_lose,
+    }
+
+
+# ════════════════════════════════════════════════════════════
+# ルート
+# ════════════════════════════════════════════════════════════
 
 @app.route("/")
 def home():
@@ -66,14 +181,126 @@ def boats_endpoint():
     race_no    = int(request.args.get("race", 1))
     boats = fetch_race(race_date, venue_name, race_no)
     if boats is None:
-        return jsonify({"error": "データ取得失敗（まだ公開されていないか存在しないレース）"}), 404
+        return jsonify({"error": "データ取得失敗"}), 404
     missing_ex = [b["lane"] for b in boats if b.get("ex_time") is None]
     if missing_ex:
         return jsonify({
-            "error": "自動取得成功。展示タイムのみ手入力してください",
+            "error": "展示タイムのみ手入力してください",
             "boats": boats, "missing_ex_time": missing_ex, "need_ex_time": True,
         }), 202
     return jsonify({"date": race_date, "venue": venue_name, "race_no": race_no, "boats": boats})
+
+
+# ════════════════════════════════════════════════════════════
+# 結果記録
+# POST /record
+# {
+#   "race_date":     "20260418",
+#   "venue_name":    "戸田",
+#   "race_no":       3,
+#   "combo":         "1-2-3",
+#   "bet_amount":    1000,
+#   "hit":           true,
+#   "return_amount": 3590,   ← 的中なら払戻×(bet/100)、外れなら0
+#   "odds":          35.9,
+#   "ev":            1.23,
+#   "memo":          "1号艇強め"
+# }
+# ════════════════════════════════════════════════════════════
+
+@app.route("/record", methods=["POST"])
+def add_record():
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return jsonify({"error": "JSONパース失敗"}), 400
+
+    required = {"race_date", "venue_name", "race_no", "combo", "bet_amount", "hit"}
+    missing  = required - set(data.keys())
+    if missing:
+        return jsonify({"error": f"必須フィールドが不足: {missing}"}), 400
+
+    records = load_records()
+
+    # IDは記録数+1（重複防止にタイムスタンプも使用）
+    new_id = f"{len(records)+1:04d}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    hit           = bool(data["hit"])
+    bet_amount    = int(data.get("bet_amount", 0))
+    return_amount = int(data.get("return_amount", 0)) if hit else 0
+
+    record = {
+        "id":            new_id,
+        "race_date":     str(data["race_date"]),
+        "venue_name":    str(data["venue_name"]),
+        "race_no":       int(data["race_no"]),
+        "combo":         str(data["combo"]),
+        "bet_amount":    bet_amount,
+        "hit":           hit,
+        "return_amount": return_amount,
+        "profit":        return_amount - bet_amount,
+        "odds":          float(data.get("odds", 0)),
+        "ev":            float(data.get("ev", 0)),
+        "memo":          str(data.get("memo", "")),
+        "recorded_at":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    records.append(record)
+    save_records(records)
+
+    return jsonify({"status": "ok", "record": record, "total": len(records)})
+
+
+# ════════════════════════════════════════════════════════════
+# 記録一覧
+# GET /history?limit=50&venue=戸田&date=20260418
+# ════════════════════════════════════════════════════════════
+
+@app.route("/history")
+def history():
+    records = load_records()
+
+    # フィルタ
+    venue = request.args.get("venue", "")
+    dt    = request.args.get("date",  "")
+    limit = int(request.args.get("limit", 100))
+
+    if venue:
+        records = [r for r in records if r.get("venue_name") == venue]
+    if dt:
+        records = [r for r in records if r.get("race_date", "").startswith(dt)]
+
+    # 新しい順
+    records = sorted(records, key=lambda x: x.get("recorded_at",""), reverse=True)[:limit]
+
+    return jsonify({"records": records, "count": len(records)})
+
+
+# ════════════════════════════════════════════════════════════
+# 統計
+# GET /stats
+# ════════════════════════════════════════════════════════════
+
+@app.route("/stats")
+def stats():
+    records = load_records()
+    return jsonify(calc_stats(records))
+
+
+# ════════════════════════════════════════════════════════════
+# 記録削除
+# DELETE /record/<id>
+# ════════════════════════════════════════════════════════════
+
+@app.route("/record/<record_id>", methods=["DELETE"])
+def delete_record(record_id: str):
+    records = load_records()
+    before  = len(records)
+    records = [r for r in records if r.get("id") != record_id]
+    if len(records) == before:
+        return jsonify({"error": "該当IDが見つかりません"}), 404
+    save_records(records)
+    return jsonify({"status": "ok", "deleted": record_id, "remaining": len(records)})
 
 
 # ════════════════════════════════════════════════════════════
@@ -137,12 +364,11 @@ def predict():
     venue_code = data.get("venue_code", "")
     race_no    = int(data.get("race_no", 1))
     race_date  = data.get("race_date", date.today().strftime("%Y%m%d"))
-    # ★フロントから送られてくる実オッズ（空なら暫定推定）
     odds_map   = data.get("odds", {})
 
-    # ── バリデーション ──────────────────────────────────────
     if len(boats) != 6:
         return jsonify({"error": "boats は6艇必須です"}), 400
+
     required_keys = {"lane", "ex_time", "motor", "win_rate", "start"}
     for i, b in enumerate(boats):
         for k in required_keys - set(b.keys()):
@@ -157,7 +383,6 @@ def predict():
     vc           = resolve_venue_code(venue_name, venue_code)
     course_bonus = get_course_bonus(vc)
 
-    # ── オッズソースを判定 ──────────────────────────────────
     real_odds_count = len(odds_map)
     if real_odds_count >= 60:
         odds_source = "実オッズ入力"
@@ -166,7 +391,6 @@ def predict():
     else:
         odds_source = "暫定推定"
 
-    # ── 全120通りのスコア計算 ────────────────────────────────
     raw_patterns = []
     for i in range(1, 7):
         for j in range(1, 7):
@@ -179,7 +403,6 @@ def predict():
                     "lanes": [i, j, k],
                 })
 
-    # ── softmax風に確率化 ────────────────────────────────────
     score_min = min(p["score"] for p in raw_patterns)
     score_adj = [p["score"] - score_min + 1e-6 for p in raw_patterns]
     score_sum = sum(score_adj)
@@ -188,18 +411,14 @@ def predict():
     for p, adj in zip(raw_patterns, score_adj):
         combo = p["combo"]
         lanes = p["lanes"]
-        prob  = adj / score_sum  # 正規化された確率（合計1）
+        prob  = adj / score_sum
 
-        # ★実オッズがあればそれを使う。なければ確率から推定
         if combo in odds_map and float(odds_map[combo]) > 0:
-            real_odds  = float(odds_map[combo])
-            # 実オッズがある場合はバイアス不要。純粋なEV = prob × odds
-            true_ev    = prob * real_odds
+            real_odds = float(odds_map[combo])
+            true_ev   = prob * real_odds
         else:
-            # 暫定推定: 控除率75%として implied odds を使う
-            real_odds  = (1.0 / max(prob, 1e-9)) * 0.75
-            # 暫定の場合は1着艇番バイアス補正を加える
-            true_ev    = prob * real_odds * (1.0 + (1.0 / lanes[0]) * 0.15)
+            real_odds = (1.0 / max(prob, 1e-9)) * 0.75
+            true_ev   = prob * real_odds * (1.0 + (1.0 / lanes[0]) * 0.15)
 
         kelly = kelly_fraction(prob, real_odds)
         bet   = (int(bankroll * kelly * 0.3) // 100) * 100
@@ -221,16 +440,16 @@ def predict():
     all_patterns.sort(key=lambda x: x["ev"], reverse=True)
 
     return jsonify({
-        "status":           "ok",
-        "venue_name":       venue_name,
-        "venue_code":       vc,
-        "race_no":          race_no,
-        "race_date":        race_date,
-        "odds_source":      odds_source,
-        "real_odds_count":  real_odds_count,
-        "buy":              [p for p in all_patterns if p["ev"] >= 1.2][:10],
-        "all":              all_patterns,
-        "bankroll":         bankroll,
+        "status":          "ok",
+        "venue_name":      venue_name,
+        "venue_code":      vc,
+        "race_no":         race_no,
+        "race_date":       race_date,
+        "odds_source":     odds_source,
+        "real_odds_count": real_odds_count,
+        "buy":             [p for p in all_patterns if p["ev"] >= 1.2][:10],
+        "all":             all_patterns,
+        "bankroll":        bankroll,
     })
 
 
