@@ -1,5 +1,10 @@
 """
 app.py  ── 競艇予想API (Flask / Render対応)
+
+新機能:
+  GET  /races?date=YYYYMMDD  … その日の開催レース一覧
+  GET  /boats?date=YYYYMMDD&venue=XX&race=N  … 6艇データ自動取得
+  POST /predict  … 予想（boats自動取得 or 手動入力）
 """
 
 from flask import Flask, request, jsonify
@@ -8,12 +13,10 @@ import os
 from datetime import date
 
 try:
-    from odds_fetch import fetch_odds, _debug_html, _parse_v3
-    import requests
-    from bs4 import BeautifulSoup
-    HAS_ODDS_FETCH = True
+    from boat_api import fetch_race, fetch_available_races, VENUE_NAME_TO_NUM
+    HAS_BOAT_API = True
 except ImportError:
-    HAS_ODDS_FETCH = False
+    HAS_BOAT_API = False
 
 try:
     from config import get_venue_config, VENUE_NAME_MAP
@@ -31,8 +34,12 @@ VENUE_MAP_BUILTIN: dict[str, str] = {
     "児島":"16","宮島":"17","徳山":"18","下関":"19","若松":"20",
     "芦屋":"21","福岡":"22","唐津":"23","大村":"24",
 }
-COURSE_BONUS_DEFAULT = {1: 1.5, 2: 0.8, 3: 0.4, 4: 0.2, 5: -0.2, 6: -0.5}
+COURSE_BONUS_DEFAULT = {1:1.5, 2:0.8, 3:0.4, 4:0.2, 5:-0.2, 6:-0.5}
 
+
+# ════════════════════════════════════════════════════════════
+# ルート
+# ════════════════════════════════════════════════════════════
 
 @app.route("/")
 def home():
@@ -49,98 +56,60 @@ def health():
 
 
 # ════════════════════════════════════════════════════════════
-# ★デバッグエンドポイント
-# 使い方: GET /debug_odds?rno=1&jcd=04&hd=20260418
-# → HTMLの構造解析結果とオッズ取得結果をJSONで返す
+# 開催レース一覧
+# GET /races?date=YYYYMMDD  (省略時は今日)
 # ════════════════════════════════════════════════════════════
 
-@app.route("/debug_odds")
-def debug_odds():
-    if not HAS_ODDS_FETCH:
-        return jsonify({"error": "odds_fetch が読み込めません"}), 500
+@app.route("/races")
+def races():
+    if not HAS_BOAT_API:
+        return jsonify({"error": "boat_api が読み込めません"}), 500
 
-    race_no    = int(request.args.get("rno", 1))
-    venue_code = request.args.get("jcd", "04").zfill(2)
-    race_date  = request.args.get("hd", date.today().strftime("%Y%m%d"))
+    race_date = request.args.get("date", date.today().strftime("%Y%m%d"))
+    result    = fetch_available_races(race_date)
 
-    BASE_URL = "https://www.boatrace.jp/owpc/pc/race/odds3t"
-    HEADERS  = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Referer": "https://www.boatrace.jp/",
-    }
+    if not result:
+        return jsonify({"error": f"{race_date} のレースデータが取得できません（未開催または更新前）"}), 404
 
-    try:
-        res  = requests.get(
-            BASE_URL,
-            params={"rno": race_no, "jcd": venue_code, "hd": race_date},
-            headers=HEADERS, timeout=10
-        )
-        res.raise_for_status()
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify({"date": race_date, "races": result})
 
-    soup   = BeautifulSoup(res.content, "html.parser")
-    tables = soup.find_all("table")
 
-    # テーブル構造の要約
-    table_info = []
-    for ti, table in enumerate(tables):
-        rows = table.select("tbody tr")
-        op   = table.find_all("td", class_="oddsPoint")
-        sample_rows = []
-        for tr in rows[:3]:
-            tds = tr.find_all("td")
-            sample_rows.append([
-                {
-                    "class": " ".join(td.get("class", [])),
-                    "rowspan": td.get("rowspan"),
-                    "text": td.get_text(strip=True)[:15],
-                }
-                for td in tds
-            ])
-        table_info.append({
-            "index":       ti,
-            "row_count":   len(rows),
-            "oddsPoint_count": len(op),
-            "sample_rows": sample_rows,
-        })
+# ════════════════════════════════════════════════════════════
+# 6艇データ自動取得
+# GET /boats?date=YYYYMMDD&venue=江戸川&race=1
+# ════════════════════════════════════════════════════════════
 
-    # oddsPoint 先頭30件
-    odds_raw = [
-        td.get_text(strip=True)
-        for td in soup.select("td.oddsPoint")[:30]
-    ]
+@app.route("/boats")
+def boats_endpoint():
+    if not HAS_BOAT_API:
+        return jsonify({"error": "boat_api が読み込めません"}), 500
 
-    # 実際の取得結果
-    odds_result = _parse_v3(soup)
-    sample_odds = dict(list(odds_result.items())[:20])
+    race_date  = request.args.get("date",  date.today().strftime("%Y%m%d"))
+    venue_name = request.args.get("venue", "")
+    race_no    = int(request.args.get("race", 1))
+
+    boats = fetch_race(race_date, venue_name, race_no)
+    if boats is None:
+        return jsonify({"error": "データ取得失敗（まだ公開されていないか、存在しないレース）"}), 404
 
     return jsonify({
-        "url":          res.url,
-        "status_code":  res.status_code,
-        "table_count":  len(tables),
-        "table_info":   table_info,
-        "odds_raw_top30": odds_raw,
-        "odds_count":   len(odds_result),
-        "odds_sample":  sample_odds,
+        "date":       race_date,
+        "venue":      venue_name,
+        "race_no":    race_no,
+        "boats":      boats,
+        "note":       "ex_time（展示タイム）は出走表にはないため手動入力が必要です",
     })
 
 
 # ════════════════════════════════════════════════════════════
-# ヘルパー関数
+# ヘルパー
 # ════════════════════════════════════════════════════════════
 
 def get_course_bonus(venue_code: str) -> dict[int, float]:
     if HAS_CONFIG:
         cfg = get_venue_config(venue_code)
-        return {
-            c: cfg.get(f"{c}コース補正", COURSE_BONUS_DEFAULT.get(c, 1.0))
-            for c in range(1, 7)
-        }
+        return {c: cfg.get(f"{c}コース補正", COURSE_BONUS_DEFAULT.get(c, 1.0))
+                for c in range(1, 7)}
     return COURSE_BONUS_DEFAULT
 
 
@@ -169,7 +138,7 @@ def calc_combo_score(boats, lane1, lane2, lane3, course_bonus):
     return score
 
 
-def resolve_venue_code(venue_name, venue_code):
+def resolve_venue_code(venue_name: str, venue_code: str) -> str:
     if venue_code and str(venue_code).isdigit():
         return str(venue_code).zfill(2)
     if HAS_CONFIG and venue_name in VENUE_NAME_MAP:
@@ -195,8 +164,26 @@ def predict():
     race_no    = int(data.get("race_no", 1))
     race_date  = data.get("race_date", date.today().strftime("%Y%m%d"))
 
+    # ── boats が空なら BoatraceOpenAPI から自動取得 ──────────
+    auto_fetched = False
+    if not boats and HAS_BOAT_API and venue_name and race_no:
+        fetched = fetch_race(race_date, venue_name, race_no)
+        if fetched:
+            # ex_time が None の艇があるか確認
+            missing_ex = [b["lane"] for b in fetched if b.get("ex_time") is None]
+            if missing_ex:
+                return jsonify({
+                    "error":         "自動取得成功。展示タイムを入力してください",
+                    "boats":         fetched,
+                    "missing_ex_time": missing_ex,
+                    "need_ex_time":  True,
+                }), 202
+            boats        = fetched
+            auto_fetched = True
+
+    # ── バリデーション ──────────────────────────────────────
     if len(boats) != 6:
-        return jsonify({"error": "boats は6艇必須です"}), 400
+        return jsonify({"error": "boats は6艇必須です（自動取得できない場合は手動入力）"}), 400
 
     required_keys = {"lane", "ex_time", "motor", "win_rate", "start"}
     for i, b in enumerate(boats):
@@ -205,29 +192,21 @@ def predict():
             return jsonify({"error": f"boats[{i}] にキーが不足: {missing}"}), 400
         for k in required_keys:
             try:
+                if b[k] is None:
+                    raise ValueError
                 float(b[k])
             except (TypeError, ValueError):
                 return jsonify({"error": f"boats[{i}][{k}] が数値ではありません"}), 400
 
+    # ── 場別コース補正 ──────────────────────────────────────
     vc           = resolve_venue_code(venue_name, venue_code)
     course_bonus = get_course_bonus(vc)
 
-    odds_map: dict  = {}
-    odds_source     = "暫定推定"
+    # ── オッズ（フロント送信値 or 暫定推定）───────────────────
+    odds_map    = data.get("odds", {})
+    odds_source = "フロント送信値" if odds_map else "暫定推定"
 
-    if HAS_ODDS_FETCH and venue_name and race_no and race_date:
-        try:
-            odds_map = fetch_odds(race_no, vc, race_date) or {}
-            if odds_map:
-                odds_source = "公式サイト取得"
-        except Exception as e:
-            print(f"[app] fetch_odds 失敗: {e}")
-
-    if not odds_map:
-        odds_map = data.get("odds", {})
-        if odds_map:
-            odds_source = "フロント送信値"
-
+    # ── 全120通りのスコア計算 ────────────────────────────────
     raw_patterns = []
     for i in range(1, 7):
         for j in range(1, 7):
@@ -254,20 +233,13 @@ def predict():
         if real_odds <= 0:
             real_odds = (1.0 / max(prob, 1e-9)) * 0.75
 
-        if odds_source == "公式サイト取得":
-            true_ev = prob * real_odds
-        else:
-            true_ev = prob * real_odds * (1.0 + (1.0 / lanes[0]) * 0.15)
+        true_ev = prob * real_odds * (1.0 + (1.0 / lanes[0]) * 0.15)
+        kelly   = kelly_fraction(prob, real_odds)
+        bet     = (int(bankroll * kelly * 0.3) // 100) * 100
 
-        kelly = kelly_fraction(prob, real_odds)
-        bet   = (int(bankroll * kelly * 0.3) // 100) * 100
-
-        if true_ev >= 2.0:
-            verdict = "✅ 強く買い"
-        elif true_ev >= 1.2:
-            verdict = "⚠️ 買い"
-        else:
-            verdict = "🚫 見送り"
+        if true_ev >= 2.0:   verdict = "✅ 強く買い"
+        elif true_ev >= 1.2: verdict = "⚠️ 買い"
+        else:                verdict = "🚫 見送り"
 
         all_patterns.append({
             "combo":   combo,
@@ -281,15 +253,16 @@ def predict():
     all_patterns.sort(key=lambda x: x["ev"], reverse=True)
 
     return jsonify({
-        "status":      "ok",
-        "venue_name":  venue_name,
-        "venue_code":  vc,
-        "race_no":     race_no,
-        "race_date":   race_date,
-        "odds_source": odds_source,
-        "buy":         [p for p in all_patterns if p["ev"] >= 1.2][:10],
-        "all":         all_patterns,
-        "bankroll":    bankroll,
+        "status":       "ok",
+        "venue_name":   venue_name,
+        "venue_code":   vc,
+        "race_no":      race_no,
+        "race_date":    race_date,
+        "auto_fetched": auto_fetched,
+        "odds_source":  odds_source,
+        "buy":          [p for p in all_patterns if p["ev"] >= 1.2][:10],
+        "all":          all_patterns,
+        "bankroll":     bankroll,
     })
 
 
