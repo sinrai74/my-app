@@ -117,39 +117,66 @@ VENUE_MAP: dict[str, str] = {
 # Turso / SQLite 共通DB操作
 # ════════════════════════════════════════════════════════════
 
-def _turso_type(val):
-    if val is None:            return "null"
-    if isinstance(val, bool):  return "integer"
-    if isinstance(val, int):   return "integer"
-    if isinstance(val, float): return "float"
-    return "text"
+def _turso_arg(val):
+    """Turso HTTP API 用にパラメータを {"type":..., "value":...} 形式に変換"""
+    if val is None:
+        return {"type": "null", "value": None}
+    if isinstance(val, bool):
+        # bool は int より先にチェック（Python の bool は int のサブクラス）
+        return {"type": "integer", "value": str(int(val))}
+    if isinstance(val, int):
+        return {"type": "integer", "value": str(val)}
+    if isinstance(val, float):
+        # NaN / Inf は Turso が受け付けないので 0 に変換
+        import math
+        if math.isnan(val) or math.isinf(val):
+            return {"type": "float", "value": "0"}
+        return {"type": "float", "value": str(val)}
+    # その他はすべて text
+    return {"type": "text", "value": str(val)}
 
 def _turso_exec(sql, params=[]):
     payload = {"requests": [
-        {"type":"execute","stmt":{"sql":sql,
-         "args":[{"type":_turso_type(p),"value":str(p) if p is not None else None} for p in params]}},
-        {"type":"close"}
+        {"type": "execute", "stmt": {
+            "sql":  sql,
+            "args": [_turso_arg(p) for p in params],
+        }},
+        {"type": "close"},
     ]}
-    r = http_requests.post(TURSO_API,
-        headers={"Authorization":f"Bearer {TURSO_TOKEN}","Content-Type":"application/json"},
-        json=payload, timeout=10)
+    r = http_requests.post(
+        TURSO_API,
+        headers={"Authorization": f"Bearer {TURSO_TOKEN}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=10,
+    )
     r.raise_for_status()
     return r.json()["results"][0]
 
 def _turso_rows(result):
     try:
-        cols = [c["name"] for c in result["response"]["result"]["cols"]]
-        rows = result["response"]["result"]["rows"]
-        out  = []
+        res_body = result["response"]["result"]
+        cols     = [c["name"] for c in res_body["cols"]]
+        rows     = res_body["rows"]
+        out      = []
         for row in rows:
             d = {}
             for col, cell in zip(cols, row):
-                v = cell.get("value"); t = cell.get("type","text")
-                d[col] = int(v) if t=="integer" and v is not None else \
-                         float(v) if t=="float" and v is not None else v
+                t = cell.get("type", "text")
+                v = cell.get("value")
+                if t == "null" or v is None:
+                    d[col] = None
+                elif t == "integer":
+                    try:    d[col] = int(v)
+                    except: d[col] = v
+                elif t == "float":
+                    try:    d[col] = float(v)
+                    except: d[col] = v
+                else:
+                    d[col] = v
             out.append(d)
         return out
-    except Exception:
+    except Exception as e:
+        print(f"[Turso] _turso_rows エラー: {e}")
         return []
 
 def _turso_affected(result):
@@ -487,9 +514,14 @@ def add_record():
         return jsonify({"error": f"必須フィールドが不足: {list(missing)}"}), 400
 
     try:
-        hit         = bool(data["hit"])
-        ba          = int(data.get("bet_amount", 0))
-        ra          = int(data.get("return_amount", 0)) if hit else 0
+        hit         = 1 if data["hit"] else 0   # bool→int に明示変換
+        ba          = int(data.get("bet_amount", 0) or 0)
+        ra          = int(data.get("return_amount", 0) or 0) if hit else 0
+        odds_val    = float(data.get("odds", 0) or 0)
+        ev_val      = float(data.get("ev",   0) or 0)
+        import math
+        if math.isnan(odds_val) or math.isinf(odds_val): odds_val = 0.0
+        if math.isnan(ev_val)   or math.isinf(ev_val):   ev_val   = 0.0
         recorded_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         new_id      = datetime.now().strftime("%Y%m%d%H%M%S%f")
 
@@ -498,8 +530,8 @@ def add_record():
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (new_id, str(data["race_date"]), str(data["venue_name"]),
              int(data["race_no"]), str(data["combo"]),
-             ba, 1 if hit else 0, ra, ra - ba,
-             float(data.get("odds", 0)), float(data.get("ev", 0)),
+             ba, hit, ra, ra - ba,
+             odds_val, ev_val,
              str(data.get("memo", "")), recorded_at))
 
         total = db_execute("SELECT COUNT(*) AS cnt FROM records", fetch="one")
