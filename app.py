@@ -60,12 +60,20 @@ def load_model():
         print(f"[MODEL] {MODEL_PATH} が見つかりません")
         return False
     try:
-        with open(MODEL_PATH, "rb") as f:
-            _model_data = pickle.load(f)
+        import gzip
+        sz = MODEL_PATH.stat().st_size
+        # gzip圧縮版・非圧縮版どちらにも対応
+        try:
+            with gzip.open(MODEL_PATH, "rb") as f:
+                _model_data = pickle.load(f)
+            print(f"[MODEL] {MODEL_PATH} 読み込み完了 gzip圧縮版 ({sz//1024}KB)")
+        except Exception:
+            with open(MODEL_PATH, "rb") as f:
+                _model_data = pickle.load(f)
+            print(f"[MODEL] {MODEL_PATH} 読み込み完了 非圧縮版 ({sz//1024}KB)")
         _models       = _model_data["models"]
         _dynamic_ev   = _model_data.get("dynamic_ev_map", {})
         _feature_cols = _model_data.get("feature_cols", [])
-        print(f"[MODEL] {MODEL_PATH} 読み込み完了 ({MODEL_PATH.stat().st_size//1024}KB)")
         return True
     except Exception as e:
         print(f"[MODEL] 読み込みエラー: {e}")
