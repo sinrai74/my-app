@@ -474,23 +474,40 @@ def predict_ml():
 
 @app.route("/record", methods=["POST"])
 def add_record():
-    try: data = request.get_json(force=True)
-    except Exception: return jsonify({"error":"JSONパース失敗"}), 400
-    required = {"race_date","venue_name","race_no","combo","bet_amount","hit"}
+    try:
+        data = request.get_json(force=True)
+        if data is None:
+            return jsonify({"error": "リクエストボディがありません"}), 400
+    except Exception as e:
+        return jsonify({"error": f"JSONパース失敗: {e}"}), 400
+
+    required = {"race_date", "venue_name", "race_no", "combo", "bet_amount", "hit"}
     missing  = required - set(data.keys())
-    if missing: return jsonify({"error":f"必須フィールドが不足: {missing}"}), 400
-    hit=bool(data["hit"]); ba=int(data.get("bet_amount",0))
-    ra=int(data.get("return_amount",0)) if hit else 0
-    recorded_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    new_id=datetime.now().strftime("%Y%m%d%H%M%S%f")
-    db_execute("""INSERT INTO records
-        (id,race_date,venue_name,race_no,combo,bet_amount,hit,return_amount,profit,odds,ev,memo,recorded_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (new_id,str(data["race_date"]),str(data["venue_name"]),int(data["race_no"]),str(data["combo"]),
-         ba,1 if hit else 0,ra,ra-ba,float(data.get("odds",0)),float(data.get("ev",0)),
-         str(data.get("memo","")),recorded_at))
-    total=db_execute("SELECT COUNT(*) AS cnt FROM records",fetch="one")
-    return jsonify({"status":"ok","total":total["cnt"] if total else 0})
+    if missing:
+        return jsonify({"error": f"必須フィールドが不足: {list(missing)}"}), 400
+
+    try:
+        hit         = bool(data["hit"])
+        ba          = int(data.get("bet_amount", 0))
+        ra          = int(data.get("return_amount", 0)) if hit else 0
+        recorded_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_id      = datetime.now().strftime("%Y%m%d%H%M%S%f")
+
+        db_execute("""INSERT INTO records
+            (id,race_date,venue_name,race_no,combo,bet_amount,hit,return_amount,profit,odds,ev,memo,recorded_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (new_id, str(data["race_date"]), str(data["venue_name"]),
+             int(data["race_no"]), str(data["combo"]),
+             ba, 1 if hit else 0, ra, ra - ba,
+             float(data.get("odds", 0)), float(data.get("ev", 0)),
+             str(data.get("memo", "")), recorded_at))
+
+        total = db_execute("SELECT COUNT(*) AS cnt FROM records", fetch="one")
+        return jsonify({"status": "ok", "total": total["cnt"] if total else 0})
+
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/history")
 def history():

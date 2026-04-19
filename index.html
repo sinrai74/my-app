@@ -475,9 +475,11 @@ function renderResult(data){
         <div class="pick-notes">${p.notes||""}</div>
         <div style="margin-top:6px;display:flex;gap:6px">
           <button class="btn btn-green" style="padding:4px 10px;font-size:0.8rem;margin:0;width:auto"
-            onclick="quickRecord('${p.axis_lane}',${p.axis_ev||0},${bet?bet.bet:100},true)">✅ 的中</button>
+            data-lane="${p.axis_lane||0}" data-ev="${p.axis_ev||0}" data-bet="${bet?bet.bet:100}"
+            onclick="quickRecordBtn(this,true)">✅ 的中</button>
           <button class="btn btn-red" style="padding:4px 10px;font-size:0.8rem;margin:0;width:auto"
-            onclick="quickRecord('${p.axis_lane}',${p.axis_ev||0},${bet?bet.bet:100},false)">❌ 外れ</button>
+            data-lane="${p.axis_lane||0}" data-ev="${p.axis_ev||0}" data-bet="${bet?bet.bet:100}"
+            onclick="quickRecordBtn(this,false)">❌ 外れ</button>
         </div>
       </div>`;
     });
@@ -487,17 +489,51 @@ function renderResult(data){
 }
 
 // 買い目から直接記録
-async function quickRecord(lane,ev,bet,hit){
-  const meta=lastMeta;
-  if(!meta.raceDate){alert("先に予想を実行してください");return;}
-  const ra=hit?parseInt(prompt(`払戻額（円）\n艇番:${lane}`,Math.round(bet*10))||0):0;
-  const body={race_date:meta.raceDate,venue_name:meta.venue,race_no:meta.raceNo,
-    combo:String(lane),bet_amount:bet||100,hit,return_amount:ra,ev};
+// data-属性からパラメータを取得してrecordを呼ぶ（onclick内の変数埋め込みを避ける）
+function quickRecordBtn(btn, hit){
+  const lane = btn.getAttribute("data-lane");
+  const ev   = parseFloat(btn.getAttribute("data-ev")) || 0;
+  const bet  = parseInt(btn.getAttribute("data-bet"))  || 100;
+  quickRecord(lane, ev, bet, hit);
+}
+
+async function quickRecord(lane, ev, bet, hit){
+  const meta = lastMeta;
+  if(!meta.raceDate){ alert("先に予想を実行してください"); return; }
+  const defaultReturn = hit ? Math.round(bet * 10) : 0;
+  const ra = hit
+    ? (parseInt(prompt(`払戻額（円）を入力\n艇番: ${lane}`, defaultReturn)) || 0)
+    : 0;
+  const body = {
+    race_date:     String(meta.raceDate),
+    venue_name:    String(meta.venue || ""),
+    race_no:       parseInt(meta.raceNo) || 1,
+    combo:         String(lane),
+    bet_amount:    parseInt(bet) || 100,
+    hit:           Boolean(hit),
+    return_amount: parseInt(ra) || 0,
+    ev:            parseFloat(ev) || 0,
+  };
   try{
-    const res=await fetch("/record",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-    const data=await res.json();
-    alert(data.status==="ok"?`${hit?"✅":"❌"}記録しました（累計${data.total}件）`:`失敗: ${data.error}`);
-  }catch(e){alert("通信エラー: "+e);}
+    const res  = await fetch("/record", {
+      method:  "POST",
+      headers: {"Content-Type": "application/json"},
+      body:    JSON.stringify(body),
+    });
+    if(!res.ok){
+      const text = await res.text();
+      alert("サーバーエラー: " + res.status + "\n" + text.slice(0,200));
+      return;
+    }
+    const data = await res.json();
+    if(data.status === "ok"){
+      alert(`${hit ? "✅" : "❌"} 記録しました（累計 ${data.total} 件）`);
+    } else {
+      alert("記録失敗: " + (data.error || "不明"));
+    }
+  } catch(e) {
+    alert("通信エラー: " + e);
+  }
 }
 
 // 手動記録
