@@ -479,23 +479,67 @@ function renderResult(data){
     data.picks.forEach(p=>{
       const cls=p.verdict.includes("✅")?"pick-buy":p.verdict.includes("⚠️")?"pick-warn":"pick-skip";
       const bet=data.bets.find(b=>b.lane===p.axis_lane);
-      const combosHtml=p.combos.map(c=>`<span class="combo-chip">${c}</span>`).join("");
+
+      // フォーメーション表示: 1-2=3,4,5
+      const fmHtml = p.formation
+        ? `<div style="font-size:1.05rem;font-weight:700;letter-spacing:1px;margin:6px 0;color:#1a3a6e">
+            📋 ${p.formation}
+            <span style="font-size:0.78rem;color:#888;font-weight:400;margin-left:6px">${p.ticket_count}点</span>
+           </div>`
+        : "";
+
+      // 艇番バッジ表示
+      const laneBadge = (lane) =>
+        `<span class="boat-num ${LANE_CLS[(lane||1)-1]}" style="width:20px;height:20px;line-height:20px;font-size:0.75rem">${lane||"−"}</span>`;
+
+      // 流し艇
+      const flowHtml = (p.flow_lanes||[]).map(l=>laneBadge(l)).join(" ");
+
+      // 全組番チップ
+      const combosHtml = p.combos.map(c=>`<span class="combo-chip">${c}</span>`).join("");
+
+      // ベット表示
+      const betHtml = bet
+        ? `<div class="pick-bet">
+            💴 総額 ¥${bet.total.toLocaleString()}
+            <span style="font-size:0.78rem;color:#555;font-weight:400">
+              （1点 ¥${bet.per_ticket.toLocaleString()} × ${bet.tickets}点）
+            </span>
+           </div>`
+        : "";
+
       html+=`<div class="pick-card ${cls}">
         <div class="pick-title">${p.verdict}</div>
-        <div class="pick-axis">
-          <span class="boat-num ${LANE_CLS[(p.axis_lane||1)-1]}" style="width:20px;height:20px;line-height:20px;font-size:0.75rem">${p.axis_lane||"−"}</span>
-          <b>${p.axis_name||""}</b>
+
+        <!-- フォーメーション -->
+        ${fmHtml}
+
+        <!-- 艇番説明 -->
+        <div style="font-size:0.82rem;color:#555;margin-bottom:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span>1着: ${laneBadge(p.axis_lane)} <b>${p.axis_name||""}</b></span>
+          <span style="color:#ccc">|</span>
+          <span>2着: ${laneBadge(p.place_lane)}</span>
+          <span style="color:#ccc">|</span>
+          <span>3着流し: ${flowHtml}</span>
         </div>
-        <div class="pick-ev">確率: ${(p.axis_prob*100||0).toFixed(1)}% / EV: ${(p.axis_ev||0).toFixed(2)} / バリュー: ${(p.value_score||0).toFixed(2)}</div>
-        ${bet?`<div class="pick-bet">💴 推奨ベット: ¥${bet.bet.toLocaleString()}</div>`:""}
-        <div class="pick-combos">${combosHtml||"−"}</div>
+
+        <div class="pick-ev">
+          確率: ${((p.axis_prob||0)*100).toFixed(1)}%
+          / EV: ${(p.axis_ev||0).toFixed(2)}
+          / バリュー: ${(p.value_score||0).toFixed(2)}
+        </div>
+        ${betHtml}
+
+        <!-- 全組番 -->
+        <div class="pick-combos" style="margin-top:6px">${combosHtml||"−"}</div>
         <div class="pick-notes">${p.notes||""}</div>
-        <div style="margin-top:6px;display:flex;gap:6px">
+
+        <div style="margin-top:8px;display:flex;gap:6px">
           <button class="btn btn-green" style="padding:4px 10px;font-size:0.8rem;margin:0;width:auto"
-            data-lane="${p.axis_lane||0}" data-ev="${p.axis_ev||0}" data-bet="${bet?bet.bet:100}"
+            data-lane="${p.axis_lane||0}" data-ev="${p.axis_ev||0}" data-bet="${bet?bet.total:100}"
             onclick="quickRecordBtn(this,true)">✅ 的中</button>
           <button class="btn btn-red" style="padding:4px 10px;font-size:0.8rem;margin:0;width:auto"
-            data-lane="${p.axis_lane||0}" data-ev="${p.axis_ev||0}" data-bet="${bet?bet.bet:100}"
+            data-lane="${p.axis_lane||0}" data-ev="${p.axis_ev||0}" data-bet="${bet?bet.total:100}"
             onclick="quickRecordBtn(this,false)">❌ 外れ</button>
         </div>
       </div>`;
@@ -600,26 +644,27 @@ function applyOdds(){
   // 買い目カードを再描画（オッズ反映版）
   let picksHtml = `<div class="card"><h3>🎯 買い目（実オッズ反映済み）</h3><div class="picks-grid">`;
   data.picks.forEach(p => {
-    // このピックのcomboのうち、オッズ入力済みのものを使ってEVを再計算
+    // オッズ入力済みcomboから最良EVを計算
     let bestEv = p.axis_ev || 0;
     let bestCombo = "";
     let bestOdds = 0;
     (p.combos||[]).forEach(c => {
       if(oddsMap[c]){
-        // 3連単EV = 軸艇の1着確率 × 実オッズ（簡易計算）
         const ev = (p.axis_prob||0) * oddsMap[c];
         if(ev > bestEv){ bestEv = round3(ev); bestCombo = c; bestOdds = oddsMap[c]; }
       }
     });
 
-    // Kelly推奨額を再計算
-    let betAmt = 0;
+    // Kelly推奨総額を再計算（1点あたりに分割）
+    let totalBet = 0;
+    const ticketCnt = p.ticket_count || 1;
     if(bestOdds > 0 && (p.axis_prob||0) > 0){
       const b = bestOdds - 1;
       const kFull = b > 0 ? (b*(p.axis_prob) - (1-(p.axis_prob))) / b : 0;
-      const kAdj  = Math.max(0, kFull) * 0.5;  // Kelly_kf=0.5
-      betAmt = Math.floor(Math.min(bankroll * kAdj, bankroll * 0.1) / 100) * 100;
+      const kAdj  = Math.max(0, kFull) * 0.5;
+      totalBet = Math.floor(Math.min(bankroll * kAdj, bankroll * 0.1) / 100) * 100;
     }
+    const perTicket = Math.max(Math.floor(totalBet / ticketCnt / 100) * 100, 100);
 
     const isRealOdds = bestCombo !== "";
     const evColor = bestEv >= dynEV ? "#0a8c2a" : "#888";
@@ -628,32 +673,52 @@ function applyOdds(){
     const cls = verdict.includes("✅") ? "pick-buy" :
                 verdict.includes("⚠️") ? "pick-warn" : "pick-skip";
 
+    const laneBadge = (lane) =>
+      `<span class="boat-num ${LANE_CLS[(lane||1)-1]}" style="width:20px;height:20px;line-height:20px;font-size:0.75rem">${lane||"−"}</span>`;
+
+    const flowHtml = (p.flow_lanes||[]).map(l=>laneBadge(l)).join(" ");
+
     const combosHtml = (p.combos||[]).map(c => {
       const hasOdds = oddsMap[c];
       return `<span class="combo-chip" style="${hasOdds?'background:#7b2d8b':''}"
         title="${hasOdds?'オッズ:'+oddsMap[c]:''}">${c}${hasOdds?' ('+oddsMap[c]+')':''}</span>`;
     }).join("");
 
+    const fmHtml = p.formation
+      ? `<div style="font-size:1.05rem;font-weight:700;letter-spacing:1px;margin:6px 0;color:#1a3a6e">
+          📋 ${p.formation}
+          <span style="font-size:0.78rem;color:#888;font-weight:400;margin-left:6px">${ticketCnt}点</span>
+         </div>` : "";
+
+    const betHtml = totalBet > 0
+      ? `<div class="pick-bet">💴 総額 ¥${totalBet.toLocaleString()}
+           <span style="font-size:0.78rem;color:#555;font-weight:400">（1点 ¥${perTicket.toLocaleString()} × ${ticketCnt}点）</span>
+         </div>` : "";
+
     picksHtml += `<div class="pick-card ${cls}">
-      <div class="pick-title">${verdict}${isRealOdds?` <span style="font-size:0.75rem;background:#d4edda;color:#155724;padding:1px 6px;border-radius:10px">実オッズ</span>`:""}</div>
-      <div class="pick-axis">
-        <span class="boat-num ${LANE_CLS[(p.axis_lane||1)-1]}" style="width:20px;height:20px;line-height:20px;font-size:0.75rem">${p.axis_lane||"−"}</span>
-        <b>${p.axis_name||""}</b>
+      <div class="pick-title">${verdict}${isRealOdds?' <span style="font-size:0.75rem;background:#d4edda;color:#155724;padding:1px 6px;border-radius:10px">実オッズ</span>':""}</div>
+      ${fmHtml}
+      <div style="font-size:0.82rem;color:#555;margin-bottom:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <span>1着: ${laneBadge(p.axis_lane)} <b>${p.axis_name||""}</b></span>
+        <span style="color:#ccc">|</span>
+        <span>2着: ${laneBadge(p.place_lane)}</span>
+        <span style="color:#ccc">|</span>
+        <span>3着流し: ${flowHtml}</span>
       </div>
       <div class="pick-ev" style="color:${evColor};font-weight:${bestEv>=dynEV?'700':'400'}">
         確率: ${((p.axis_prob||0)*100).toFixed(1)}%
         / EV: ${bestEv.toFixed(2)}${isRealOdds?' ✓':'（推定）'}
         ${bestOdds>0?`/ オッズ: ${bestOdds}`:''}
       </div>
-      ${betAmt>0?`<div class="pick-bet">💴 推奨ベット: ¥${betAmt.toLocaleString()}</div>`:""}
-      <div class="pick-combos">${combosHtml||"−"}</div>
+      ${betHtml}
+      <div class="pick-combos" style="margin-top:6px">${combosHtml||"−"}</div>
       <div class="pick-notes">${p.notes||""}</div>
-      <div style="margin-top:6px;display:flex;gap:6px">
+      <div style="margin-top:8px;display:flex;gap:6px">
         <button class="btn btn-green" style="padding:4px 10px;font-size:0.8rem;margin:0;width:auto"
-          data-lane="${p.axis_lane||0}" data-ev="${bestEv}" data-bet="${betAmt||100}"
+          data-lane="${p.axis_lane||0}" data-ev="${bestEv}" data-bet="${totalBet||100}"
           onclick="quickRecordBtn(this,true)">✅ 的中</button>
         <button class="btn btn-red" style="padding:4px 10px;font-size:0.8rem;margin:0;width:auto"
-          data-lane="${p.axis_lane||0}" data-ev="${bestEv}" data-bet="${betAmt||100}"
+          data-lane="${p.axis_lane||0}" data-ev="${bestEv}" data-bet="${totalBet||100}"
           onclick="quickRecordBtn(this,false)">❌ 外れ</button>
       </div>
     </div>`;

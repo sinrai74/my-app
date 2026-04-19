@@ -436,38 +436,85 @@ def predict_ml():
                 "night_flag":      bool(row.get("ナイターフラグ", 0)),
             })
 
-        # 買い目
+        # ── アンサンブルスコア順でランキング ──────────────────────
+        pred_sorted_rank = pred_df.sort_values("アンサンブルスコア_IN順位").reset_index(drop=True)
+        ranked_lanes = pred_sorted_rank["艇番"].tolist()  # [1位艇番, 2位艇番, ...]
+
+        def build_formation_combos(win_lane, place_lane, flow_lanes):
+            """
+            1着固定(win_lane) - 2着固定(place_lane) - 3着流し(flow_lanes) の
+            2・3着入れ替えあり全通りを生成。
+
+            例: win=1, place=2, flow=[3,4,5]
+            → 1-2-3, 1-3-2, 1-2-4, 1-4-2, 1-2-5, 1-5-2  (6通り)
+            """
+            combos = []
+            for f in flow_lanes:
+                if f == place_lane: continue
+                combos.append(f"{win_lane}-{place_lane}-{f}")   # 2着=place, 3着=flow
+                combos.append(f"{win_lane}-{f}-{place_lane}")   # 2着=flow,  3着=place
+            return combos
+
+        # 買い目生成（新方式）
         picks_out = []
         for p in picks_list:
             if p.get("場コード") == venue_code and p.get("レースNo") == race_no:
-                combos = [p.get(f"3連単{n}","") for n in ["①","②","③","④","⑤","⑥"] if p.get(f"3連単{n}","")]
+                axis_lane = p.get("軸艇番")
+
+                # 1着: 軸艇（最高EV）
+                # 2着: アンサンブルスコア2位（軸と異なる最上位）
+                # 3着流し: 3〜4位（3〜4艇）
+                other_lanes = [l for l in ranked_lanes if l != axis_lane]
+                place_lane  = other_lanes[0] if len(other_lanes) >= 1 else None
+                flow_lanes  = other_lanes[1:4]  # 3〜4艇（最大4艇 → 最大8通り）
+
+                if place_lane and flow_lanes:
+                    combos = build_formation_combos(axis_lane, place_lane, flow_lanes)
+                    # 表示用フォーメーション文字列: 例 "1-2=3,4,5"
+                    formation = f"{axis_lane}-{place_lane}={','.join(str(f) for f in flow_lanes)}"
+                else:
+                    # フォールバック（艇数不足時は従来の3連単）
+                    combos = [p.get(f"3連単{n}","") for n in ["①","②","③","④","⑤","⑥"] if p.get(f"3連単{n}","")]
+                    formation = ""
+
                 picks_out.append({
-                    "verdict":    p.get("判定",""),
-                    "axis_lane":  p.get("軸艇番",""),
-                    "axis_name":  p.get("軸選手",""),
-                    "axis_prob":  p.get("軸確率", 0),
-                    "axis_ev":    p.get("軸真期待値", 0),
-                    "value_score":p.get("バリュースコア", 0),
+                    "verdict":        p.get("判定",""),
+                    "axis_lane":      axis_lane,
+                    "place_lane":     place_lane,
+                    "flow_lanes":     flow_lanes,
+                    "formation":      formation,
+                    "axis_name":      p.get("軸選手",""),
+                    "axis_prob":      p.get("軸確率", 0),
+                    "axis_ev":        p.get("軸真期待値", 0),
+                    "value_score":    p.get("バリュースコア", 0),
                     "dynamic_ev_min": p.get("動的EV_MIN", 0),
-                    "combos":     combos,
-                    "notes":      p.get("注意フラグ",""),
-                    "is_night":   bool(p.get("ナイター","")),
-                    "in_collapse":bool(p.get("イン崩壊","")),
+                    "combos":         combos,
+                    "ticket_count":   len(combos),
+                    "notes":          p.get("注意フラグ",""),
+                    "is_night":       bool(p.get("ナイター","")),
+                    "in_collapse":    bool(p.get("イン崩壊","")),
                 })
 
-        # Kelly bet
+        # Kelly bet（推奨ベット総額 → 点数で割って1点あたりは表示用のみ）
         bets_out = []
         for pk in picks_out:
             if "✅" in pk["verdict"] and pk["axis_lane"]:
-                ax = pk["axis_lane"]
+                ax     = pk["axis_lane"]
                 ax_row = pred_df[pred_df["艇番"] == ax]
                 if len(ax_row):
                     p_win = float(ax_row.iloc[0].get("予測_1着確率", 0))
                     odds  = float(ax_row.iloc[0].get("推定オッズ", 10))
                     ev    = float(ax_row.iloc[0].get("真期待値", 0))
                     unc   = float(ax_row.iloc[0].get("予測不確実性", 0))
-                    bet   = E.kelly_bet(p_win, odds, bankroll, venue_code, ev, unc)
-                    bets_out.append({"lane": ax, "bet": int(bet)})
+                    total_bet   = E.kelly_bet(p_win, odds, bankroll, venue_code, ev, unc)
+                    ticket_cnt  = pk["ticket_count"] or 1
+                    per_ticket  = (int(total_bet) // (ticket_cnt * 100)) * 100
+                    bets_out.append({
+                        "lane":       ax,
+                        "total":      int(total_bet),
+                        "per_ticket": max(per_ticket, 100),  # 最低100円
+                        "tickets":    ticket_cnt,
+                    })
 
         ev_min = float(pred_df["動的EV_MIN"].iloc[0]) if "動的EV_MIN" in pred_df.columns else cfg.get("EV_MIN", 1.5)
 
