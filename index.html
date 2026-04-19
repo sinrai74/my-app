@@ -206,6 +206,11 @@ table.odds-tbl input.has-val{border-color:#2e7d32;background:#f0fff0;font-weight
           </select>
         </div>
         <div><label>資金（円）</label><input type="number" id="bankroll" value="10000" min="100" step="100"></div>
+        <div><label>波高 (cm)</label><input type="number" id="wave_height_input" value="0" min="0" max="200" step="1"></div>
+      </div>
+      <div style="margin-top:6px;font-size:0.82rem;color:#555;display:flex;gap:16px">
+        <span id="weather_disp"></span>
+        <span id="wave_height_disp"></span>
       </div>
     </details>
 
@@ -344,7 +349,22 @@ async function fetchBoats(){
     const data=await res.json();
     if(res.status===202&&data.boats){fillBoats(data.boats);showBanner("fetchBanner","✅ 取得完了。展示タイムを入力してください","ok");}
     else if(!res.ok) showBanner("fetchBanner",`❌ ${data.error||"取得失敗"}`,"err");
-    else{fillBoats(data.boats);showBanner("fetchBanner",`✅ ${vn} ${rn}R を取得しました`,"ok");}
+    else{
+      fillBoats(data.boats);
+      // 気象情報を自動反映
+      if(data.weather){
+        const w = data.weather;
+        if(w.wind_speed  != null) document.getElementById("wind_speed").value = w.wind_speed;
+        if(w.wind_direction)      document.getElementById("wind_dir").value   = w.wind_direction;
+        if(w.wave_height != null) document.getElementById("wave_height_disp").textContent =
+          `🌊 波高: ${w.wave_height}cm`;
+        if(w.weather)             document.getElementById("weather_disp").textContent =
+          `🌤 天候: ${w.weather}`;
+      }
+      const exCount = data.boats.filter(b=>b.ex_st!=null).length;
+      showBanner("fetchBanner",
+        `✅ ${vn} ${rn}R 取得完了 / 展示ST: ${exCount}艇`,"ok");
+    }
   }catch(e){showBanner("fetchBanner",`🔌 通信エラー: ${e}`,"err");}
   finally{document.getElementById("btnFetch").disabled=false;}
 }
@@ -360,6 +380,8 @@ function fillBoats(boats){
     set(`motor${i}`, b.motor);
     set(`start${i}`, b.start);
     set(`local${i}`, b.local_win);
+    // 展示ST（取得済みなら boats オブジェクトに格納しておく）
+    if(b.ex_st != null) window[`_ex_st_${i}`] = b.ex_st;
   });
 }
 
@@ -384,6 +406,7 @@ async function predict(){
     boats.push({
       lane:      i,
       ex_time:   parseFloat(document.getElementById(`ex${i}`).value),
+      ex_st:     window[`_ex_st_${i}`] ?? null,  // 展示ST（自動取得）
       win_rate:  parseFloat(document.getElementById(`win${i}`).value)||5.0,
       motor:     parseFloat(document.getElementById(`motor${i}`).value)||35.0,
       start:     parseFloat(document.getElementById(`start${i}`).value)||0.18,
@@ -398,6 +421,7 @@ async function predict(){
   const ws      =parseFloat(document.getElementById("wind_speed").value)||0;
   const wd      =document.getElementById("wind_dir").value;
   const tide    =document.getElementById("tide").value;
+  const waveH   =parseInt(document.getElementById("wave_height_input")?.value)||0;
 
   lastMeta={raceDate,venue,raceNo,bankroll};
 
@@ -407,8 +431,11 @@ async function predict(){
 
   try{
     const res=await fetch("/predict_ml",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({boats,race_date:raceDate,venue_name:venue,race_no:raceNo,
-        bankroll,wind_speed:ws,wind_direction:wd,tide_level:tide})});
+      body:JSON.stringify({
+          boats, race_date:raceDate, venue_name:venue, race_no:raceNo,
+          bankroll, wind_speed:ws, wind_direction:wd, tide_level:tide,
+          wave_height:waveH,
+        })});
     const data=await res.json();
     if(data.error){
       document.getElementById("result").innerHTML=`<div class="card"><div class="error-msg">⚠️ ${data.error}<br><small>${data.trace||""}</small></div></div>`;
@@ -433,6 +460,10 @@ function renderResult(data){
       <div class="result-banner rb-blue">
         <span>🏟 <b>${data.venue_name}</b> ${data.race_no}R</span>
         <span>${night}</span>
+        ${data.weather && data.weather.wind_speed>0 ?
+          `<span>🌬 風:${data.weather.wind_speed}m ${data.weather.wind_direction||''}</span>`:''}
+        ${data.weather && data.weather.wave_height>0 ?
+          `<span>🌊 波:${data.weather.wave_height}cm</span>`:''}
         <span>動的EV閾値: <b style="color:#1a6ef5">${data.dynamic_ev_min}</b></span>
         <span>✅ 買い: <b style="color:#0a8c2a">${buyCnt}件</b></span>
       </div>
@@ -444,7 +475,7 @@ function renderResult(data){
         <tr>
           <th>順位</th><th>艇</th><th>選手</th>
           <th>1着確率</th><th>真期待値</th><th>バリュー</th>
-          <th>推定オッズ</th><th>フラグ</th>
+          <th>展示ST</th><th>推定オッズ</th><th>フラグ</th>
         </tr>`;
 
   const sorted=[...data.boats].sort((a,b)=>a.ensemble_rank-b.ensemble_rank);
@@ -465,6 +496,9 @@ function renderResult(data){
       </td>
       <td style="font-weight:${b.ev>=data.dynamic_ev_min?'700':'400'};color:${b.ev>=data.dynamic_ev_min?'#0a8c2a':'#333'}">${b.ev.toFixed(2)}</td>
       <td style="color:${b.value_score>=1.2?'#d47000':'#888'}">${b.value_score.toFixed(2)}</td>
+      <td style="font-size:0.8rem;color:${b.ex_st!=null?(b.ex_st_score>0.5?'#0a8c2a':b.ex_st_score>0?'#d47000':'#888'):'#ccc'}">
+        ${b.ex_st!=null?b.ex_st.toFixed(2)+'<br><small>'+( b.ex_st_score>0.5?'★★':'★☆')+'</small>':'−'}
+      </td>
       <td>${b.est_odds.toFixed(1)}</td>
       <td>${flags.join(" ")||"−"}</td>
     </tr>`;

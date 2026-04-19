@@ -698,6 +698,115 @@ def engineer_features(
         df['動的EV_MIN'] = df['場コード'].map(
             lambda vc: get_venue_config(vc).get('EV_MIN', BASE_CONFIG['EV_MIN']))
 
+    # ════════════════════════════════════════════════════════
+    # 【ST×風×コース 相互作用スコア】
+    #
+    # 設計思想:
+    #   ST・風・コースを「掛け算＋条件分岐」で連動させる。
+    #   - ST差分: 最速との差分のみで評価（絶対値不使用）
+    #   - 風倍率: 強風ほどSTが効く（荒れ環境でST武器化）
+    #   - コース: 風向きで評価値が変動（向かい風→ダッシュ強化等）
+    #   - 最終: (コーススコア×0.6) + (ST×風倍率×0.4) の連動計算
+    #   - 展示STなし時: 従来のコース補正のみ（0埋め）
+    # ════════════════════════════════════════════════════════
+
+    def _calc_st_diff_score(diff_arr):
+        """差分スコア: 差0.03以内=1.0, 0.06以内=0.5, それ超=0.0"""
+        return np.where(diff_arr <= 0.03, 1.0,
+               np.where(diff_arr <= 0.06, 0.5, 0.0))
+
+    def _get_wind_factor(speed, direction):
+        """
+        風速・風向からST効力の倍率を計算。
+        強風ほどSTが武器になる。
+        direction: '追'=tailwind / '向'=headwind / '横'=crosswind
+        """
+        if   speed >= 6: base = 1.3
+        elif speed >= 3: base = 1.1
+        else:            base = 1.0
+
+        if   direction == '向': return base * 1.2   # 向かい風: ダッシュ有利
+        elif direction == '横': return base * 1.1   # 横風: まくり系に有利
+        elif direction == '追': return base * 0.9   # 追い風: ST効果弱め
+        else:                   return base
+
+    def _apply_wind_course(course_arr, spd, direction):
+        """
+        コース基礎スコア × 風向き補正。
+        コース基礎: 1=1.0, 2=0.7, 3=0.6, 4=0.5, 5=0.4, 6=0.3
+        向かい風: ダッシュ(4-6)強化, イン弱め
+        追い風:   イン強化, ダッシュ弱め
+        横風:     差し(2,3)強化, まくり(4-6)弱め
+        """
+        base_map = {1:1.0, 2:0.7, 3:0.6, 4:0.5, 5:0.4, 6:0.3}
+        base = np.array([base_map.get(int(c), 0.3) for c in course_arr])
+
+        if direction == '向' and spd >= 5:
+            # 向かい風強風: ダッシュ強化・イン弱め
+            dash  = (course_arr >= 4)
+            inner = (course_arr == 1)
+            base  = np.where(dash,  base * 1.3, base)
+            base  = np.where(inner, base * 0.85, base)
+        elif direction == '追':
+            # 追い風: イン強化・ダッシュ弱め
+            inner = (course_arr == 1)
+            dash  = (course_arr >= 4)
+            base  = np.where(inner, base * 1.2,  base)
+            base  = np.where(dash,  base * 0.85, base)
+        elif direction == '横':
+            # 横風: 差し(2,3)強化・まくり弱め
+            sashi = (course_arr == 2) | (course_arr == 3)
+            dash  = (course_arr >= 4)
+            base  = np.where(sashi, base * 1.15, base)
+            base  = np.where(dash,  base * 0.9,  base)
+
+        return base
+
+    # 風速・風向を取得（引数から）
+    _ws  = float(wind_speed)     if wind_speed     else 0.0
+    _wd  = str(wind_direction)   if wind_direction else ''
+
+    if '展示ST' in df.columns and df['展示ST'].notna().any():
+        # ST差分（グループ内最速との差）
+        best_ex_st       = G['展示ST'].transform('min')
+        df['展示ST差分'] = (df['展示ST'] - best_ex_st).fillna(0.0)
+
+        st_base_score = _calc_st_diff_score(df['展示ST差分'].values)  # 0/0.5/1.0
+        wind_factor   = _get_wind_factor(_ws, _wd)                    # スカラー
+        c_score       = _apply_wind_course(df['予想進入'].values, _ws, _wd)  # 配列
+
+        # ST×風: 荒れるほどSTが武器になる
+        st_effect = st_base_score * wind_factor
+
+        # 相互作用 (コース×0.6) + (ST×風×0.4)
+        final_score = (c_score * 0.6) + (st_effect * 0.4)
+
+        # 風が強い / イン弱 / 荒れ → ST重みを30%に引き上げ
+        arashi_cond = (
+            (_ws >= 5) |
+            (df.get('荒れ指数', pd.Series(0.4, index=df.index)).fillna(0.4) > 0.5) |
+            (df.get('イン崩壊フラグ', pd.Series(0, index=df.index)).fillna(0) == 1)
+        )
+        # イン鉄板 → ST重みを12%に下げ
+        in_tekiban = (
+            (df['予想進入'] == 1) &
+            (df.get('進入コース複勝率', pd.Series(0.55, index=df.index)).fillna(0.55) >= 0.55)
+        )
+        st_weight = np.where(arashi_cond, 0.30,
+                    np.where(in_tekiban,  0.12, 0.20))
+
+        # 最終スコアに重み適用して格納
+        df['展示STスコア']     = (final_score * st_weight).round(4)
+        df['展示ST重み']       = st_weight.round(3)
+        df['展示ST差分']       = df['展示ST差分'].round(4)
+        df['展示ST_有効フラグ'] = 1
+    else:
+        # 展示STなし → 0埋め（モデルへの影響なし）
+        df['展示ST差分']       = 0.0
+        df['展示STスコア']     = 0.0
+        df['展示ST重み']       = 0.0
+        df['展示ST_有効フラグ'] = 0
+
     return df
 
 
@@ -752,6 +861,8 @@ FEATURE_COLS = [
     # ── 統合新規特徴量 ──
     '当地スコア','モータースコア','インプライドプロブ',
     'ナイターフラグ','動的EV_MIN',
+    # ── 展示ST差分スコア（当日データ）──
+    '展示STスコア','展示ST差分','展示ST重み','展示ST_有効フラグ',
 ]
 
 # ════════════════════════════════════════════════════════════

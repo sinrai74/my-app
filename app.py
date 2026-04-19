@@ -302,13 +302,17 @@ def boats_endpoint():
     race_date  = request.args.get("date",  date.today().strftime("%Y%m%d"))
     venue_name = request.args.get("venue", "")
     race_no    = int(request.args.get("race", 1))
-    boats = fetch_race(race_date, venue_name, race_no)
-    if boats is None: return jsonify({"error":"取得失敗"}), 404
+    result = fetch_race(race_date, venue_name, race_no)
+    if result is None or result[0] is None:
+        return jsonify({"error":"取得失敗"}), 404
+    boats, weather_info = result
     missing = [b["lane"] for b in boats if b.get("ex_time") is None]
     if missing:
         return jsonify({"error":"展示タイムを入力してください","boats":boats,
+                        "weather":weather_info,
                         "missing_ex_time":missing,"need_ex_time":True}), 202
-    return jsonify({"date":race_date,"venue":venue_name,"race_no":race_no,"boats":boats})
+    return jsonify({"date":race_date,"venue":venue_name,"race_no":race_no,
+                    "boats":boats,"weather":weather_info})
 
 
 # ════════════════════════════════════════════════════════════
@@ -348,7 +352,17 @@ def predict_ml():
     wind_speed     = float(data.get("wind_speed", 0.0))
     wind_direction = str(data.get("wind_direction", ""))
     tide_level     = str(data.get("tide_level", ""))
+    wave_height    = int(data.get("wave_height", 0))    # 波高(cm)
+    weather        = str(data.get("weather", ""))       # 晴/曇/雨
     boats_input    = data.get("boats", [])  # 手動入力データ（任意）
+
+    # BoatraceOpenAPIから自動取得した気象情報があれば上書き
+    weather_from_api = data.get("weather_from_api", {})
+    if weather_from_api:
+        if "wind_speed"     in weather_from_api: wind_speed     = float(weather_from_api["wind_speed"])
+        if "wind_direction" in weather_from_api: wind_direction = str(weather_from_api["wind_direction"])
+        if "wave_height"    in weather_from_api: wave_height    = int(weather_from_api["wave_height"])
+        if "weather"        in weather_from_api: weather        = str(weather_from_api["weather"])
 
     venue_code = VENUE_MAP.get(venue_name, "01")
     cfg        = E.get_venue_config(venue_code)
@@ -387,6 +401,7 @@ def predict_ml():
                     "勝率":         float(b.get("win_rate", 5.0)),
                     "複勝率":       float(b.get("win2_rate", 35.0)),
                     "平均ST":       float(b.get("start", 0.18)),
+                    "展示ST":       float(b["ex_st"]) if b.get("ex_st") is not None else None,
                     "今期能力指数": float(b.get("ability", 50.0)),
                     "前期能力指数": float(b.get("ability_prev", 50.0)),
                     "出走回数":     int(b.get("race_count", 100)),
@@ -406,6 +421,10 @@ def predict_ml():
         df_today["返還フラグ"] = 0
         df_today["人気"]       = np.nan
         df_today["払戻"]       = np.nan
+
+        # 展示ST列を補完（boat_api から取得した ex_st があれば上書き）
+        if "展示ST" in df_today.columns:
+            df_today["展示ST"] = pd.to_numeric(df_today["展示ST"], errors="coerce")
 
         # 特徴量生成
         df_feat = E.engineer_features(
@@ -534,6 +553,12 @@ def predict_ml():
             "race_date":    race_date,
             "dynamic_ev_min": round(ev_min, 3),
             "is_night":     bool(pred_df["ナイターフラグ"].iloc[0]) if "ナイターフラグ" in pred_df.columns else False,
+            "weather": {
+                "wind_speed":     wind_speed,
+                "wind_direction": wind_direction,
+                "wave_height":    wave_height,
+                "weather":        weather,
+            },
             "boats":        boat_details,
             "picks":        picks_out,
             "bets":         bets_out,
