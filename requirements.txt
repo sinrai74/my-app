@@ -1,21 +1,9 @@
-# ── Web API（app.py） ──────────────────────────────────────
 flask
 flask-cors
 gunicorn
-
-# ── オッズ取得・出走表取得（Turso HTTP APIにも使用） ────────
 requests
 beautifulsoup4
-
-# ── データ処理 ─────────────────────────────────────────────
 numpy
 pandas
-
-# ── Excel出力（output.py） ─────────────────────────────────
-openpyxl
-
-# ── 機械学習（models.py） ──────────────────────────────────
 scikit-learn
-
-# ── LightGBM（任意・なくても動作する） ─────────────────────
 lightgbm
