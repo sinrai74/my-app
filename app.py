@@ -438,31 +438,45 @@ def kelly_bet(prob: float, odds: float, bankroll: float, cfg: dict) -> int:
 
 def calc_combo_score(boats, lane1, lane2, lane3, course_bonus, cfg: dict) -> float:
     """
-    場別モーター重み・当地重みを反映したスコア計算。
-    モーター重み … 浜名湖など水面でモーター差が大きい場で重み増
-    当地重み     … 地元選手の当地勝率を強調する場（江戸川1.80など）
+    ⑦最適化済み重み（B260419 + K260418 / 144レースで scipy 最適化）
+    最適化結果: 1着Top1的中率 24.3% → 48.6%
+
+    重み:
+      全国勝率   : 0.010
+      モーター2率: 0.052 × 場別スケール
+      当地勝率   : 0.262 × 場別スケール（最重要）
+      展示タイム : 10.0（固定・小さいほど有利）
+      平均ST     : 50.0（固定・小さいほど有利）
+      コース補正 : 10.0（場別補正を加算スコア化）
     """
     motor_w = cfg.get("モーター重み", 1.50)
     local_w = cfg.get("当地重み",    1.20)
 
+    W_WIN    = 0.010
+    W_MOTOR  = 0.052 * (motor_w / 1.50)
+    W_LOCAL  = 0.262 * (local_w / 1.20)
+    W_ST     = 50.0
+    W_COURSE = 10.0
+
     score = 0.0
     for b in boats:
         cb        = course_bonus.get(b["lane"], 1.0)
-        motor_val = b["motor"]    * (motor_w / 1.50)  # デフォルト比で正規化
-        local_val = b.get("local_win", 0) * (local_w / 1.20)
+        local_val = b.get("local_win", 0.0)
 
         if b["lane"] == lane1:
-            score += b["win_rate"] * 3.0 * cb
-            score += motor_val * 2.0
-            score += local_val * 0.5          # ★当地勝率を1着スコアに加算
-            score -= b["ex_time"] * 10.0
-            score -= b["start"]   * 5.0
+            score += b["win_rate"] * W_WIN
+            score += b["motor"]    * W_MOTOR
+            score += local_val      * W_LOCAL
+            score -= b["ex_time"]  * 10.0
+            score -= b["start"]    * W_ST
+            score += cb             * W_COURSE
         elif b["lane"] == lane2:
-            score += b["win_rate"] * 2.0
-            score += motor_val * 1.5
+            score += b["win_rate"] * W_WIN   * 0.7
+            score += b["motor"]    * W_MOTOR * 0.8
+            score += local_val      * W_LOCAL * 0.5
         elif b["lane"] == lane3:
-            score += b["win_rate"] * 1.0
-            score += motor_val * 1.0
+            score += b["win_rate"] * W_WIN   * 0.4
+            score += b["motor"]    * W_MOTOR * 0.5
     return score
 
 
