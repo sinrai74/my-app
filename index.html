@@ -122,6 +122,23 @@ table.hist td{padding:5px 8px;text-align:center;border-bottom:1px solid #eee}
 .venue-card .vname{font-weight:700;margin-bottom:4px}
 .venue-card .vroi{font-size:1.1rem;font-weight:700}
 .error-msg{color:#c00;background:#fff5f5;border:1px solid #f5c0c0;border-radius:6px;padding:10px 14px;font-size:0.88rem}
+
+/* オッズ入力テーブル */
+.odds-section{margin-top:4px}
+.odds-note{font-size:0.8rem;color:#666;margin-bottom:8px;padding:6px 10px;background:#fffde7;border-radius:5px;border-left:3px solid #f9a825}
+.odds-wrap{overflow-x:auto}
+table.odds-tbl{border-collapse:collapse;font-size:0.82rem;min-width:480px;width:100%}
+table.odds-tbl th{background:#1a3a6e;color:#fff;padding:5px 6px;text-align:center;white-space:nowrap}
+table.odds-tbl td{padding:2px 3px;text-align:center;border:1px solid #e0e5ea}
+table.odds-tbl td.empty{background:#f0f0f0;color:#ccc}
+table.odds-tbl input{width:58px;padding:3px 4px;border:1px solid #ccc;border-radius:4px;font-size:0.8rem;text-align:center}
+table.odds-tbl input.has-val{border-color:#2e7d32;background:#f0fff0;font-weight:700}
+.odds-count{font-size:0.8rem;color:#888;margin-top:4px}
+.btn-recalc{background:#7b2d8b;color:#fff;border:none;padding:9px 20px;border-radius:7px;font-size:0.92rem;font-weight:700;cursor:pointer;margin-top:10px;width:100%}
+.btn-recalc:hover{background:#5a1f68}
+/* 実オッズ反映後の強調 */
+.ev-real{color:#0a8c2a;font-weight:700}
+.ev-est{color:#888}
 </style>
 </head>
 <body>
@@ -484,8 +501,185 @@ function renderResult(data){
       </div>`;
     });
   }
-  html+=`</div></div>`;
-  document.getElementById("result").innerHTML=html;
+  html += `</div></div>`;
+
+  // オッズ入力セクション（買い目から必要な組番を自動抽出）
+  html += buildOddsSection(data);
+
+  document.getElementById("result").innerHTML = html;
+  window._lastPredData = data;
+}
+
+// ── 買い目から必要な3連単組番を最大10件抽出してオッズ入力欄を生成 ──
+function buildOddsSection(data){
+  // 買い推奨の組番を収集（全ピックの3連単comboから）
+  const combos = [];
+  data.picks.forEach(p => {
+    if(p.verdict && !p.verdict.includes("❌")){
+      (p.combos||[]).forEach(c => { if(c && !combos.includes(c)) combos.push(c); });
+    }
+  });
+  // 最大10件に絞る（EVが高い順＝picksの順番通り）
+  const top = combos.slice(0, 10);
+  if(top.length === 0) return "";  // 買い目なし時は表示しない
+
+  let rows = top.map(combo => `
+    <tr>
+      <td style="font-family:monospace;font-weight:700;font-size:0.88rem;padding:5px 8px">${combo}</td>
+      <td style="padding:3px 6px">
+        <input type="number" step="0.1" min="1" id="odds_${combo.replace(/-/g,'_')}"
+          placeholder="例: 35.9"
+          oninput="this.classList.toggle('has-val', this.value!==''); updateOddsCount()">
+      </td>
+    </tr>`).join("");
+
+  return `
+  <div class="card" id="oddsCard">
+    <h3>📊 実オッズ入力
+      <span style="font-size:0.8rem;color:#888">（買い推奨の組番のみ・最大10件）</span>
+    </h3>
+    <div class="odds-note">
+      💡 <a href="https://sp.macour.jp/" target="_blank" style="color:#1a6ef5">マクール</a>
+      等で3連単オッズを確認しながら入力してください。入力後「オッズ反映」を押すとEVが正確になります。
+    </div>
+    <table style="border-collapse:collapse;width:100%;max-width:320px">
+      <thead>
+        <tr>
+          <th style="background:#1a3a6e;color:#fff;padding:6px 8px;text-align:left;font-size:0.82rem">組番</th>
+          <th style="background:#1a3a6e;color:#fff;padding:6px 8px;text-align:center;font-size:0.82rem">3連単オッズ</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="odds-count" id="oddsCount" style="font-size:0.8rem;color:#888;margin-top:6px">
+      0件入力済み / ${top.length}件
+    </div>
+    <button class="btn-recalc" onclick="applyOdds()">🔄 オッズ反映して再計算</button>
+  </div>`;
+}
+
+function updateOddsCount(){
+  const data = window._lastPredData;
+  if(!data) return;
+  const combos = [];
+  data.picks.forEach(p => { (p.combos||[]).forEach(c => { if(c && !combos.includes(c)) combos.push(c); }); });
+  const top = combos.slice(0,10);
+  let cnt = 0;
+  top.forEach(c => {
+    const el = document.getElementById("odds_"+c.replace(/-/g,"_"));
+    if(el && el.value !== "") cnt++;
+  });
+  const el = document.getElementById("oddsCount");
+  if(el) el.textContent = `${cnt}件入力済み / ${top.length}件`;
+}
+
+function round3(v){ return Math.round(v*1000)/1000; }
+
+// ── オッズ反映して買い目・EV・Kelly推奨額を再計算 ──────────────
+function applyOdds(){
+  const data = window._lastPredData;
+  if(!data){ alert("先に予想を実行してください"); return; }
+
+  // 入力されたオッズを収集
+  const oddsMap = {};  // {"1-2-3": 35.9, ...}
+  const combos = [];
+  data.picks.forEach(p => { (p.combos||[]).forEach(c => { if(c && !combos.includes(c)) combos.push(c); }); });
+  combos.slice(0,10).forEach(c => {
+    const el = document.getElementById("odds_"+c.replace(/-/g,"_"));
+    if(el && el.value !== "") oddsMap[c] = parseFloat(el.value);
+  });
+
+  if(Object.keys(oddsMap).length === 0){
+    alert("少なくとも1件のオッズを入力してください");
+    return;
+  }
+
+  const dynEV   = data.dynamic_ev_min || 1.5;
+  const bankroll = parseFloat(document.getElementById("bankroll").value) || 10000;
+
+  // 買い目カードを再描画（オッズ反映版）
+  let picksHtml = `<div class="card"><h3>🎯 買い目（実オッズ反映済み）</h3><div class="picks-grid">`;
+  data.picks.forEach(p => {
+    // このピックのcomboのうち、オッズ入力済みのものを使ってEVを再計算
+    let bestEv = p.axis_ev || 0;
+    let bestCombo = "";
+    let bestOdds = 0;
+    (p.combos||[]).forEach(c => {
+      if(oddsMap[c]){
+        // 3連単EV = 軸艇の1着確率 × 実オッズ（簡易計算）
+        const ev = (p.axis_prob||0) * oddsMap[c];
+        if(ev > bestEv){ bestEv = round3(ev); bestCombo = c; bestOdds = oddsMap[c]; }
+      }
+    });
+
+    // Kelly推奨額を再計算
+    let betAmt = 0;
+    if(bestOdds > 0 && (p.axis_prob||0) > 0){
+      const b = bestOdds - 1;
+      const kFull = b > 0 ? (b*(p.axis_prob) - (1-(p.axis_prob))) / b : 0;
+      const kAdj  = Math.max(0, kFull) * 0.5;  // Kelly_kf=0.5
+      betAmt = Math.floor(Math.min(bankroll * kAdj, bankroll * 0.1) / 100) * 100;
+    }
+
+    const isRealOdds = bestCombo !== "";
+    const evColor = bestEv >= dynEV ? "#0a8c2a" : "#888";
+    const verdict = bestEv >= dynEV*1.3 ? "✅ 強く買い" :
+                    bestEv >= dynEV     ? "⚠️ 買い"     : p.verdict;
+    const cls = verdict.includes("✅") ? "pick-buy" :
+                verdict.includes("⚠️") ? "pick-warn" : "pick-skip";
+
+    const combosHtml = (p.combos||[]).map(c => {
+      const hasOdds = oddsMap[c];
+      return `<span class="combo-chip" style="${hasOdds?'background:#7b2d8b':''}"
+        title="${hasOdds?'オッズ:'+oddsMap[c]:''}">${c}${hasOdds?' ('+oddsMap[c]+')':''}</span>`;
+    }).join("");
+
+    picksHtml += `<div class="pick-card ${cls}">
+      <div class="pick-title">${verdict}${isRealOdds?` <span style="font-size:0.75rem;background:#d4edda;color:#155724;padding:1px 6px;border-radius:10px">実オッズ</span>`:""}</div>
+      <div class="pick-axis">
+        <span class="boat-num ${LANE_CLS[(p.axis_lane||1)-1]}" style="width:20px;height:20px;line-height:20px;font-size:0.75rem">${p.axis_lane||"−"}</span>
+        <b>${p.axis_name||""}</b>
+      </div>
+      <div class="pick-ev" style="color:${evColor};font-weight:${bestEv>=dynEV?'700':'400'}">
+        確率: ${((p.axis_prob||0)*100).toFixed(1)}%
+        / EV: ${bestEv.toFixed(2)}${isRealOdds?' ✓':'（推定）'}
+        ${bestOdds>0?`/ オッズ: ${bestOdds}`:''}
+      </div>
+      ${betAmt>0?`<div class="pick-bet">💴 推奨ベット: ¥${betAmt.toLocaleString()}</div>`:""}
+      <div class="pick-combos">${combosHtml||"−"}</div>
+      <div class="pick-notes">${p.notes||""}</div>
+      <div style="margin-top:6px;display:flex;gap:6px">
+        <button class="btn btn-green" style="padding:4px 10px;font-size:0.8rem;margin:0;width:auto"
+          data-lane="${p.axis_lane||0}" data-ev="${bestEv}" data-bet="${betAmt||100}"
+          onclick="quickRecordBtn(this,true)">✅ 的中</button>
+        <button class="btn btn-red" style="padding:4px 10px;font-size:0.8rem;margin:0;width:auto"
+          data-lane="${p.axis_lane||0}" data-ev="${bestEv}" data-bet="${betAmt||100}"
+          onclick="quickRecordBtn(this,false)">❌ 外れ</button>
+      </div>
+    </div>`;
+  });
+  picksHtml += `</div></div>`;
+
+  // 買い目カードを差し替え（オッズカードはそのまま残す）
+  const resultDiv  = document.getElementById("result");
+  const allCards   = resultDiv.querySelectorAll(".card");
+  // 3枚目（買い目カード）を差し替え
+  if(allCards.length >= 2){
+    const picksCard = allCards[1];
+    picksCard.outerHTML = picksHtml.replace('<div class="card">','').replace(/<\/div>$/, '');
+    // 全体を再構築した方が安全
+    const oddsCard = document.getElementById("oddsCard");
+    const oddsHtml = oddsCard ? oddsCard.outerHTML : "";
+    // AIスコアカードはそのまま残す
+    const scoreCard = allCards[0];
+    resultDiv.innerHTML = scoreCard.outerHTML + picksHtml + oddsHtml;
+    // オッズ入力値を復元
+    Object.entries(oddsMap).forEach(([c,v]) => {
+      const el = document.getElementById("odds_"+c.replace(/-/g,"_"));
+      if(el){ el.value=v; el.classList.add("has-val"); }
+    });
+    updateOddsCount();
+  }
 }
 
 // 買い目から直接記録
