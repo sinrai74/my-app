@@ -3,6 +3,9 @@
 import re, os, pickle, warnings
 import pandas as pd
 import numpy as np
+
+# 全角数字→半角数字変換テーブル（parse_bangumi等で使用）
+ZEN2HAN = str.maketrans('０１２３４５６７８９', '0123456789')
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import roc_auc_score
@@ -357,14 +360,65 @@ def parse_fan_files(filepaths):
 
 
 RE_VS  = re.compile(r'^(\d{2})BBGN$')
-RE_VN  = re.compile(r'(ボートレース\S+)')
+RE_VN  = re.compile(r'(ボートレース[\S\u3000]+)')   # 全角スペース含む場名に対応
 RE_RC  = re.compile(r'[\s　]*([０-９\d]+)Ｒ')
 RE_PL  = re.compile(r'^([1-6])\s+(\d{4})')
-RE_PF  = re.compile(r'^([1-6])\s+(\d{4})(.{4})(\d{2})(.{2})(\d{2})([AB][12])\s+'
-                    r'([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+'
-                    r'(\d+)\s+([\d.]+)\s+(\d+)\s+([\d.]+)\s+([\dSFLK ]+?)\s*$')
 RE_DAY  = re.compile(r'第\s*([０-９\d]+)\s*日')
 RE_DATE = re.compile(r'(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日')
+
+def _parse_player_line(line):
+    """
+    選手行を固定幅＋スペース分割のハイブリッドでパース。
+    モーター2率・ボート2率が0.00で桁が崩れるケースに対応。
+
+    フォーマット例:
+      正常: '1 3294野中義生60静岡52B1 4.05 20.97 4.15 23.08 40 36.08 76 32.89 1 465 643    6'
+      0.00: '1 4600井内将太41広島52A2 6.85 53.40 6.60 50.00 47  0.00135  0.00 223 135     12'
+    """
+    try:
+        boat_no   = int(line[0])
+        regist_no = line[2:6].strip()
+        name      = line[6:10].strip()
+        age       = int(line[10:12])
+        branch    = line[12:14].strip()
+        weight    = int(line[14:16])
+        grade     = line[16:18].strip()
+        rest      = line[18:].strip()
+
+        # 連結トークン分解: '0.00135' → '0.00' + '135'
+        # モーター/ボート2率が0.00のとき後続のNoと連結するケースに対応
+        expanded = []
+        for t in rest.split():
+            m = re.match(r'^(\d+\.\d{2})(\d+)$', t)
+            if m:
+                expanded.append(m.group(1))
+                expanded.append(m.group(2))
+            else:
+                expanded.append(t)
+        nums = [x for x in expanded if re.match(r'^\d+\.?\d*$', x)]
+
+        if len(nums) < 8:
+            return None
+        return {
+            '艇番':      boat_no,
+            '登番':      regist_no,
+            '選手名':    name,
+            '年齢':      age,
+            '支部':      branch,
+            '体重':      weight,
+            '級':        grade,
+            '全国勝率':  float(nums[0]),
+            '全国2率':   float(nums[1]),
+            '当地勝率':  float(nums[2]),
+            '当地2率':   float(nums[3]),
+            'モーターNO':  int(nums[4]),
+            'モーター2率': float(nums[5]),
+            'ボートNO':    int(nums[6]),
+            'ボート2率':   float(nums[7]),
+            '今節成績':  ' '.join(nums[8:]).strip(),
+        }
+    except Exception:
+        return None
 
 def parse_bangumi(filepath):
     """全場対応（フィルタなし）"""
@@ -395,21 +449,13 @@ def parse_bangumi(filepath):
             if rs: rno = int(rs.group().translate(ZEN2HAN))
             continue
         if RE_PL.match(line) and rno is not None:
-            pm = RE_PF.match(line)
-            if pm:
+            parsed = _parse_player_line(line)
+            if parsed:
                 recs.append({
                     '場コード': vc, '場名': vn,
                     '節日': int(nday) if nday else None,
                     '開催日': rdate, 'レースNo': rno,
-                    '艇番': int(pm.group(1)),
-                    '登番': pm.group(2).strip(), '選手名': pm.group(3).strip(),
-                    '年齢': int(pm.group(4)), '支部': pm.group(5).strip(),
-                    '体重': int(pm.group(6)), '級': pm.group(7).strip(),
-                    '全国勝率': float(pm.group(8)),  '全国2率': float(pm.group(9)),
-                    '当地勝率': float(pm.group(10)), '当地2率': float(pm.group(11)),
-                    'モーターNO': int(pm.group(12)), 'モーター2率': float(pm.group(13)),
-                    'ボートNO': int(pm.group(14)),   'ボート2率': float(pm.group(15)),
-                    '今節成績': pm.group(16).strip(),
+                    **parsed,
                 })
     df = pd.DataFrame(recs)
     print(f'[番組表] {filepath}: {len(df)}行 / {df["場名"].nunique()}場 / '
