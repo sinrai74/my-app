@@ -279,6 +279,33 @@ def home():
     except FileNotFoundError:
         return "<h2>index.html が見つかりません</h2>", 404
 
+@app.route("/debug_api")
+def debug_api():
+    """BoatraceOpenAPIの生JSONを返す（デバッグ用）"""
+    import requests as _r
+    race_date = request.args.get("date", date.today().strftime("%Y%m%d"))
+    year = race_date[:4]
+    url  = f"https://boatraceopenapi.github.io/programs/v2/{year}/{race_date}.json"
+    try:
+        r = _r.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        programs = data.get("programs", [])
+        first = programs[0] if programs else {}
+        boats_list = first.get("boats", [])
+        return jsonify({
+            "url":               url,
+            "total_races":       len(programs),
+            "first_race_keys":   list(first.keys()) if first else [],
+            "boats_count":       len(boats_list),
+            "first_boat_type":   type(boats_list[0]).__name__ if boats_list else "none",
+            "first_boat_sample": boats_list[0] if boats_list else None,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
 @app.route("/health")
 def health():
     return jsonify({
