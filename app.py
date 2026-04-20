@@ -298,21 +298,44 @@ def races():
 
 @app.route("/boats")
 def boats_endpoint():
+    import traceback
     if not HAS_BOAT_API: return jsonify({"error":"boat_api なし"}), 500
-    race_date  = request.args.get("date",  date.today().strftime("%Y%m%d"))
-    venue_name = request.args.get("venue", "")
-    race_no    = int(request.args.get("race", 1))
-    result = fetch_race(race_date, venue_name, race_no)
-    if result is None or result[0] is None:
-        return jsonify({"error":"取得失敗"}), 404
-    boats, weather_info = result
-    missing = [b["lane"] for b in boats if b.get("ex_time") is None]
-    if missing:
-        return jsonify({"error":"展示タイムを入力してください","boats":boats,
-                        "weather":weather_info,
-                        "missing_ex_time":missing,"need_ex_time":True}), 202
-    return jsonify({"date":race_date,"venue":venue_name,"race_no":race_no,
-                    "boats":boats,"weather":weather_info})
+    try:
+        race_date  = request.args.get("date",  date.today().strftime("%Y%m%d"))
+        venue_name = request.args.get("venue", "")
+        race_no    = int(request.args.get("race", 1))
+
+        result = fetch_race(race_date, venue_name, race_no)
+
+        if result is None:
+            return jsonify({"error": "fetch_race が None を返しました"}), 500
+
+        boats, weather_info = result
+
+        if boats is None:
+            try:
+                available = fetch_available_races(race_date)
+                venue_list = [f"{r['venue_name']}({r['race_number']}R)"
+                              for r in available[:8]]
+                return jsonify({
+                    "error": f"本日{venue_name}は開催なし or データ未公開",
+                    "hint":  f"本日の開催: {', '.join(venue_list) if venue_list else '取得失敗'}",
+                }), 404
+            except Exception:
+                return jsonify({"error": f"取得失敗: {venue_name} {race_no}R {race_date}"}), 404
+
+        missing = [b["lane"] for b in boats if b.get("ex_time") is None]
+        if missing:
+            return jsonify({"error":"展示タイムを入力してください","boats":boats,
+                            "weather":weather_info,
+                            "missing_ex_time":missing,"need_ex_time":True}), 202
+        return jsonify({"date":race_date,"venue":venue_name,"race_no":race_no,
+                        "boats":boats,"weather":weather_info})
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[boats] 例外: {e}
+{tb}")
+        return jsonify({"error": str(e), "trace": tb}), 500
 
 
 # ════════════════════════════════════════════════════════════
