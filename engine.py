@@ -899,6 +899,12 @@ def get_X(df):
     feats = [c for c in FEATURE_COLS if c in df.columns]
     return df[feats].copy().fillna(df[feats].median()), feats
 
+# ────────────────────────────────────────────────────────────
+# 高配当学習の閾値設定（3000円以上を強く学習）
+HIGH_PAYOUT_THRESHOLD = 3000    # この払戻以上を「高配当」とみなす
+HIGH_PAYOUT_WEIGHT    = 3.0     # 高配当レースのサンプルウェイト倍率
+# ────────────────────────────────────────────────────────────
+
 def fit_models(train, add_noise=True):
     tr = train.copy()
     if add_noise and '人気_filled' in tr.columns:
@@ -918,11 +924,26 @@ def fit_models(train, add_noise=True):
     y_top3 = tr.loc[valid, '3着内フラグ'].astype(int)
     spw_win  = (y_win==0).sum() / max((y_win==1).sum(), 1)
     spw_top3 = (y_top3==0).sum() / max((y_top3==1).sum(), 1)
-    print(f'  学習: n={valid.sum()} / spw_win={spw_win:.1f}')
 
-    clf_win  = make_clf_cal(spw_win);  clf_win.fit(X_tr[valid],  y_win);  models['win']  = clf_win
-    clf_top3 = make_clf_cal(spw_top3); clf_top3.fit(X_tr[valid], y_top3); models['top3'] = clf_top3
-    reg_rank = make_reg(); reg_rank.fit(X_tr[valid], tr.loc[valid, '着順'].astype(float)); models['rank'] = reg_rank
+    # ── 高配当レースのサンプルウェイト ──────────────────────────
+    # 3000円以上の払戻レースは HIGH_PAYOUT_WEIGHT 倍で学習
+    # → モデルが高配当の条件を強く学習し、ピックアップしやすくなる
+    payout_col = tr['払戻'].fillna(0) if '払戻' in tr.columns else pd.Series(0, index=tr.index)
+    race_max_payout = tr.groupby(['場コード','レースNo'])['払戻'].transform('max').fillna(0)
+    is_high_payout  = (race_max_payout >= HIGH_PAYOUT_THRESHOLD)
+
+    sw = pd.Series(1.0, index=tr.index)
+    sw[is_high_payout] = HIGH_PAYOUT_WEIGHT
+    sw_valid = sw[valid].values
+
+    high_cnt = is_high_payout[valid].sum()
+    print(f'  学習: n={valid.sum()} / spw_win={spw_win:.1f} '
+          f'/ 高配当(≥¥{HIGH_PAYOUT_THRESHOLD:,})レース: {high_cnt//6}R (重み×{HIGH_PAYOUT_WEIGHT})')
+
+    clf_win  = make_clf_cal(spw_win);  clf_win.fit(X_tr[valid], y_win,  sample_weight=sw_valid); models['win']  = clf_win
+    clf_top3 = make_clf_cal(spw_top3); clf_top3.fit(X_tr[valid], y_top3, sample_weight=sw_valid); models['top3'] = clf_top3
+    reg_rank = make_reg(); reg_rank.fit(X_tr[valid], tr.loc[valid, '着順'].astype(float),
+                                        sample_weight=sw_valid); models['rank'] = reg_rank
 
     win_mask = valid & (tr['1着フラグ'] == 1) & tr['log払戻'].notna()
     if win_mask.sum() >= 10:
@@ -988,6 +1009,21 @@ def predict_all(models, df):
         + df.get('当地スコア', pd.Series(0, index=df.index)).fillna(0) /
           df.groupby(['場コード','レースNo'])['当地スコア'].transform('max').clip(0.001) * 0.06
     )
+
+    # ── 高配当スコア: 払戻モデルがあれば予測払戻を計算 ──────────
+    if models.get('payout'):
+        df['予測払戻'] = np.expm1(models['payout'].predict(X).clip(0))
+        # 高配当スコア: 1着確率 × 予測払戻 / 3000（3000円基準で正規化）
+        df['高配当スコア'] = (df['予測_1着確率'] * df['予測払戻'] / HIGH_PAYOUT_THRESHOLD).round(4)
+    else:
+        df['予測払戻']   = df['推定オッズ'] * 100   # 推定払戻（円換算）
+        df['高配当スコア'] = (df['予測_1着確率'] * df['推定オッズ'] / 30).round(4)  # オッズ30=約3000円
+
+    # 高配当フラグ: 予測払戻が3000円以上かつ1着確率が一定以上
+    df['高配当フラグ'] = (
+        (df['予測払戻'] >= HIGH_PAYOUT_THRESHOLD) &
+        (df['予測_1着確率'] >= 0.15)   # 確率15%以上は必要
+    ).astype(int)
 
     for col in ['予測_1着確率','真期待値','アンサンブルスコア']:
         df[f'{col}_IN順位'] = df.groupby(['場コード','レースNo'])[col].transform(
@@ -1235,17 +1271,28 @@ def build_race_picks(df):
         vb    = grp[grp.get('バリューフラグ', pd.Series(0, index=grp.index))==1]['艇番'].tolist() \
                 if 'バリューフラグ' in grp.columns else []
 
+        # 高配当フラグ・スコア
+        hpf = grp[grp.get('高配当フラグ', pd.Series(0, index=grp.index))==1]['艇番'].tolist() \
+              if '高配当フラグ' in grp.columns else []
+        race_hp_score = float(grp.get('高配当スコア', pd.Series(0, index=grp.index)).fillna(0).max()) \
+                        if '高配当スコア' in grp.columns else 0.0
+
         for i, axis_row in enumerate(axis_rows):
             axis_no = int(axis_row['艇番'])
-            judge   = judge_base if len(axis_rows)==1 else f'{judge_base}[{"主" if i==0 else "副"}軸]'
+
+            # 高配当期待が高い場合は判定を強化
+            jb = ('✅🔥高配当期待' if race_hp_score >= 1.5 and '✅' in judge_base else judge_base)
+            judge = jb if len(axis_rows)==1 else f'{jb}[{"主" if i==0 else "副"}軸]'
 
             notes = []
-            if night:  notes.append('🌙ナイター')
-            if ic:     notes.append('⚠️イン崩壊')
-            if uw:     notes.append(f'💎過小評価:{uw}番')
-            if sb:     notes.append(f'🚀ST狙い目:{sb}番')
-            if vb:     notes.append(f'💰バリュー:{vb}番')
-            if i == 1: notes.append('（副軸）')
+            if night:              notes.append('🌙ナイター')
+            if ic:                 notes.append('⚠️イン崩壊')
+            if uw:                 notes.append(f'💎過小評価:{uw}番')
+            if sb:                 notes.append(f'🚀ST狙い目:{sb}番')
+            if vb:                 notes.append(f'💰バリュー:{vb}番')
+            if hpf:                notes.append(f'🔥高配当期待(≥¥3000):{hpf}番')
+            if race_hp_score>=1.0: notes.append(f'💹高配当スコア:{race_hp_score:.2f}')
+            if i == 1:             notes.append('（副軸）')
 
             top3 = [int(b) for b in grp.head(3)['艇番'].tolist()]
             top5 = [int(b) for b in grp.head(5)['艇番'].tolist()]
@@ -1260,6 +1307,8 @@ def build_race_picks(df):
                 '軸真期待値':round(float(axis_row['真期待値']),2),
                 '軸推定オッズ':round(float(axis_row['推定オッズ']),1),
                 'バリュースコア':round(float(axis_row.get('バリュースコア',0)),3),
+                '高配当スコア':round(race_hp_score, 3),
+                '予測払戻':round(float(axis_row.get('予測払戻', axis_row.get('推定オッズ',10)*100)), 0),
                 '動的EV_MIN':round(ev_min, 3),
                 'ナイター':'🌙' if night else '',
                 '2着候補':str(sc), '3着候補':str(tc), '3連単点数':len(st),
