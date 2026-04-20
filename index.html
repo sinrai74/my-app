@@ -348,7 +348,9 @@ async function fetchBoats(){
     const res=await fetch(`/boats?date=${dt}&venue=${encodeURIComponent(vn)}&race=${rn}`);
     const data=await res.json();
     if(res.status===202&&data.boats){fillBoats(data.boats);showBanner("fetchBanner","✅ 取得完了。展示タイムを入力してください","ok");}
-    else if(!res.ok) showBanner("fetchBanner",`❌ ${data.error||"取得失敗"}`,"err");
+    else if(!res.ok) showBanner("fetchBanner",
+      `❌ ${data.error||"取得失敗"}${data.hint?' / '+data.hint:''}${data.trace?'<br><small>'+data.trace.slice(0,200)+'</small>':''}`,
+      "err");
     else{
       fillBoats(data.boats);
       // 気象情報を自動反映
