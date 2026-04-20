@@ -114,17 +114,23 @@ def fetch_race(
 
     boats = {}
     for b in target["boats"]:
-        lane = b["racer_boat_number"]
+        # boatsの要素が辞書でない場合はスキップ
+        if not isinstance(b, dict):
+            print(f"[boat_api] programs boats の要素が dict でない: {type(b)} = {b}")
+            continue
+        lane = b.get("racer_boat_number") or b.get("racer_number")
+        if not lane:
+            continue
         boats[lane] = {
             "lane":      lane,
-            "name":      b["racer_name"],
-            "win_rate":  b["racer_national_top_1_percent"],
-            "motor":     b["racer_assigned_motor_top_2_percent"],
-            "start":     b["racer_average_start_timing"],  # 平均ST
-            "ex_time":   None,   # 直前情報で補完
-            "ex_st":     None,   # 展示ST（直前情報で補完）
-            "tilt":      None,   # チルト角
-            "motor_no":  b["racer_assigned_motor_number"],
+            "name":      b.get("racer_name", f"{lane}号艇"),
+            "win_rate":  b.get("racer_national_top_1_percent", 0.0),
+            "motor":     b.get("racer_assigned_motor_top_2_percent", 0.0),
+            "start":     b.get("racer_average_start_timing", 0.18),
+            "ex_time":   None,
+            "ex_st":     None,
+            "tilt":      None,
+            "motor_no":  b.get("racer_assigned_motor_number", 0),
             "local_win": b.get("racer_local_top_1_percent", 0.0),
             "motor_top3":b.get("racer_assigned_motor_top_3_percent", 0.0),
         }
@@ -142,6 +148,10 @@ def fetch_race(
         if prev:
             # ── 艇別: 展示タイム・展示ST・チルト ──
             for b in prev.get("boats", []):
+                # boatsの要素が辞書でない場合はスキップ
+                if not isinstance(b, dict):
+                    print(f"[boat_api] previews boats の要素が dict でない: {type(b)} = {b}")
+                    continue
                 lane = b.get("racer_boat_number")
                 if lane in boats:
                     ex_time = b.get("racer_exhibition_time")

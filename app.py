@@ -293,6 +293,26 @@ def debug_api():
         programs = data.get("programs", [])
         first = programs[0] if programs else {}
         boats_list = first.get("boats", [])
+        # previewsも確認
+        prev_url  = f"https://boatraceopenapi.github.io/previews/v2/{year}/{race_date}.json"
+        prev_data = {}
+        prev_sample = None
+        try:
+            pr = _r.get(prev_url, headers={"User-Agent":"Mozilla/5.0"}, timeout=8)
+            if pr.status_code == 200:
+                prev_json    = pr.json()
+                prev_list    = prev_json.get("previews", [])
+                prev_first   = prev_list[0] if prev_list else {}
+                prev_boats   = prev_first.get("boats", [])
+                prev_sample  = {
+                    "total": len(prev_list),
+                    "keys":  list(prev_first.keys()) if prev_first else [],
+                    "boat_type": type(prev_boats[0]).__name__ if prev_boats else "none",
+                    "boat_sample": prev_boats[0] if prev_boats else None,
+                }
+        except Exception as pe:
+            prev_sample = {"error": str(pe)}
+
         return jsonify({
             "url":               url,
             "total_races":       len(programs),
@@ -300,6 +320,7 @@ def debug_api():
             "boats_count":       len(boats_list),
             "first_boat_type":   type(boats_list[0]).__name__ if boats_list else "none",
             "first_boat_sample": boats_list[0] if boats_list else None,
+            "previews":          prev_sample,
         })
     except Exception as e:
         import traceback
