@@ -941,8 +941,20 @@ def make_reg():
         min_samples_leaf=15, early_stopping=True, n_iter_no_change=30,
         validation_fraction=0.1, random_state=42)
 
-def get_X(df):
-    feats = [c for c in FEATURE_COLS if c in df.columns]
+def get_X(df, trained_feats=None):
+    """
+    trained_feats が指定されている場合（予測時）はそちらを優先。
+    学習時と予測時で特徴量セットが異なっても対応できるようにする。
+    """
+    if trained_feats is not None:
+        # 学習時の特徴量に合わせる（不足列は0埋め）
+        df = df.copy()
+        for c in trained_feats:
+            if c not in df.columns:
+                df[c] = 0.0
+        feats = trained_feats
+    else:
+        feats = [c for c in FEATURE_COLS if c in df.columns]
     return df[feats].copy().fillna(df[feats].median()), feats
 
 # ────────────────────────────────────────────────────────────
@@ -1013,7 +1025,9 @@ def fit_models(train, add_noise=True):
 
 
 def predict_all(models, df):
-    X, _ = get_X(df); df = df.copy()
+    # 学習時の特徴量名を使って予測（新旧モデルの特徴量差異を吸収）
+    trained_feats = models.get('feature_names', None)
+    X, _ = get_X(df, trained_feats); df = df.copy()
     df['予測_1着確率']      = models['win'].predict_proba(X)[:,1]
     df['予測_3着内確率']    = models['top3'].predict_proba(X)[:,1]
     df['予測_着順']         = models['rank'].predict(X).clip(1, 6)
