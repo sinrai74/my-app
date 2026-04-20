@@ -333,8 +333,7 @@ def boats_endpoint():
                         "boats":boats,"weather":weather_info})
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"[boats] 例外: {e}
-{tb}")
+        print(f"[boats] 例外: {e}\n{tb}")
         return jsonify({"error": str(e), "trace": tb}), 500
 
 
