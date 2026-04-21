@@ -1,0 +1,75 @@
+name: ボートレース荒れ検知 (15分ごと)
+
+on:
+  # ── 15分ごとの自動実行（UTC: 日本時間 -9h）──────────────────
+  # 日本の開催時間帯（JST 8:00〜22:00）に絞る
+  # UTC 23:00 〜 13:00 = JST 8:00 〜 22:00
+  schedule:
+    - cron: "0,15,30,45 23 * * *"   # JST 8:00〜8:45
+    - cron: "0,15,30,45 0-12 * * *" # JST 9:00〜21:45
+    - cron: "0 13 * * *"            # JST 22:00
+
+  # ── 手動実行（デバッグ用）──────────────────────────────────
+  workflow_dispatch:
+    inputs:
+      race_date:
+        description: "対象日付 YYYYMMDD（空欄で今日）"
+        required: false
+        default: ""
+      threshold:
+        description: "荒れスコア閾値（デフォルト: 3.0）"
+        required: false
+        default: "3.0"
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10   # 10分でタイムアウト（次の15分起動に干渉しないよう）
+
+    steps:
+      # ── リポジトリを取得 ─────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Python セットアップ ──────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ── 依存ライブラリのインストール ─────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      # ── 荒れ検知スクリプト実行 ──────────────────────────────
+      - name: Run upset detector
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+        run: |
+          DATE_ARG=""
+          THRESHOLD_ARG=""
+
+          # 手動実行時は入力値を使用
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ github.event.inputs.race_date }}" ]; then
+              DATE_ARG="--date ${{ github.event.inputs.race_date }}"
+            fi
+            if [ -n "${{ github.event.inputs.threshold }}" ]; then
+              THRESHOLD_ARG="--threshold ${{ github.event.inputs.threshold }}"
+            fi
+          fi
+
+          python notify_arashi.py $DATE_ARG $THRESHOLD_ARG
+
+      # ── 失敗時のログ保存（デバッグ用）──────────────────────
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs-${{ github.run_id }}
+          path: "*.log"
+          retention-days: 7
