@@ -228,19 +228,28 @@ def build_race_picks(df: pd.DataFrame) -> list[dict]:
               if "ST狙い目フラグ" in grp.columns else []
         vb  = grp[grp.get("バリューフラグ",  pd.Series(0, index=grp.index))==1]["艇番"].tolist() \
               if "バリューフラグ"  in grp.columns else []
+        # 高配当フラグ・スコア
+        hpf = grp[grp.get("高配当フラグ", pd.Series(0, index=grp.index))==1]["艇番"].tolist() \
+              if "高配当フラグ" in grp.columns else []
+        race_hp_score = float(grp.get("高配当スコア", pd.Series(0, index=grp.index)).fillna(0).max()) \
+                        if "高配当スコア" in grp.columns else 0.0
 
         for i, axis_row in enumerate(axis_rows):
             axis_no = int(axis_row["艇番"])
-            judge   = judge_base if len(axis_rows) == 1 \
-                      else f"{judge_base}[{'主' if i==0 else '副'}軸]"
+            # 高配当期待が高い場合は判定を強化
+            jb = ("✅🔥高配当期待" if race_hp_score >= 1.5 and "✅" in judge_base else judge_base)
+            judge = jb if len(axis_rows) == 1 \
+                      else f"{jb}[{'主' if i==0 else '副'}軸]"
 
             notes: list[str] = []
-            if night:  notes.append("🌙ナイター")
-            if ic:     notes.append("⚠️イン崩壊")
-            if uw:     notes.append(f"💎過小評価:{uw}番")
-            if sb:     notes.append(f"🚀ST狙い目:{sb}番")
-            if vb:     notes.append(f"💰バリュー:{vb}番")
-            if i == 1: notes.append("（副軸）")
+            if night:              notes.append("🌙ナイター")
+            if ic:                 notes.append("⚠️イン崩壊")
+            if uw:                 notes.append(f"💎過小評価:{uw}番")
+            if sb:                 notes.append(f"🚀ST狙い目:{sb}番")
+            if vb:                 notes.append(f"💰バリュー:{vb}番")
+            if hpf:                notes.append(f"🔥高配当期待(≥¥8,000):{hpf}番")
+            if race_hp_score>=1.0: notes.append(f"💹高配当スコア:{race_hp_score:.2f}")
+            if i == 1:             notes.append("（副軸）")
 
             top3 = [int(b) for b in grp.head(3)["艇番"].tolist()]
             top5 = [int(b) for b in grp.head(5)["艇番"].tolist()]
@@ -259,6 +268,9 @@ def build_race_picks(df: pd.DataFrame) -> list[dict]:
                 "軸真期待値":  round(float(axis_row["真期待値"]),       2),
                 "軸推定オッズ":round(float(axis_row["推定オッズ"]),     1),
                 "バリュースコア": round(float(axis_row.get("バリュースコア",0)), 3),
+                "高配当スコア":   round(race_hp_score, 3),
+                "予測払戻":       round(float(axis_row.get("予測払戻", axis_row.get("推定オッズ",10)*100)), 0),
+                "高配当フラグ":   int(axis_row.get("高配当フラグ", 0)),
                 "動的EV_MIN":  round(ev_min, 3),
                 "ナイター":    "🌙" if night else "",
                 "2着候補":     str(sc),
@@ -289,6 +301,8 @@ def build_detail_df(df: pd.DataFrame) -> pd.DataFrame:
         "バリュースコア","バリューフラグ","インプライドプロブ",
         "当地スコア","モータースコア","動的EV_MIN","ナイターフラグ",
         "クラスタ別勝率","着順","払戻","返還フラグ",
+        # 高配当関連（★追加）
+        "高配当スコア","予測払戻","高配当フラグ",
     ]
     cols = [c for c in cols if c in df.columns]
     return (df[cols]

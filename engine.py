@@ -958,9 +958,9 @@ def get_X(df, trained_feats=None):
     return df[feats].copy().fillna(df[feats].median()), feats
 
 # ────────────────────────────────────────────────────────────
-# 高配当学習の閾値設定（3000円以上を強く学習）
-HIGH_PAYOUT_THRESHOLD = 3000    # この払戻以上を「高配当」とみなす
-HIGH_PAYOUT_WEIGHT    = 3.0     # 高配当レースのサンプルウェイト倍率
+# 高配当学習の閾値設定（8000円以上を強く学習）
+HIGH_PAYOUT_THRESHOLD = 8000    # この払戻以上を「高配当」とみなす（★8000円基準）
+HIGH_PAYOUT_WEIGHT    = 5.0     # 高配当レースのサンプルウェイト倍率（★強化：3.0→5.0）
 # ────────────────────────────────────────────────────────────
 
 def fit_models(train, add_noise=True):
@@ -984,7 +984,7 @@ def fit_models(train, add_noise=True):
     spw_top3 = (y_top3==0).sum() / max((y_top3==1).sum(), 1)
 
     # ── 高配当レースのサンプルウェイト ──────────────────────────
-    # 3000円以上の払戻レースは HIGH_PAYOUT_WEIGHT 倍で学習
+    # 8000円以上の払戻レースは HIGH_PAYOUT_WEIGHT 倍で学習
     # → モデルが高配当の条件を強く学習し、ピックアップしやすくなる
     payout_col = tr['払戻'].fillna(0) if '払戻' in tr.columns else pd.Series(0, index=tr.index)
     race_max_payout = tr.groupby(['場コード','レースNo'])['払戻'].transform('max').fillna(0)
@@ -1073,13 +1073,13 @@ def predict_all(models, df):
     # ── 高配当スコア: 払戻モデルがあれば予測払戻を計算 ──────────
     if models.get('payout'):
         df['予測払戻'] = np.expm1(models['payout'].predict(X).clip(0))
-        # 高配当スコア: 1着確率 × 予測払戻 / 3000（3000円基準で正規化）
+        # 高配当スコア: 1着確率 × 予測払戻 / 8000（8000円基準で正規化）
         df['高配当スコア'] = (df['予測_1着確率'] * df['予測払戻'] / HIGH_PAYOUT_THRESHOLD).round(4)
     else:
         df['予測払戻']   = df['推定オッズ'] * 100   # 推定払戻（円換算）
-        df['高配当スコア'] = (df['予測_1着確率'] * df['推定オッズ'] / 30).round(4)  # オッズ30=約3000円
+        df['高配当スコア'] = (df['予測_1着確率'] * df['推定オッズ'] / 80).round(4)  # オッズ80=約8000円
 
-    # 高配当フラグ: 予測払戻が3000円以上かつ1着確率が一定以上
+    # 高配当フラグ: 予測払戻が8000円以上かつ1着確率が一定以上
     df['高配当フラグ'] = (
         (df['予測払戻'] >= HIGH_PAYOUT_THRESHOLD) &
         (df['予測_1着確率'] >= 0.15)   # 確率15%以上は必要
@@ -1350,7 +1350,7 @@ def build_race_picks(df):
             if uw:                 notes.append(f'💎過小評価:{uw}番')
             if sb:                 notes.append(f'🚀ST狙い目:{sb}番')
             if vb:                 notes.append(f'💰バリュー:{vb}番')
-            if hpf:                notes.append(f'🔥高配当期待(≥¥3000):{hpf}番')
+            if hpf:                notes.append(f'🔥高配当期待(≥¥8,000):{hpf}番')
             if race_hp_score>=1.0: notes.append(f'💹高配当スコア:{race_hp_score:.2f}')
             if i == 1:             notes.append('（副軸）')
 
@@ -1451,11 +1451,16 @@ def save_picks_excel(picks_df, detail_df, output_file):
         ov = cols.index('過小評価フラグ')+1 if '過小評価フラグ' in cols else None
         hc = cols.index('着順')+1          if '着順'          in cols else None
         vf = cols.index('バリューフラグ')+1 if 'バリューフラグ' in cols else None
+        hpf = cols.index('高配当フラグ')+1  if '高配当フラグ'   in cols else None  # ★追加
+        HP_FILL2 = PatternFill('solid', fgColor='FF8C00')  # 高配当色（ダークオレンジ）
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
             for c in row:
                 c.border = border
                 c.alignment = Alignment(horizontal='center', vertical='center')
-            if vf and row[vf-1].value == 1:
+            # 高配当フラグを最優先で色付け
+            if hpf and row[hpf-1].value == 1:
+                for c in row: c.fill = HP_FILL2
+            elif vf and row[vf-1].value == 1:
                 for c in row: c.fill = VAL_C
             if uf and row[uf-1].value == 1:
                 for c in row: c.fill = FLAG
@@ -1471,6 +1476,60 @@ def save_picks_excel(picks_df, detail_df, output_file):
         ws = writer.sheets['📋全場買い目']
         _style_ws(ws)
         _picks_rows(ws, picks_df); ws.freeze_panes = 'A2'
+
+        # ── 💎高配当候補シート（払戻8000以上の可能性が高いレース）──
+        HP_HDR  = PatternFill('solid', fgColor='FF4500')
+        HP_GLD  = PatternFill('solid', fgColor='FFD700')
+        HP_PNK  = PatternFill('solid', fgColor='FFF0F5')
+        HP_ROW  = PatternFill('solid', fgColor='FF8C00')
+        hp_cond1 = (
+            picks_df['判定'].str.startswith('✅') &
+            (picks_df.get('高配当フラグ', pd.Series(0, index=picks_df.index)) == 1)
+        ) if '高配当フラグ' in picks_df.columns else pd.Series(False, index=picks_df.index)
+        hp_cond2 = (
+            picks_df['判定'].str.startswith('✅') &
+            (picks_df.get('高配当スコア', pd.Series(0.0, index=picks_df.index)) >= 0.5) &
+            (picks_df.get('バリュースコア', pd.Series(0.0, index=picks_df.index)) >= 1.0)
+        ) if '高配当スコア' in picks_df.columns else pd.Series(False, index=picks_df.index)
+        hp_df = picks_df[hp_cond1 | hp_cond2].copy()
+        if '高配当スコア' in hp_df.columns:
+            hp_df = hp_df.sort_values('高配当スコア', ascending=False).reset_index(drop=True)
+        hp_show = [c for c in [
+            '場名','レースNo','判定','軸艇番','軸選手','軸確率','軸真期待値',
+            '軸推定オッズ','高配当スコア','予測払戻','高配当フラグ',
+            'バリュースコア','動的EV_MIN','ナイター',
+            '3連単①','3連単②','3連単③','注意フラグ','イン崩壊',
+        ] if c in hp_df.columns]
+        if len(hp_df) > 0:
+            hp_df[hp_show].to_excel(writer, sheet_name='💎高配当候補(8000+)', index=False)
+            ws_hp = writer.sheets['💎高配当候補(8000+)']
+            thin_b = Border(left=Side(style='thin', color='CCCCCC'),
+                            right=Side(style='thin', color='CCCCCC'),
+                            top=Side(style='thin', color='CCCCCC'),
+                            bottom=Side(style='thin', color='CCCCCC'))
+            for cell in ws_hp[1]:
+                cell.fill = HP_HDR; cell.font = Font(color='FFFFFF', bold=True)
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                cell.border = thin_b
+            ws_hp.row_dimensions[1].height = 28
+            for col in ws_hp.columns:
+                ws_hp.column_dimensions[col[0].column_letter].width = 14
+            fl_idx = hp_show.index('高配当フラグ') + 1 if '高配当フラグ' in hp_show else None
+            for row in ws_hp.iter_rows(min_row=2, max_row=ws_hp.max_row):
+                fl_val = int(row[fl_idx-1].value or 0) if fl_idx else 0
+                fill_r = HP_GLD if fl_val == 1 else HP_PNK
+                for c in row:
+                    c.fill = fill_r
+                    c.alignment = Alignment(horizontal='center', vertical='center')
+                    c.border = thin_b
+            ws_hp.freeze_panes = 'A2'
+            print(f'[高配当候補] {len(hp_df)}R → 💎高配当候補(8000+) シートに出力')
+        else:
+            pd.DataFrame(columns=['メッセージ']).to_excel(
+                writer, sheet_name='💎高配当候補(8000+)', index=False)
+            writer.sheets['💎高配当候補(8000+)']['A2'] = \
+                '高配当候補なし（条件を満たすレースがありませんでした）'
+            print('[高配当候補] 該当レースなし')
 
         detail_df.to_excel(writer, sheet_name='🔍選手詳細', index=False)
         ws2 = writer.sheets['🔍選手詳細']

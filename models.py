@@ -29,6 +29,10 @@ from features import (
     compute_value_score, is_value_bet,
 )
 
+# ── 高配当学習設定 ─────────────────────────────────────────────
+HIGH_PAYOUT_THRESHOLD: int   = 8000   # 払戻8000円以上を「高配当」とみなす
+HIGH_PAYOUT_WEIGHT:    float = 5.0    # 高配当レースのサンプルウェイト倍率
+
 
 # ════════════════════════════════════════════════════════════
 # モデルファクトリ
@@ -103,19 +107,30 @@ def fit_models(train: pd.DataFrame, add_noise: bool = True) -> dict:
     y_top3 = tr.loc[valid, "3着内フラグ"].astype(int)
     spw_win  = (y_win  == 0).sum() / max((y_win  == 1).sum(), 1)
     spw_top3 = (y_top3 == 0).sum() / max((y_top3 == 1).sum(), 1)
-    print(f"  学習: n={valid.sum()} / spw_win={spw_win:.1f}")
 
-    clf_win  = _make_clf_cal(spw_win);  clf_win.fit(X_tr[valid],  y_win);  result["win"]  = clf_win
-    clf_top3 = _make_clf_cal(spw_top3); clf_top3.fit(X_tr[valid], y_top3); result["top3"] = clf_top3
+    # ── 高配当サンプルウェイト（8000円以上は5倍で学習）──────────
+    race_max_pay = tr.groupby(["場コード","レースNo"])["払戻"].transform("max").fillna(0) \
+                   if "払戻" in tr.columns else pd.Series(0, index=tr.index)
+    is_hp = (race_max_pay >= HIGH_PAYOUT_THRESHOLD)
+    sw = pd.Series(1.0, index=tr.index)
+    sw[is_hp] = HIGH_PAYOUT_WEIGHT
+    sw_valid  = sw[valid].values
+    hp_cnt = int(is_hp[valid].sum())
+    print(f"  学習: n={valid.sum()} / spw_win={spw_win:.1f} "
+          f"/ 高配当(≥¥{HIGH_PAYOUT_THRESHOLD:,})レース: {hp_cnt//6}R (重み×{HIGH_PAYOUT_WEIGHT})")
+
+    clf_win  = _make_clf_cal(spw_win);  clf_win.fit(X_tr[valid],  y_win,  sample_weight=sw_valid);  result["win"]  = clf_win
+    clf_top3 = _make_clf_cal(spw_top3); clf_top3.fit(X_tr[valid], y_top3, sample_weight=sw_valid); result["top3"] = clf_top3
 
     reg_rank = _make_reg()
-    reg_rank.fit(X_tr[valid], tr.loc[valid, "着順"].astype(float))
+    reg_rank.fit(X_tr[valid], tr.loc[valid, "着順"].astype(float), sample_weight=sw_valid)
     result["rank"] = reg_rank
 
     win_mask = valid & (tr["1着フラグ"] == 1) & tr["log払戻"].notna()
     if win_mask.sum() >= 10:
         rp = _make_reg()
-        rp.fit(X_tr[win_mask], tr.loc[win_mask, "log払戻"].astype(float))
+        rp.fit(X_tr[win_mask], tr.loc[win_mask, "log払戻"].astype(float),
+               sample_weight=sw[win_mask].values)
         result["payout"] = rp
         print(f"  払戻モデル: {win_mask.sum()}件")
     else:
@@ -195,6 +210,17 @@ def predict_all(models: dict, df: pd.DataFrame) -> pd.DataFrame:
     for col in ["予測_1着確率","真期待値","アンサンブルスコア"]:
         df[f"{col}_IN順位"] = df.groupby(["場コード","レースNo"])[col].transform(
             lambda x: x.rank(method="min", ascending=False).astype(int))
+
+    # ── 高配当スコア・予測払戻・高配当フラグ（8000円基準）────────
+    if models.get("payout"):
+        df["予測払戻"] = np.expm1(models["payout"].predict(X).clip(0))
+    else:
+        df["予測払戻"] = df["推定オッズ"] * 100   # 推定払戻（円換算）
+    df["高配当スコア"] = (df["予測_1着確率"] * df["予測払戻"] / HIGH_PAYOUT_THRESHOLD).round(4)
+    df["高配当フラグ"] = (
+        (df["予測払戻"] >= HIGH_PAYOUT_THRESHOLD) &
+        (df["予測_1着確率"] >= 0.15)
+    ).astype(int)
 
     return df
 

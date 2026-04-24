@@ -206,9 +206,13 @@ def cmd_predict(args) -> None:
         from config import VALUE_THRESHOLD
         print(f"  💰 バリュー(>{VALUE_THRESHOLD}): "
               f"{(picks_df['バリュースコア'] >= VALUE_THRESHOLD).sum()}R")
+    if "高配当フラグ" in picks_df.columns:
+        hp_cnt = (picks_df["高配当フラグ"] == 1).sum()
+        print(f"  💎 高配当候補(予測払戻≥¥8,000): {hp_cnt}R")
 
     show = ["場名","レースNo","軸艇番","軸選手","軸確率","軸真期待値",
-            "バリュースコア","動的EV_MIN","ナイター","3連単①","3連単②","注意フラグ"]
+            "バリュースコア","高配当スコア","予測払戻","動的EV_MIN","ナイター",
+            "3連単①","3連単②","注意フラグ"]
     show = [c for c in show if c in picks_df.columns]
     print("\n━━ ✅ 買いレース（上位15） ━━")
     print(picks_df[picks_df["判定"].str.startswith("✅")][show].head(15).to_string(index=False))
