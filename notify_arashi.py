@@ -209,7 +209,14 @@ def _apply_preview_to_boats(
     preview が None でも安全に動く。
     """
     # ── 艇別: 展示タイム / 展示ST / チルト ──────────────────
-    for pb in preview.get("boats", []):
+    # boats は {"1": {...}, "2": {...}} 形式の辞書
+    boats_dict = preview.get("boats", {})
+    if isinstance(boats_dict, dict):
+        pb_list = list(boats_dict.values())
+    else:
+        pb_list = boats_dict
+
+    for pb in pb_list:
         if not isinstance(pb, dict):
             continue
         lane = pb.get("racer_boat_number")
@@ -218,34 +225,33 @@ def _apply_preview_to_boats(
             continue
         if pb.get("racer_exhibition_time") is not None:
             boat.ex_time = float(pb["racer_exhibition_time"])
-        if pb.get("racer_exhibition_start_timing") is not None:
-            boat.ex_st = float(pb["racer_exhibition_start_timing"])
-        if pb.get("racer_tilt") is not None:
-            boat.tilt = float(pb["racer_tilt"])
+        if pb.get("racer_start_timing") is not None:
+            boat.ex_st = float(pb["racer_start_timing"])
+        if pb.get("racer_tilt_adjustment") is not None:
+            boat.tilt = float(pb["racer_tilt_adjustment"])
 
-    # ── 気象情報 ─────────────────────────────────────────────
-    wd_raw = preview.get("wind_direction")
+    # 気象情報（実際のキー名に修正）
+    wd_num = preview.get("race_wind_direction_number")
     wd_str: Optional[str] = None
-    if wd_raw is not None:
-        raw = str(wd_raw)
-        if "追" in raw:
+    if wd_num is not None:
+        wd_num = int(wd_num)
+        if wd_num in (1, 2):
             wd_str = "追"
-        elif "向" in raw:
+        elif wd_num in (9, 10):
             wd_str = "向"
-        elif "横" in raw or "斜" in raw:
-            wd_str = "横"
         else:
-            wd_str = raw
+            wd_str = "横"
 
-    ws  = preview.get("wind_speed")
-    wh  = preview.get("wave_height")
-    wdc = preview.get("weather_condition")
+    ws  = preview.get("race_wind")
+    wh  = preview.get("race_wave")
+    wdc = preview.get("race_weather_number")
+    weather_label = {1: "晴", 2: "曇", 3: "雨", 4: "雪"}.get(int(wdc), str(wdc)) if wdc is not None else None
 
     return WeatherInfo(
         wind_speed     = float(ws)  if ws  is not None else None,
         wind_direction = wd_str,
         wave_height    = int(wh)    if wh  is not None else None,
-        weather        = str(wdc)   if wdc is not None else None,
+        weather        = weather_label,
     )
 
 
