@@ -262,24 +262,6 @@ def build_race_data(
         key = (p.get("race_stadium_number"), p.get("race_number"))
         preview_map[key] = p
 
-    # ── デバッグ: 最初の1レースのJSONキー構造をそのまま出力 ──────
-    if programs:
-        p0 = programs[0]
-        log.info("[DEBUG] programs[0] のトップレベルキー: %s", list(p0.keys()))
-        boats0 = p0.get("boats", [])
-        if boats0 and isinstance(boats0[0], dict):
-            log.info("[DEBUG] programs[0].boats[0] のキー: %s", list(boats0[0].keys()))
-            log.info("[DEBUG] programs[0].boats[0] の値: %s", boats0[0])
-    if previews:
-        v0 = previews[0]
-        log.info("[DEBUG] previews[0] のトップレベルキー: %s", list(v0.keys()))
-        pboats0 = v0.get("boats", [])
-        if pboats0 and isinstance(pboats0[0], dict):
-            log.info("[DEBUG] previews[0].boats[0] のキー: %s", list(pboats0[0].keys()))
-            log.info("[DEBUG] previews[0].boats[0] の値: %s", pboats0[0])
-        log.info("[DEBUG] previews[0] の気象系キー: wind_speed=%s, wind_direction=%s, wave_height=%s, weather_condition=%s",
-                 v0.get("wind_speed"), v0.get("wind_direction"),
-                 v0.get("wave_height"), v0.get("weather_condition"))
     # ── デバッグここまで ─────────────────────────────────────────
 if programs:
         p0 = programs[0]
