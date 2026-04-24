@@ -262,25 +262,6 @@ def build_race_data(
         key = (p.get("race_stadium_number"), p.get("race_number"))
         preview_map[key] = p
 
-    # ── デバッグここまで ─────────────────────────────────────────
-if programs:
-        p0 = programs[0]
-        log.info("[DEBUG] program keys: %s", list(p0.keys()))
-        boats0 = p0.get("boats", [])
-        if boats0 and isinstance(boats0[0], dict):
-            log.info("[DEBUG] program boat keys: %s", list(boats0[0].keys()))
-            log.info("[DEBUG] program boat sample: %s", boats0[0])
-    if previews:
-        v0 = previews[0]
-        log.info("[DEBUG] preview keys: %s", list(v0.keys()))
-        pboats0 = v0.get("boats", [])
-        if pboats0 and isinstance(pboats0[0], dict):
-            log.info("[DEBUG] preview boat keys: %s", list(pboats0[0].keys()))
-            log.info("[DEBUG] preview boat sample: %s", pboats0[0])
-        log.info("[DEBUG] weather: wind_speed=%s wind_direction=%s wave_height=%s weather_condition=%s",
-                 v0.get("wind_speed"), v0.get("wind_direction"),
-                 v0.get("wave_height"), v0.get("weather_condition"))
-
     results: list[tuple[int, int, list[BoatInfo], WeatherInfo]] = []
     for prog in programs:
         vn  = prog.get("race_stadium_number")
@@ -672,7 +653,6 @@ def run(race_date: Optional[str] = None) -> None:
                 # デバッグ: 最初の場の1〜3Rはスコア詳細をINFOで出力
                 if race_number <= 3 and venue_num == race_list[0][0]:
                     log.info(
-                        "[DEBUG] スコア詳細 %s %dR score=%.2f | %s",
                         VENUE_NAMES.get(venue_num, f"場{venue_num}"),
                         race_number, score,
                         " | ".join(f"{k}:{v}" for k, v in detail.items()),
