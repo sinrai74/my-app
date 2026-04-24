@@ -281,6 +281,23 @@ def build_race_data(
                  v0.get("wind_speed"), v0.get("wind_direction"),
                  v0.get("wave_height"), v0.get("weather_condition"))
     # ── デバッグここまで ─────────────────────────────────────────
+if programs:
+        p0 = programs[0]
+        log.info("[DEBUG] program keys: %s", list(p0.keys()))
+        boats0 = p0.get("boats", [])
+        if boats0 and isinstance(boats0[0], dict):
+            log.info("[DEBUG] program boat keys: %s", list(boats0[0].keys()))
+            log.info("[DEBUG] program boat sample: %s", boats0[0])
+    if previews:
+        v0 = previews[0]
+        log.info("[DEBUG] preview keys: %s", list(v0.keys()))
+        pboats0 = v0.get("boats", [])
+        if pboats0 and isinstance(pboats0[0], dict):
+            log.info("[DEBUG] preview boat keys: %s", list(pboats0[0].keys()))
+            log.info("[DEBUG] preview boat sample: %s", pboats0[0])
+        log.info("[DEBUG] weather: wind_speed=%s wind_direction=%s wave_height=%s weather_condition=%s",
+                 v0.get("wind_speed"), v0.get("wind_direction"),
+                 v0.get("wave_height"), v0.get("weather_condition"))
 
     results: list[tuple[int, int, list[BoatInfo], WeatherInfo]] = []
     for prog in programs:
