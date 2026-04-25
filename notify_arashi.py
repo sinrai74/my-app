@@ -278,7 +278,8 @@ def build_race_data(
         boats   = _extract_boats_from_program(prog)
         preview = preview_map.get((vn, rno), {})
         weather = _apply_preview_to_boats(boats, preview)
-        results.append((int(vn), int(rno), boats, weather))
+        closed_at = prog.get('race_closed_at', '')
+        results.append((int(vn), int(rno), boats, weather, closed_at))
 
     log.info("レース組み立て完了: %d レース", len(results))
     return results
@@ -647,11 +648,28 @@ def run(race_date: Optional[str] = None) -> None:
 
     # ── レースデータ組み立て ──────────────────────────────────
     race_list = build_race_data(programs, previews)
-    log.info("処理対象: %d レース", len(race_list))
+    # 締切前のレースのみに絞る
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    now = datetime.now(JST).replace(tzinfo=None)
+    filtered = []
+    for item in race_list:
+        closed_at = item[4] if len(item) > 4 else None
+        if closed_at:
+            try:
+                closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
+                if closed_dt > now:
+                    filtered.append(item)
+            except Exception:
+                filtered.append(item)
+        else:
+            filtered.append(item)
+    log.info("処理対象: %d レース（締切前: %d / 全体: %d）", len(filtered), len(filtered), len(race_list))
+    race_list = filtered
 
     # ── 荒れ判定 & 通知 ──────────────────────────────────────
     notified = 0
-    for venue_num, race_number, boats, weather in race_list:
+    for venue_num, race_number, boats, weather, *_ in race_list:
         try:
             score, detail, target = calculate_upset_score(boats, weather)
 
