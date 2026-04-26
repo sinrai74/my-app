@@ -202,7 +202,7 @@ def _predict_win_prob(boats: list) -> dict[int, float]:
         df = pd.DataFrame(rows)
         for col in ["全国勝率","全国2率","当地勝率","当地2率","モーター2率"]:
             if f"{col}_IN順位" in _ML_FEATURE_COLS:
-                df[f"{col}_IN順位"] = df[col].rank(ascending=False).astype(int)
+                df[f"{col}_IN順位"] = df[col].fillna(0).rank(ascending=False).astype(float)
             if f"{col}_IN偏差" in _ML_FEATURE_COLS:
                 df[f"{col}_IN偏差"] = df[col] - df[col].mean()
             if f"{col}_MAX差" in _ML_FEATURE_COLS:
@@ -210,7 +210,7 @@ def _predict_win_prob(boats: list) -> dict[int, float]:
             if f"{col}_MIN差" in _ML_FEATURE_COLS:
                 df[f"{col}_MIN差"] = df[col] - df[col].min()
         if "平均ST_IN順位" in _ML_FEATURE_COLS:
-            df["平均ST_IN順位"] = df["平均ST"].rank(ascending=True).astype(int)
+            df["平均ST_IN順位"] = df["平均ST"].fillna(0.18).rank(ascending=True).astype(float)
         X = df[_ML_FEATURE_COLS].fillna(df[_ML_FEATURE_COLS].median())
         probs = _ML_MODELS["win"].predict_proba(X)[:, 1]
         total = sum(probs)
