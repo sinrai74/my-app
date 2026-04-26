@@ -190,7 +190,7 @@ def _predict_win_prob(boats: list) -> dict[int, float]:
             row["艇番"]    = b.lane
             row["全国勝率"] = b.win_rate
             row["モーター2率"] = b.motor
-            row["平均ST"]   = b.start
+            row["平均ST"]   = b.avg_st
             row["当地勝率"] = getattr(b, "local_win", np.nan)
             row["全国2率"]  = getattr(b, "win_rate2", np.nan)
             row["当地2率"]  = getattr(b, "local_win2", np.nan)
@@ -633,6 +633,17 @@ def calculate_upset_score(
     }
 
     return upset_score, detail, target
+
+def _danger_label(score: float) -> str:
+    if score >= 7.0:
+        return "🔴 非常に高"
+    elif score >= 5.0:
+        return "🟠 高"
+    elif score >= 3.5:
+        return "🟡 中"
+    else:
+        return "🟢 低"
+
 
 def build_message(result: RaceResult) -> tuple[str, str]:
     """
