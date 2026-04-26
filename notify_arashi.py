@@ -583,7 +583,7 @@ def calc_boat_score(
 
     # 勝率
     if boat.win_rate is not None:
-        score += (boat.win_rate - 5.0) * 0.5 * 0.5
+        score += (boat.win_rate - 5.0) * 0.7
 
     return score
 
@@ -620,9 +620,9 @@ def calculate_upset_score(
     top_lane, top_prob, top_score = probs[0]
     second_prob = probs[1][1] if len(probs) > 1 else 0.0
 
-    if top_lane == 1 or top_prob <= 0.40:
+    if top_lane == 1 or top_prob < 0.45:
         upset_score = 0.0
-    elif top_prob - second_prob < 0.10:
+    elif top_prob - second_prob < 0.12:
         upset_score = 0.0
 
     detail = {
@@ -768,10 +768,14 @@ def run(race_date: Optional[str] = None) -> None:
     from datetime import datetime, timezone, timedelta
     JST = timezone(timedelta(hours=9))
     now = datetime.now(JST).replace(tzinfo=None)
+    import os
+    skip_filter = os.getenv("SKIP_TIME_FILTER", "0") == "1"
     filtered = []
     for item in race_list:
         closed_at = item[4] if len(item) > 4 else None
-        if closed_at:
+        if skip_filter:
+            filtered.append(item)
+        elif closed_at:
             try:
                 closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
                 if closed_dt > now:

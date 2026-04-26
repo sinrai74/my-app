@@ -20,6 +20,10 @@ on:
         description: "荒れスコア閾値（デフォルト: 3.0）"
         required: false
         default: "4.0"
+      skip_filter:
+        description: "締切チェック無効化 (1=無効)"
+        required: false
+        default: "0"
 
 jobs:
   notify:
@@ -49,6 +53,7 @@ jobs:
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+          SKIP_TIME_FILTER: ${{ github.event.inputs.skip_filter }}
         run: |
           DATE_ARG=""
           THRESHOLD_ARG=""
