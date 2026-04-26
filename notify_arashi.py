@@ -75,7 +75,7 @@ VENUE_NAMES: dict[int, str] = {
 
 # ── 荒れスコアリング閾値 ────────────────────────────────────
 # スコアがこの値以上のレースのみ通知する
-UPSET_SCORE_THRESHOLD = 1.5   # チューニング可能
+UPSET_SCORE_THRESHOLD = 4.0   # チューニング可能
 
 # ── 各判定項目の配点 ─────────────────────────────────────────
 SCORE_WEIGHTS = {
@@ -432,91 +432,136 @@ def score_by_model(boats: list[BoatInfo], weather: WeatherInfo) -> Optional[floa
     return None
 
 
+def calc_boat_score(
+    boat,
+    all_boats: list,
+    weather,
+) -> float:
+    score = 0.0
+
+    # 展示タイム
+    ex_times = [b.ex_time for b in all_boats if b.ex_time is not None and b.ex_time > 0]
+    if ex_times and boat.ex_time is not None and boat.ex_time > 0:
+        best_ex = min(ex_times)
+        diff = boat.ex_time - best_ex
+        if diff <= 0.00:   ex_s = 2.0
+        elif diff <= 0.02: ex_s = 1.5
+        elif diff <= 0.05: ex_s = 1.0
+        elif diff <= 0.08: ex_s = 0.3
+        elif diff <= 0.12: ex_s = -0.5
+        else:              ex_s = -1.5
+        score += ex_s * 1.5
+
+    # ST
+    sts = [b.ex_st for b in all_boats if b.ex_st is not None]
+    if sts and boat.ex_st is not None:
+        avg_st = sum(sts) / len(sts)
+        diff_st = boat.ex_st - avg_st
+        if diff_st <= -0.05:   st_s = 2.0
+        elif diff_st <= -0.03: st_s = 1.2
+        elif diff_st <= -0.01: st_s = 0.5
+        elif diff_st <= 0.01:  st_s = 0.0
+        elif diff_st <= 0.03:  st_s = -0.5
+        else:                  st_s = -1.5
+        score += st_s * 1.3
+
+        # 展開補正（2号艇）
+        boat1 = next((b for b in all_boats if b.lane == 1), None)
+        if boat.lane == 2 and boat1 is not None and boat1.ex_st is not None:
+            if boat.ex_st <= 0.12 and boat1.ex_st >= 0.18:
+                score += 2.0
+            if abs(boat.ex_st - boat1.ex_st) <= 0.02:
+                score += 1.0
+
+    # モーター順位
+    motors = sorted([b.motor for b in all_boats if b.motor is not None], reverse=True)
+    if motors and boat.motor is not None:
+        try:
+            rank = motors.index(boat.motor) + 1
+        except ValueError:
+            rank = 3
+        if rank == 1:   m_s = 2.0
+        elif rank == 2: m_s = 1.2
+        elif rank == 3: m_s = 0.5
+        elif rank == 4: m_s = -0.3
+        elif rank == 5: m_s = -0.8
+        else:           m_s = -1.5
+        score += m_s * 1.2
+
+    # コース補正
+    lane_weight = {1: 1.8, 2: 1.2, 3: 0.8, 4: 0.3, 5: -0.5, 6: -1.0}
+    score += lane_weight.get(boat.lane, 0.0)
+
+    # 風
+    if weather and weather.wind_speed is not None and weather.wind_speed > 0:
+        ws = weather.wind_speed
+        wd = weather.wind_direction
+        if wd == "向":
+            score += ws * 0.4 * 0.8
+        elif wd == "追":
+            if boat.lane == 1:
+                score += ws * 0.3 * 0.8
+            else:
+                score -= ws * 0.2 * 0.8
+        else:
+            score -= ws * 0.1 * 0.8
+
+    # 波
+    if weather and weather.wave_height is not None:
+        wh = weather.wave_height
+        if wh >= 5:
+            score += (-1.5 if boat.lane == 1 else 0.5) * 0.7
+        elif wh >= 3:
+            score -= 0.3 * 0.7
+
+    # 勝率
+    if boat.win_rate is not None:
+        score += (boat.win_rate - 5.0) * 0.5 * 0.5
+
+    return score
+
+
 def calculate_upset_score(
-    boats:   list[BoatInfo],
-    weather: WeatherInfo,
-) -> tuple[float, dict[str, str], list[int]]:
-    """
-    荒れスコアを計算して (score, detail_dict, target_lanes) を返す。
+    boats: list,
+    weather,
+) -> tuple:
+    import math
 
-    target_lanes: 狙える艇番のリスト（スコアが高い上位 3 艇）
-    """
-    boat1 = next((b for b in boats if b.lane == 1), None)
-    if boat1 is None:
-        return 0.0, {"error": "1号艇データなし"}, []
+    def sigmoid(x):
+        return 1 / (1 + math.exp(-x))
 
-    detail: dict[str, str] = {}
-    total_score = 0.0
+    probs = []
+    for b in boats:
+        s = calc_boat_score(b, boats, weather)
+        p = sigmoid(s / 3.0)
+        probs.append((b.lane, p, s))
 
-    # ── ルールベーススコアリング ──────────────────────────────
-    s, d = _score_exhibition_time(boat1, boats)
-    total_score += s
-    detail["展示タイム"] = d
+    probs.sort(key=lambda x: x[1], reverse=True)
 
-    s, d = _score_exhibition_st(boat1, boats)
-    total_score += s
-    detail["展示ST"] = d
+    boat1_prob = next((p for lane, p, s in probs if lane == 1), 0.5)
+    boat1_rank = next((i+1 for i, (lane, p, s) in enumerate(probs) if lane == 1), 1)
 
-    s, d = _score_weather(weather)
-    total_score += s
-    detail["気象"] = d
+    # 荒れスコア
+    upset_score = (1 - boat1_prob) * 10
+    if probs[0][0] != 1:
+        upset_score += 2.0
 
-    s, d = _score_performance(boat1, boats)
-    total_score += s
-    detail["選手スペック"] = d
+    # 狙い目（calc_boat_scoreベースで上位3艇、1号艇除く）
+    target = [lane for lane, p, s in probs if lane != 1][:3]
 
-    # ── ML モデルスコアの上乗せ（将来実装）──────────────────
-    ml_score = score_by_model(boats, weather)
-    if ml_score is not None:
-        total_score = total_score * 0.6 + ml_score * 0.4
-        detail["MLスコア"] = f"{ml_score:.2f}"
+    # 通知条件: 1号艇が1位でない かつ 1位艇確率>0.40
+    top_lane, top_prob, top_score = probs[0]
+    if top_lane == 1 or top_prob <= 0.40:
+        upset_score = 0.0
 
-    # ── 狙い艇を選定（1号艇を除く上位スコア艇）──────────────
-    target_lanes = _select_target_lanes(boat1, boats)
+    detail = {
+        "予測1位": f"{top_lane}号艇(確率{top_prob:.1%})",
+        "1号艇確率": f"{boat1_prob:.1%}(rank{boat1_rank})",
+        "展示": f"{next((b.ex_time for b in boats if b.lane==1), None)}秒",
+        "展示ST": f"{next((b.ex_st for b in boats if b.lane==1), None)}",
+    }
 
-    return round(total_score, 2), detail, target_lanes
-
-
-def _select_target_lanes(boat1: BoatInfo, all_boats: list[BoatInfo]) -> list[int]:
-    """
-    1号艇以外で最も有望な艇を選ぶ。
-    展示タイム・ST・勝率の複合スコアで上位3艇を返す。
-    """
-    others = [b for b in all_boats if b.lane != 1]
-    if not others:
-        return []
-
-    # 各艇を簡易スコアリング（高いほど良い）
-    scored: list[tuple[int, float]] = []
-    for b in others:
-        s = 0.0
-        s += b.win_rate * 10             # 全国勝率
-        s += b.motor   * 5               # モーター2連率
-        if b.ex_time is not None:
-            # 展示タイムは速い（小さい）ほど高スコア
-            s += max(0, (7.00 - b.ex_time) * 20)
-        if b.ex_st is not None:
-            # STは小さい（速い）ほど高スコア
-            s += max(0, (0.20 - b.ex_st) * 50)
-        scored.append((b.lane, s))
-
-    scored.sort(key=lambda x: -x[1])
-    return [lane for lane, _ in scored[:3]]
-
-
-# ════════════════════════════════════════════════════════════
-# 通知メッセージ生成
-# ════════════════════════════════════════════════════════════
-
-def _danger_label(score: float) -> str:
-    if score >= 7.0:
-        return "🔴 非常に高"
-    if score >= 5.0:
-        return "🟠 高"
-    if score >= 3.0:
-        return "🟡 中"
-    return "🟢 低"
-
+    return upset_score, detail, target
 
 def build_message(result: RaceResult) -> tuple[str, str]:
     """

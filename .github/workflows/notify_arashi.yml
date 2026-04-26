@@ -19,7 +19,7 @@ on:
       threshold:
         description: "荒れスコア閾値（デフォルト: 3.0）"
         required: false
-        default: "2.5"
+        default: "4.0"
 
 jobs:
   notify:
