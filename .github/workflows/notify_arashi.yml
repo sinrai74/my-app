@@ -42,7 +42,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4
+          pip install requests beautifulsoup4 pandas numpy scikit-learn lightgbm
 
       # ── 荒れ検知スクリプト実行 ──────────────────────────────
       - name: Run upset detector
