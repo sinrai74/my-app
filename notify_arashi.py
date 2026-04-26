@@ -768,7 +768,6 @@ def run(race_date: Optional[str] = None) -> None:
     from datetime import datetime, timezone, timedelta
     JST = timezone(timedelta(hours=9))
     now = datetime.now(JST).replace(tzinfo=None)
-    import os
     skip_filter = os.getenv("SKIP_TIME_FILTER", "0") == "1"
     filtered = []
     for item in race_list:
