@@ -465,21 +465,20 @@ def calc_boat_score(
         else:                  st_s = -1.5
         score += st_s * 1.3
 
-        # 展開補正（2号艇）
+        # 展開補正（2〜4号艇のまくり）
         boat1 = next((b for b in all_boats if b.lane == 1), None)
+        if boat.lane in [2, 3, 4] and boat1 is not None and boat1.ex_st is not None:
+            if boat.ex_st <= 0.13 and boat1.ex_st >= 0.18:
+                score += 1.5
+        # 2号艇差し補正
         if boat.lane == 2 and boat1 is not None and boat1.ex_st is not None:
-            if boat.ex_st <= 0.12 and boat1.ex_st >= 0.18:
-                score += 2.0
             if abs(boat.ex_st - boat1.ex_st) <= 0.02:
                 score += 1.0
 
-    # モーター順位
+    # モーター順位（同率対応）
     motors = sorted([b.motor for b in all_boats if b.motor is not None], reverse=True)
     if motors and boat.motor is not None:
-        try:
-            rank = motors.index(boat.motor) + 1
-        except ValueError:
-            rank = 3
+        rank = sorted(motors, reverse=True).index(boat.motor) + 1
         if rank == 1:   m_s = 2.0
         elif rank == 2: m_s = 1.2
         elif rank == 3: m_s = 0.5
@@ -488,35 +487,35 @@ def calc_boat_score(
         else:           m_s = -1.5
         score += m_s * 1.2
 
-    # コース補正
-    lane_weight = {1: 1.8, 2: 1.2, 3: 0.8, 4: 0.3, 5: -0.5, 6: -1.0}
+    # コース補正（5・6号艇緩和）
+    lane_weight = {1: 1.6, 2: 1.2, 3: 0.9, 4: 0.5, 5: -0.2, 6: -0.6}
     score += lane_weight.get(boat.lane, 0.0)
 
-    # 風
+    # 風（強化）
     if weather and weather.wind_speed is not None and weather.wind_speed > 0:
         ws = weather.wind_speed
         wd = weather.wind_direction
         if wd == "向":
-            score += ws * 0.4 * 0.8
+            score += ws * 0.6
         elif wd == "追":
             if boat.lane == 1:
-                score += ws * 0.3 * 0.8
+                score += ws * 0.4
             else:
-                score -= ws * 0.2 * 0.8
+                score -= ws * 0.3
         else:
-            score -= ws * 0.1 * 0.8
+            score -= ws * 0.2
 
-    # 波
+    # 波（強化）
     if weather and weather.wave_height is not None:
         wh = weather.wave_height
         if wh >= 5:
-            score += (-1.5 if boat.lane == 1 else 0.5) * 0.7
+            score += (-2.0 if boat.lane == 1 else 1.0)
         elif wh >= 3:
-            score -= 0.3 * 0.7
+            score += (-0.8 if boat.lane == 1 else 0.3)
 
     # 勝率
     if boat.win_rate is not None:
-        score += (boat.win_rate - 5.0) * 0.5 * 0.5
+        score += (boat.win_rate - 5.0) * 0.7
 
     return score
 
@@ -551,7 +550,11 @@ def calculate_upset_score(
 
     # 通知条件: 1号艇が1位でない かつ 1位艇確率>0.40
     top_lane, top_prob, top_score = probs[0]
-    if top_lane == 1 or top_prob <= 0.40:
+    second_prob = probs[1][1] if len(probs) > 1 else 0.0
+
+    if top_lane == 1 or top_prob < 0.45:
+        upset_score = 0.0
+    elif top_prob - second_prob < 0.12:
         upset_score = 0.0
 
     detail = {
