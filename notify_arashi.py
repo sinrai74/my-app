@@ -154,6 +154,74 @@ def _safe_get(url: str) -> Optional[dict]:
         return None
 
 
+# ── MLモデル読み込み ──────────────────────────────────────
+import gzip, pickle as _pickle
+import pandas as pd
+import numpy as np
+import warnings
+warnings.filterwarnings("ignore")
+
+_ML_MODELS = None
+_ML_FEATURE_COLS = None
+
+def _load_ml_model():
+    global _ML_MODELS, _ML_FEATURE_COLS
+    if _ML_MODELS is not None:
+        return True
+    try:
+        with gzip.open("model_all.pkl", "rb") as _f:
+            _data = _pickle.load(_f)
+        _ML_MODELS = _data["models"]
+        _ML_FEATURE_COLS = _data["feature_cols"]
+        log.info("[ML] モデル読み込み成功 特徴量=%d", len(_ML_FEATURE_COLS))
+        return True
+    except Exception as e:
+        log.warning("[ML] モデル読み込み失敗: %s", e)
+        return False
+
+
+def _predict_win_prob(boats: list) -> dict[int, float]:
+    if not _load_ml_model():
+        return {}
+    try:
+        rows = []
+        for b in boats:
+            row = {f: np.nan for f in _ML_FEATURE_COLS}
+            row["艇番"]    = b.lane
+            row["全国勝率"] = b.win_rate
+            row["モーター2率"] = b.motor
+            row["平均ST"]   = b.start
+            row["当地勝率"] = getattr(b, "local_win", np.nan)
+            row["全国2率"]  = getattr(b, "win_rate2", np.nan)
+            row["当地2率"]  = getattr(b, "local_win2", np.nan)
+            if b.ex_time:
+                row["展示タイム"] = b.ex_time if "展示タイム" in _ML_FEATURE_COLS else np.nan
+            if b.ex_st:
+                row["展示ST"] = b.ex_st if "展示ST" in _ML_FEATURE_COLS else np.nan
+            rows.append(row)
+        df = pd.DataFrame(rows)
+        for col in ["全国勝率","全国2率","当地勝率","当地2率","モーター2率"]:
+            if f"{col}_IN順位" in _ML_FEATURE_COLS:
+                df[f"{col}_IN順位"] = df[col].rank(ascending=False).astype(int)
+            if f"{col}_IN偏差" in _ML_FEATURE_COLS:
+                df[f"{col}_IN偏差"] = df[col] - df[col].mean()
+            if f"{col}_MAX差" in _ML_FEATURE_COLS:
+                df[f"{col}_MAX差"] = df[col].max() - df[col]
+            if f"{col}_MIN差" in _ML_FEATURE_COLS:
+                df[f"{col}_MIN差"] = df[col] - df[col].min()
+        if "平均ST_IN順位" in _ML_FEATURE_COLS:
+            df["平均ST_IN順位"] = df["平均ST"].rank(ascending=True).astype(int)
+        X = df[_ML_FEATURE_COLS].fillna(df[_ML_FEATURE_COLS].median())
+        probs = _ML_MODELS["win"].predict_proba(X)[:, 1]
+        total = sum(probs)
+        if total > 0:
+            probs = probs / total  # 正規化
+        return {b.lane: float(p) for b, p in zip(boats, probs)}
+    except Exception as e:
+        log.warning("[ML] 予測失敗: %s", e)
+        return {}
+
+
 def fetch_programs(race_date: str) -> list[dict]:
     """出走表を取得して programs リストを返す。失敗時は []。"""
     url = f"{PROGRAMS_URL}/{race_date[:4]}/{race_date}.json"
@@ -465,20 +533,21 @@ def calc_boat_score(
         else:                  st_s = -1.5
         score += st_s * 1.3
 
-        # 展開補正（2〜4号艇のまくり）
+        # 展開補正（2号艇）
         boat1 = next((b for b in all_boats if b.lane == 1), None)
-        if boat.lane in [2, 3, 4] and boat1 is not None and boat1.ex_st is not None:
-            if boat.ex_st <= 0.13 and boat1.ex_st >= 0.18:
-                score += 1.5
-        # 2号艇差し補正
         if boat.lane == 2 and boat1 is not None and boat1.ex_st is not None:
+            if boat.ex_st <= 0.12 and boat1.ex_st >= 0.18:
+                score += 2.0
             if abs(boat.ex_st - boat1.ex_st) <= 0.02:
                 score += 1.0
 
-    # モーター順位（同率対応）
+    # モーター順位
     motors = sorted([b.motor for b in all_boats if b.motor is not None], reverse=True)
     if motors and boat.motor is not None:
-        rank = sorted(motors, reverse=True).index(boat.motor) + 1
+        try:
+            rank = motors.index(boat.motor) + 1
+        except ValueError:
+            rank = 3
         if rank == 1:   m_s = 2.0
         elif rank == 2: m_s = 1.2
         elif rank == 3: m_s = 0.5
@@ -487,35 +556,35 @@ def calc_boat_score(
         else:           m_s = -1.5
         score += m_s * 1.2
 
-    # コース補正（5・6号艇緩和）
-    lane_weight = {1: 1.6, 2: 1.2, 3: 0.9, 4: 0.5, 5: -0.2, 6: -0.6}
+    # コース補正
+    lane_weight = {1: 1.8, 2: 1.2, 3: 0.8, 4: 0.3, 5: -0.5, 6: -1.0}
     score += lane_weight.get(boat.lane, 0.0)
 
-    # 風（強化）
+    # 風
     if weather and weather.wind_speed is not None and weather.wind_speed > 0:
         ws = weather.wind_speed
         wd = weather.wind_direction
         if wd == "向":
-            score += ws * 0.6
+            score += ws * 0.4 * 0.8
         elif wd == "追":
             if boat.lane == 1:
-                score += ws * 0.4
+                score += ws * 0.3 * 0.8
             else:
-                score -= ws * 0.3
+                score -= ws * 0.2 * 0.8
         else:
-            score -= ws * 0.2
+            score -= ws * 0.1 * 0.8
 
-    # 波（強化）
+    # 波
     if weather and weather.wave_height is not None:
         wh = weather.wave_height
         if wh >= 5:
-            score += (-2.0 if boat.lane == 1 else 1.0)
+            score += (-1.5 if boat.lane == 1 else 0.5) * 0.7
         elif wh >= 3:
-            score += (-0.8 if boat.lane == 1 else 0.3)
+            score -= 0.3 * 0.7
 
     # 勝率
     if boat.win_rate is not None:
-        score += (boat.win_rate - 5.0) * 0.7
+        score += (boat.win_rate - 5.0) * 0.5 * 0.5
 
     return score
 
@@ -550,11 +619,7 @@ def calculate_upset_score(
 
     # 通知条件: 1号艇が1位でない かつ 1位艇確率>0.40
     top_lane, top_prob, top_score = probs[0]
-    second_prob = probs[1][1] if len(probs) > 1 else 0.0
-
-    if top_lane == 1 or top_prob < 0.45:
-        upset_score = 0.0
-    elif top_prob - second_prob < 0.12:
+    if top_lane == 1 or top_prob <= 0.40:
         upset_score = 0.0
 
     detail = {
@@ -724,6 +789,20 @@ def run(race_date: Optional[str] = None) -> None:
             continue
         try:
             score, detail, target = calculate_upset_score(boats, weather)
+
+            # ── MLモデルスコアを加算 ──────────────────────────────
+            ml_probs = _predict_win_prob(boats)
+            if ml_probs:
+                prob_1 = ml_probs.get(1, 0.0)
+                if prob_1 < 0.25:
+                    ml_score = (0.25 - prob_1) * 12.0
+                    score += ml_score
+                    detail["MLスコア"] = f"1号艇勝率{prob_1:.2f} +{ml_score:.2f}点"
+                    sorted_lanes = sorted(
+                        [b.lane for b in boats if b.lane != 1],
+                        key=lambda l: ml_probs.get(l, 0), reverse=True
+                    )
+                    target = sorted_lanes[:3]
 
             if score < UPSET_SCORE_THRESHOLD:
                 # デバッグ: 最初の場の1〜3Rはスコア詳細をINFOで出力
