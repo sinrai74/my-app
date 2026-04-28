@@ -658,13 +658,11 @@ def calculate_upset_score(
     # 狙い目（calc_boat_scoreベースで上位3艇、1号艇除く）
     target = [lane for lane, p, s in probs if lane != 1][:3]
 
-    # 通知条件: 1号艇が1位でない かつ 1位艇確率>0.40
+    # 通知条件: 1号艇が1位でない
     top_lane, top_prob, top_score = probs[0]
     second_prob = probs[1][1] if len(probs) > 1 else 0.0
 
-    if top_lane == 1 or top_prob < 0.45:
-        upset_score = 0.0
-    elif top_prob - second_prob < 0.12:
+    if top_lane == 1:
         upset_score = 0.0
 
     detail = {
