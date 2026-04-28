@@ -864,11 +864,15 @@ def run(race_date: Optional[str] = None) -> None:
             ml_probs = _predict_win_prob(boats)
             if ml_probs:
                 prob_1 = ml_probs.get(1, 0.0)
-                # 1号艇確率が低いほどスコア加算（閾値を0.60に緩和）
-                if prob_1 < 0.60:
-                    ml_score = (0.60 - prob_1) * 8.0  # 最大4.8点
+                # 1号艇以外の最有力艇の確率と比較
+                other_probs = {l: p for l, p in ml_probs.items() if l != 1}
+                best_other_lane = max(other_probs, key=other_probs.get) if other_probs else None
+                best_other_prob = other_probs.get(best_other_lane, 0.0)
+                # 1号艇より他艇が強い場合スコア加算
+                if best_other_prob > prob_1 * 0.5:
+                    ml_score = best_other_prob * 6.0  # 最大6点
                     score += ml_score
-                    detail["MLスコア"] = f"1号艇ML確率{prob_1:.2f} +{ml_score:.2f}点"
+                    detail["MLスコア"] = f"対抗{best_other_lane}号艇ML確率{best_other_prob:.2f} +{ml_score:.2f}点"
                     sorted_lanes = sorted(
                         [b.lane for b in boats if b.lane != 1],
                         key=lambda l: ml_probs.get(l, 0), reverse=True
