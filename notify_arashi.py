@@ -800,10 +800,9 @@ def run(race_date: Optional[str] = None) -> None:
     # ── 荒れ判定 & 通知 ──────────────────────────────────────
     notified = 0
     for venue_num, race_number, boats, weather, *_ in race_list:
-        # 展示タイムが全艇0.00またはNoneのレースはスキップ（直前情報未公開）
+        # 展示タイムの有無を記録（スコア計算には使うがスキップはしない）
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
-        if not ex_times:
-            continue
+        has_exhibition = len(ex_times) > 0
         try:
             score, detail, target = calculate_upset_score(boats, weather)
 
