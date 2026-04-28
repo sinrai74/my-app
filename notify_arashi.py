@@ -821,6 +821,7 @@ def run(race_date: Optional[str] = None) -> None:
                     )
                     target = sorted_lanes[:3]
 
+            log.info("スコア: %s %dR score=%.2f ml=%s", VENUE_NAMES.get(venue_num,f"場{venue_num}"), race_number, score, str({k:f"{v:.2f}" for k,v in ml_probs.items()} if ml_probs else "なし"))
             if score < UPSET_SCORE_THRESHOLD:
                 # デバッグ: 最初の場の1〜3Rはスコア詳細をINFOで出力
                 if race_number <= 3 and venue_num == race_list[0][0]:
