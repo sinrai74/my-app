@@ -222,6 +222,48 @@ def _predict_win_prob(boats: list) -> dict[int, float]:
         return {}
 
 
+def _scrape_beforeinfo(race_no: int, venue_code: int, race_date: str) -> dict:
+    """公式サイトから直前情報（展示タイム・ST・チルト）を取得"""
+    from bs4 import BeautifulSoup
+    url = (f"https://www.boatrace.jp/owpc/pc/race/beforeinfo"
+           f"?rno={race_no}&jcd={str(venue_code).zfill(2)}&hd={race_date}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://www.boatrace.jp/",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=8)
+        soup = BeautifulSoup(r.content, "html.parser")
+        tables = soup.find_all("table")
+        if len(tables) < 2:
+            return {}
+        boats = {}
+        rows = tables[1].find_all("tr")
+        for i, row in enumerate(rows):
+            cells = [td.get_text(strip=True) for td in row.find_all("td")]
+            if cells and cells[0].isdigit() and 1 <= int(cells[0]) <= 6:
+                lane = int(cells[0])
+                try:
+                    ex_time = float(cells[4]) if len(cells) > 4 and cells[4] else None
+                    tilt    = float(cells[5]) if len(cells) > 5 and cells[5] else None
+                except ValueError:
+                    ex_time = tilt = None
+                ex_st = None
+                for j in range(i+1, min(i+5, len(rows))):
+                    sc = [td.get_text(strip=True) for td in rows[j].find_all("td")]
+                    if len(sc) >= 3 and sc[1] == "ST":
+                        try:
+                            ex_st = float("0"+sc[2]) if sc[2].startswith(".") else float(sc[2])
+                        except ValueError:
+                            pass
+                        break
+                boats[lane] = {"ex_time": ex_time, "ex_st": ex_st, "tilt": tilt}
+        return boats
+    except Exception as e:
+        log.warning("直前情報スクレイピング失敗: %s %sR %s", venue_code, race_no, e)
+        return {}
+
+
 def fetch_programs(race_date: str) -> list[dict]:
     """出走表を取得して programs リストを返す。失敗時は []。"""
     url = f"{PROGRAMS_URL}/{race_date[:4]}/{race_date}.json"
@@ -800,7 +842,19 @@ def run(race_date: Optional[str] = None) -> None:
     # ── 荒れ判定 & 通知 ──────────────────────────────────────
     notified = 0
     for venue_num, race_number, boats, weather, *_ in race_list:
-        # 展示タイムの有無を記録（スコア計算には使うがスキップはしない）
+        # 公式サイトから展示タイムを補完（APIが0の場合）
+        ex_times_api = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
+        if not ex_times_api:
+            race_date_str = str(race_date).replace("-","")
+            scraped = _scrape_beforeinfo(race_number, venue_num, race_date_str)
+            if scraped:
+                for b in boats:
+                    if b.lane in scraped:
+                        b.ex_time = scraped[b.lane]["ex_time"]
+                        b.ex_st   = scraped[b.lane]["ex_st"]
+                        b.tilt    = scraped[b.lane]["tilt"]
+                log.info("直前情報スクレイピング補完: %s %dR",
+                         VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
         has_exhibition = len(ex_times) > 0
         try:
