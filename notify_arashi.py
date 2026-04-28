@@ -839,6 +839,13 @@ def run(race_date: Optional[str] = None) -> None:
 
     # ── 荒れ判定 & 通知 ──────────────────────────────────────
     notified = 0
+    # 送信済みレースを記録（場コード_レース番号）
+    sent_file = "/tmp/sent_races.txt"
+    try:
+        with open(sent_file, "r") as sf:
+            sent_set = set(sf.read().splitlines())
+    except Exception:
+        sent_set = set()
     for venue_num, race_number, boats, weather, *_ in race_list:
         # 公式サイトから展示タイムを補完（APIが0の場合）
         ex_times_api = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
@@ -893,6 +900,11 @@ def run(race_date: Optional[str] = None) -> None:
                         VENUE_NAMES.get(venue_num, f"場{venue_num}"),
                         race_number, score,
                     )
+                continue
+
+            race_key = f"{venue_num}_{race_number}"
+            if race_key in sent_set:
+                log.debug("送信済みスキップ: %s %dR", VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
                 continue
 
             result = RaceResult(
