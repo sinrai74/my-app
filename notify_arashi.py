@@ -165,10 +165,11 @@ class RaceResult:
     weather:     WeatherInfo
     upset_score: float          = 0.0
     score_detail: dict          = field(default_factory=dict)
-    target_lanes: list[int]     = field(default_factory=list)  # 狙い艇番
-    odds_map:    dict           = field(default_factory=dict)  # 3連単オッズ
-    best_combo:  str            = ""   # 最高期待値の組み合わせ
-    best_ev:     float          = 0.0  # 最高期待値
+    target_lanes: list[int]     = field(default_factory=list)
+    odds_map:    dict           = field(default_factory=dict)
+    best_combo:  str            = ""
+    best_ev:     float          = 0.0
+    race_grade:  int            = 0    # 0=一般, 1=G3, 2=G2, 3=G1, 4=SG
 
 
 # ════════════════════════════════════════════════════════════
@@ -466,8 +467,9 @@ def build_race_data(
         boats   = _extract_boats_from_program(prog)
         preview = preview_map.get((vn, rno), {})
         weather = _apply_preview_to_boats(boats, preview)
-        closed_at = prog.get('race_closed_at', '')
-        results.append((int(vn), int(rno), boats, weather, closed_at))
+        closed_at  = prog.get('race_closed_at', '')
+        race_grade = prog.get('race_grade_number', 0) or 0
+        results.append((int(vn), int(rno), boats, weather, closed_at, int(race_grade)))
 
     log.info("レース組み立て完了: %d レース", len(results))
     return results
@@ -711,6 +713,7 @@ def calc_boat_score(
 def calculate_upset_score(
     boats: list,
     weather,
+    race_grade: int = 0,
 ) -> tuple:
     import math
 
@@ -733,21 +736,42 @@ def calculate_upset_score(
     if probs[0][0] != 1:
         upset_score += 2.0
 
-    # 狙い目（calc_boat_scoreベースで上位3艇、1号艇除く）
+    # ── 天候補正 ──────────────────────────────────────────────
+    if weather:
+        # 強風補正（5m以上で荒れやすい）
+        if weather.wind_speed and weather.wind_speed >= 5.0:
+            wind_bonus = min((weather.wind_speed - 5.0) * 0.3, 1.5)
+            upset_score += wind_bonus
+        # 雨補正
+        if weather.weather and '雨' in weather.weather:
+            upset_score += 0.5
+        # 高波補正
+        if weather.wave_height and weather.wave_height >= 15:
+            wave_bonus = min((weather.wave_height - 15) * 0.05, 1.0)
+            upset_score += wave_bonus
+
+    # ── レース種別補正 ──────────────────────────────────────
+    # G1・SG・MB（グレードが高いほど実力差が出て荒れにくい）
+    # 0=一般/予選, 1=G3, 2=G2, 3=G1, 4=SG/MB
+    grade_penalty = {0: 0.0, 1: -0.3, 2: -0.5, 3: -0.8, 4: -1.2}
+    upset_score += grade_penalty.get(race_grade, 0.0)
+    upset_score = max(upset_score, 0.0)
+
+    # 狙い目
     target = [lane for lane, p, s in probs if lane != 1][:3]
 
     # 通知条件: 1号艇が1位でない
     top_lane, top_prob, top_score = probs[0]
-    second_prob = probs[1][1] if len(probs) > 1 else 0.0
-
     if top_lane == 1:
         upset_score = 0.0
 
+    grade_names = {0: '一般', 1: 'G3', 2: 'G2', 3: 'G1', 4: 'SG'}
     detail = {
         "予測1位": f"{top_lane}号艇(確率{top_prob:.1%})",
         "1号艇確率": f"{boat1_prob:.1%}(rank{boat1_rank})",
         "展示": f"{next((b.ex_time for b in boats if b.lane==1), None)}秒",
         "展示ST": f"{next((b.ex_st for b in boats if b.lane==1), None)}",
+        "レース種別": grade_names.get(race_grade, f'grade{race_grade}'),
     }
 
     return upset_score, detail, target
@@ -777,8 +801,11 @@ def build_message(result: RaceResult) -> tuple[str, str]:
     )
 
     # ── 本文（LINEとメール共通・コンパクト版）────────────────
+    grade_names = {0: '', 1: '🏆G3', 2: '🏆G2', 3: '🏆G1', 4: '🏆SG'}
+    grade_label = grade_names.get(result.race_grade, '')
+
     lines = [
-        f"【荒れ検知】{result.venue_name} {result.race_number}R",
+        f"【荒れ検知】{result.venue_name} {result.race_number}R {grade_label}".strip(),
         f"危険度: {label}  スコア: {result.upset_score:.1f}",
         "",
     ]
@@ -1016,7 +1043,8 @@ def run(race_date: Optional[str] = None) -> None:
             sent_set = set(sf.read().splitlines())
     except Exception:
         sent_set = set()
-    for venue_num, race_number, boats, weather, *_ in race_list:
+    for venue_num, race_number, boats, weather, *rest in race_list:
+        race_grade = rest[1] if len(rest) > 1 else 0
         # 展示タイムがない場合はPlaywrightで一括取得済みデータを使う
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
         if not ex_times:
@@ -1044,7 +1072,7 @@ def run(race_date: Optional[str] = None) -> None:
         if not ex_times:
             continue
         try:
-            score, detail, target = calculate_upset_score(boats, weather)
+            score, detail, target = calculate_upset_score(boats, weather, race_grade)
 
             # ── MLモデルスコアを加算 ──────────────────────────────
             ml_probs = _predict_win_prob(boats)
@@ -1087,6 +1115,7 @@ def run(race_date: Optional[str] = None) -> None:
                 upset_score  = score,
                 score_detail = detail,
                 target_lanes = target,
+                race_grade   = race_grade,
             )
 
             # ── 3連単オッズ取得・期待値計算 ──────────────────────
@@ -1103,13 +1132,9 @@ def run(race_date: Optional[str] = None) -> None:
                             for t3 in [l for l in range(1,7) if l != t1 and l != t2]:
                                 combo = f"{t1}-{t2}-{t3}"
                                 odds  = odds_map.get(combo, 0)
-                                if odds > 0 and odds <= 500:  # 500倍以下の現実的なオッズのみ
-                                    # 期待値: ML確率 × 払戻 / 100
+                                if odds > 0 and odds <= 500:
                                     p = ml_probs.get(t1, 0.05) * 0.6
                                     ev = p * odds / 100
-                                    if ev > best_ev:
-                                        best_ev    = ev
-                                        best_combo = combo
                                     if ev > best_ev:
                                         best_ev    = ev
                                         best_combo = combo
@@ -1117,9 +1142,17 @@ def run(race_date: Optional[str] = None) -> None:
                     result.best_combo = best_combo
                     result.best_ev    = round(best_ev, 2)
                     if best_combo:
-                        detail["最高EV"] = f"{best_combo} (EV:{best_ev:.1f} オッズ:{odds_map.get(best_combo,0):.1f}倍)"
-                        log.info("オッズ取得: %s %dR 最高EV=%s",
-                                 result.venue_name, race_number, best_combo)
+                        detail["最高EV"] = f"{best_combo} (EV:{best_ev:.2f} オッズ:{odds_map.get(best_combo,0):.0f}倍)"
+                        log.info("オッズ取得: %s %dR 最高EV=%s EV=%.2f",
+                                 result.venue_name, race_number, best_combo, best_ev)
+
+                    # ── 払戻期待値フィルタ ──────────────────────
+                    # オッズが取得できていて期待値が極端に低い場合はスキップ
+                    if odds_map and best_ev < 0.3:
+                        log.debug("期待値不足スキップ: %s %dR EV=%.2f",
+                                  result.venue_name, race_number, best_ev)
+                        continue
+
             except Exception as oe:
                 log.debug("オッズ取得失敗: %s", oe)
 
