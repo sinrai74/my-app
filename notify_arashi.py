@@ -1099,6 +1099,101 @@ def run(race_date: Optional[str] = None) -> None:
 
     log.info("▶ 完了 通知件数=%d / 確認レース=%d", notified, len(race_list))
 
+    # ── 前日の結果照合 ────────────────────────────────────────
+    _check_yesterday_results(race_date)
+
+
+def _fetch_race_result(venue_num: int, race_number: int, race_date: str) -> dict | None:
+    """公式サイトから3連単結果を取得"""
+    try:
+        import requests as _req
+        url = (f"https://www.boatrace.jp/owpc/pc/race/raceresult"
+               f"?rno={race_number}&jcd={str(venue_num).zfill(2)}&hd={race_date}")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.boatrace.jp/",
+        }
+        r = _req.get(url, headers=headers, timeout=8)
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.content, "html.parser")
+        # 3連単結果を探す
+        for td in soup.find_all("td"):
+            text = td.get_text(strip=True)
+            if re.match(r"^\d-\d-\d$", text):
+                # 払戻金を探す
+                tr = td.find_parent("tr")
+                if tr:
+                    cells = [c.get_text(strip=True) for c in tr.find_all("td")]
+                    for cell in cells:
+                        clean = cell.replace(",", "").replace("円", "")
+                        if clean.isdigit() and int(clean) > 100:
+                            return {"combo": text, "payout": int(clean)}
+    except Exception as e:
+        log.debug("結果取得失敗: %s", e)
+    return None
+
+
+def _check_yesterday_results(today_date: str) -> None:
+    """前日の送信済みレースと結果を照合してCSVに記録"""
+    try:
+        from datetime import datetime, timedelta
+        today = datetime.strptime(today_date, "%Y%m%d")
+        yesterday = (today - timedelta(days=1)).strftime("%Y%m%d")
+        sent_file = f"sent_{yesterday}.txt"
+
+        if not os.path.exists(sent_file):
+            return
+
+        with open(sent_file, "r") as f:
+            sent_keys = [l.strip() for l in f if l.strip()]
+
+        if not sent_keys:
+            return
+
+        log.info("前日結果照合: %d レース", len(sent_keys))
+        records = []
+        for key in sent_keys:
+            parts = key.split("_")
+            if len(parts) != 3:
+                continue
+            _, venue_num, race_number = parts
+            result = _fetch_race_result(int(venue_num), int(race_number), yesterday)
+            records.append({
+                "date": yesterday,
+                "venue": VENUE_NAMES.get(int(venue_num), f"場{venue_num}"),
+                "race": race_number,
+                "result_combo": result["combo"] if result else "不明",
+                "payout": result["payout"] if result else 0,
+            })
+
+        if not records:
+            return
+
+        # CSVに追記
+        import csv
+        csv_file = "hit_record.csv"
+        write_header = not os.path.exists(csv_file)
+        with open(csv_file, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["date","venue","race","result_combo","payout"])
+            if write_header:
+                writer.writeheader()
+            writer.writerows(records)
+
+        # GitHubにコミット
+        gh_token = os.getenv("GITHUB_TOKEN", "")
+        gh_repo  = os.getenv("GITHUB_REPO", "sinrai74/my-app")
+        os.system('git config user.email "action@render.com"')
+        os.system('git config user.name "Render Bot"')
+        os.system(f"git add {csv_file}")
+        os.system(f'git commit -m "update hit record {yesterday} [skip ci]"')
+        if gh_token:
+            os.system(f"git push https://{gh_token}@github.com/{gh_repo}.git main")
+
+        log.info("結果照合完了: %s に記録", csv_file)
+
+    except Exception as e:
+        log.warning("結果照合失敗: %s", e)
+
 
 # ════════════════════════════════════════════════════════════
 # エントリポイント
