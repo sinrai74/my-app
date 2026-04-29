@@ -222,46 +222,61 @@ def _predict_win_prob(boats: list) -> dict[int, float]:
         return {}
 
 
-def _scrape_beforeinfo(race_no: int, venue_code: int, race_date: str) -> dict:
-    """公式サイトからPlaywrightで直前情報（展示タイム・ST・チルト）を取得"""
-    url = (f"https://www.boatrace.jp/owpc/pc/race/beforeinfo"
-           f"?rno={race_no}&jcd={str(venue_code).zfill(2)}&hd={race_date}")
+def _scrape_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
+    """
+    Playwrightを1回だけ起動して複数レースの展示タイムをまとめて取得。
+    race_list: [(venue_num, race_number), ...]
+    戻り値: {(venue_num, race_number): {lane: {ex_time, ex_st, tilt}}}
+    """
+    results = {}
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=20000)
-            tables = page.query_selector_all("table")
-            if len(tables) < 2:
-                browser.close()
-                return {}
-            boats = {}
-            rows = tables[1].query_selector_all("tr")
-            for i, row in enumerate(rows):
-                cells = [td.inner_text().strip() for td in row.query_selector_all("td")]
-                if cells and cells[0].isdigit() and 1 <= int(cells[0]) <= 6:
-                    lane = int(cells[0])
-                    try:
-                        ex_time = float(cells[4]) if len(cells) > 4 and cells[4] else None
-                        tilt    = float(cells[5]) if len(cells) > 5 and cells[5] else None
-                    except ValueError:
-                        ex_time = tilt = None
-                    ex_st = None
-                    for j in range(i+1, min(i+5, len(rows))):
-                        sc = [td.inner_text().strip() for td in rows[j].query_selector_all("td")]
-                        if len(sc) >= 3 and sc[1] == "ST":
+            for venue_num, race_number in race_list:
+                url = (f"https://www.boatrace.jp/owpc/pc/race/beforeinfo"
+                       f"?rno={race_number}&jcd={str(venue_num).zfill(2)}&hd={race_date}")
+                try:
+                    page.goto(url, wait_until="networkidle", timeout=20000)
+                    tables = page.query_selector_all("table")
+                    if len(tables) < 2:
+                        continue
+                    boats = {}
+                    rows = tables[1].query_selector_all("tr")
+                    for i, row in enumerate(rows):
+                        cells = [td.inner_text().strip() for td in row.query_selector_all("td")]
+                        if cells and cells[0].isdigit() and 1 <= int(cells[0]) <= 6:
+                            lane = int(cells[0])
                             try:
-                                ex_st = float("0"+sc[2]) if sc[2].startswith(".") else float(sc[2])
+                                ex_time = float(cells[4]) if len(cells) > 4 and cells[4] else None
+                                tilt    = float(cells[5]) if len(cells) > 5 and cells[5] else None
                             except ValueError:
-                                pass
-                            break
-                    boats[lane] = {"ex_time": ex_time, "ex_st": ex_st, "tilt": tilt}
+                                ex_time = tilt = None
+                            ex_st = None
+                            for j in range(i+1, min(i+5, len(rows))):
+                                sc = [td.inner_text().strip() for td in rows[j].query_selector_all("td")]
+                                if len(sc) >= 3 and sc[1] == "ST":
+                                    try:
+                                        ex_st = float("0"+sc[2]) if sc[2].startswith(".") else float(sc[2])
+                                    except ValueError:
+                                        pass
+                                    break
+                            boats[lane] = {"ex_time": ex_time, "ex_st": ex_st, "tilt": tilt}
+                    if boats:
+                        results[(venue_num, race_number)] = boats
+                except Exception as e:
+                    log.warning("Playwright取得失敗: 場%s %sR %s", venue_num, race_number, e)
             browser.close()
-            return boats
     except Exception as e:
-        log.warning("直前情報スクレイピング失敗: %s %sR %s", venue_code, race_no, e)
-        return {}
+        log.warning("Playwright起動失敗: %s", e)
+    return results
+
+
+def _scrape_beforeinfo(race_no: int, venue_code: int, race_date: str) -> dict:
+    """単体取得（後方互換用）"""
+    result = _scrape_beforeinfo_bulk([(venue_code, race_no)], race_date)
+    return result.get((venue_code, race_no), {})
 
 
 def fetch_programs(race_date: str) -> list[dict]:
@@ -798,6 +813,18 @@ def run(race_date: Optional[str] = None) -> None:
         log.error("環境変数 GMAIL_ADDRESS / GMAIL_APP_PASS が設定されていません")
         sys.exit(1)
 
+    # 時間帯チェック（JST 8:20〜22:45 以外はスキップ）
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    now_jst = datetime.now(JST)
+    now_minutes = now_jst.hour * 60 + now_jst.minute
+    start_minutes = 8 * 60 + 20   # 8:20
+    end_minutes   = 22 * 60 + 45  # 22:45
+    skip_filter = os.getenv("SKIP_TIME_FILTER", "0") == "1"
+    if not skip_filter and not (start_minutes <= now_minutes <= end_minutes):
+        log.info("時間帯外のためスキップ (JST %02d:%02d)", now_jst.hour, now_jst.minute)
+        return
+
     if race_date is None:
         race_date = date.today().strftime("%Y%m%d")
 
@@ -837,6 +864,19 @@ def run(race_date: Optional[str] = None) -> None:
     log.info("処理対象: %d レース（締切前: %d / 全体: %d）", len(filtered), len(filtered), len(race_list))
     race_list = filtered
 
+    # ── Playwright一括取得（展示タイムがないレースをまとめて取得）──
+    no_ex_races = [
+        (vn, rno) for vn, rno, boats, *_ in race_list
+        if not any(b.ex_time and b.ex_time > 0 for b in boats)
+    ]
+    if no_ex_races:
+        log.info("Playwright一括取得: %d レース", len(no_ex_races))
+        race_date_str = str(race_date).replace("-", "")
+        pw_cache = _scrape_beforeinfo_bulk(no_ex_races, race_date_str)
+        log.info("Playwright取得完了: %d レース", len(pw_cache))
+    else:
+        pw_cache = {}
+
     # ── 荒れ判定 & 通知 ──────────────────────────────────────
     notified = 0
     # 送信済みレースを記録（日付_場コード_レース番号）
@@ -847,19 +887,16 @@ def run(race_date: Optional[str] = None) -> None:
     except Exception:
         sent_set = set()
     for venue_num, race_number, boats, weather, *_ in race_list:
-        # 展示タイムがない場合はPlaywrightでスクレイピング
+        # 展示タイムがない場合はPlaywrightで一括取得済みデータを使う
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
         if not ex_times:
-            race_date_str = str(race_date).replace("-", "")
-            scraped = _scrape_beforeinfo(race_number, venue_num, race_date_str)
+            scraped = pw_cache.get((venue_num, race_number), {})
             if scraped:
                 for b in boats:
                     if b.lane in scraped:
                         b.ex_time = scraped[b.lane]["ex_time"]
                         b.ex_st   = scraped[b.lane]["ex_st"]
                         b.tilt    = scraped[b.lane]["tilt"]
-                log.info("Playwright補完: %s %dR",
-                         VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
         # 展示タイムが取れなければスキップ
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
         if not ex_times:
@@ -886,27 +923,10 @@ def run(race_date: Optional[str] = None) -> None:
                     )
                     target = sorted_lanes[:3]
 
-            log.info("スコア: %s %dR score=%.2f ml=%s", VENUE_NAMES.get(venue_num,f"場{venue_num}"), race_number, score, str({k:f"{v:.2f}" for k,v in ml_probs.items()} if ml_probs else "なし"))
+            log.debug("スコア: %s %dR score=%.2f", VENUE_NAMES.get(venue_num,f"場{venue_num}"), race_number, score)
             if score < UPSET_SCORE_THRESHOLD:
-                # デバッグ: 最初の場の1〜3Rはスコア詳細をINFOで出力
-                if race_number <= 3 and venue_num == race_list[0][0]:
-                    log.info(
-                        "[DEBUG] スコア詳細 %s %dR score=%.2f | %s",
-                        VENUE_NAMES.get(venue_num, f"場{venue_num}"),
-                        race_number, score,
-                        " | ".join(f"{k}:{v}" for k, v in detail.items()),
-                    )
-                else:
-                    log.debug(
-                        "スコア不足スキップ: %s %dR score=%.2f",
-                        VENUE_NAMES.get(venue_num, f"場{venue_num}"),
-                        race_number, score,
-                    )
-                continue
-
-            race_key = f"{race_date}_{venue_num}_{race_number}"
-            if race_key in sent_set:
-                log.debug("送信済みスキップ: %s %dR", VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
+                log.debug("スコア不足: %s %dR score=%.2f",
+                          VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number, score)
                 continue
 
             race_key = f"{race_date}_{venue_num}_{race_number}"
