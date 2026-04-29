@@ -34,7 +34,8 @@ jobs:
       # ── リポジトリを取得 ─────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
-
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       # ── Python セットアップ ──────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5

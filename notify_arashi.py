@@ -839,8 +839,8 @@ def run(race_date: Optional[str] = None) -> None:
 
     # ── 荒れ判定 & 通知 ──────────────────────────────────────
     notified = 0
-    # 送信済みレースを記録（場コード_レース番号）
-    sent_file = "/tmp/sent_races.txt"
+    # 送信済みレースを記録（日付_場コード_レース番号）
+    sent_file = f"sent_{race_date}.txt"
     try:
         with open(sent_file, "r") as sf:
             sent_set = set(sf.read().splitlines())
@@ -909,12 +909,12 @@ def run(race_date: Optional[str] = None) -> None:
                     )
                 continue
 
-            race_key = f"{venue_num}_{race_number}"
+            race_key = f"{race_date}_{venue_num}_{race_number}"
             if race_key in sent_set:
                 log.debug("送信済みスキップ: %s %dR", VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
                 continue
 
-            race_key = f"{venue_num}_{race_number}"
+            race_key = f"{race_date}_{venue_num}_{race_number}"
             if race_key in sent_set:
                 log.debug("送信済みスキップ: %s %dR", VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
                 continue
