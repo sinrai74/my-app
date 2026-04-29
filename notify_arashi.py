@@ -224,9 +224,9 @@ def _predict_win_prob(boats: list) -> dict[int, float]:
 
 def _scrape_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
     """
-    Playwrightを1回だけ起動して複数レースの展示タイムをまとめて取得。
+    Playwrightを1回だけ起動して複数レースの展示タイムと気象データをまとめて取得。
     race_list: [(venue_num, race_number), ...]
-    戻り値: {(venue_num, race_number): {lane: {ex_time, ex_st, tilt}}}
+    戻り値: {(venue_num, race_number): {"boats": {lane: {...}}, "weather": {...}}}
     """
     results = {}
     try:
@@ -242,6 +242,33 @@ def _scrape_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
                     tables = page.query_selector_all("table")
                     if len(tables) < 2:
                         continue
+
+                    # ── 気象データ（Table[0]）──────────────────────
+                    weather_data = {}
+                    if len(tables) >= 1:
+                        t0_rows = tables[0].query_selector_all("tr")
+                        for row in t0_rows:
+                            cells = [td.inner_text().strip() for td in row.query_selector_all("td")]
+                            # 風速・風向・波高を探す
+                            for i, cell in enumerate(cells):
+                                if "m" in cell and len(cell) <= 6:
+                                    try:
+                                        ws = float(cell.replace("m", "").strip())
+                                        if 0 <= ws <= 30:
+                                            weather_data["wind_speed"] = ws
+                                    except ValueError:
+                                        pass
+                                if "cm" in cell:
+                                    try:
+                                        wh = int(cell.replace("cm", "").strip())
+                                        weather_data["wave_height"] = wh
+                                    except ValueError:
+                                        pass
+                                if cell in ("向かい風", "追い風", "横風", "向", "追", "横"):
+                                    wd = "向" if "向" in cell else "追" if "追" in cell else "横"
+                                    weather_data["wind_direction"] = wd
+
+                    # ── 艇別データ（Table[1]）──────────────────────
                     boats = {}
                     rows = tables[1].query_selector_all("tr")
                     for i, row in enumerate(rows):
@@ -264,7 +291,10 @@ def _scrape_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
                                     break
                             boats[lane] = {"ex_time": ex_time, "ex_st": ex_st, "tilt": tilt}
                     if boats:
-                        results[(venue_num, race_number)] = boats
+                        results[(venue_num, race_number)] = {
+                            "boats": boats,
+                            "weather": weather_data,
+                        }
                 except Exception as e:
                     log.warning("Playwright取得失敗: 場%s %sR %s", venue_num, race_number, e)
             browser.close()
@@ -274,9 +304,10 @@ def _scrape_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
 
 
 def _scrape_beforeinfo(race_no: int, venue_code: int, race_date: str) -> dict:
-    """単体取得（後方互換用）"""
+    """単体取得（後方互換用）- boatsデータのみ返す"""
     result = _scrape_beforeinfo_bulk([(venue_code, race_no)], race_date)
-    return result.get((venue_code, race_no), {})
+    entry = result.get((venue_code, race_no), {})
+    return entry.get("boats", {})
 
 
 def fetch_programs(race_date: str) -> list[dict]:
@@ -706,47 +737,55 @@ def build_message(result: RaceResult) -> tuple[str, str]:
     """
     boat1 = next((b for b in result.boats if b.lane == 1), None)
     w     = result.weather
+    label = _danger_label(result.upset_score)
 
     # ── 件名 ─────────────────────────────────────────────────
     subject = (
         f"【荒れ検知】{result.venue_name} {result.race_number}R "
-        f"1号艇危険度: {_danger_label(result.upset_score)}"
+        f"{label} (score:{result.upset_score:.1f})"
     )
 
     # ── 本文 ─────────────────────────────────────────────────
     lines = [
+        f"{'='*30}",
         f"【荒れ検知】{result.venue_name} {result.race_number}R",
+        f"危険度: {label}  スコア: {result.upset_score:.1f}",
+        f"{'='*30}",
         "",
     ]
 
     # 気象情報
     weather_parts: list[str] = []
-    if w.wind_speed     is not None: weather_parts.append(f"風: {w.wind_speed:.1f}m {w.wind_direction or ''}")
-    if w.wave_height    is not None: weather_parts.append(f"波: {w.wave_height}cm")
-    if w.weather        is not None: weather_parts.append(f"天候: {w.weather}")
+    if w.wind_speed     is not None: weather_parts.append(f"風{w.wind_speed:.1f}m{w.wind_direction or ''}")
+    if w.wave_height    is not None: weather_parts.append(f"波{w.wave_height}cm")
+    if w.weather        is not None: weather_parts.append(w.weather)
     if weather_parts:
         lines.append("🌊 " + " / ".join(weather_parts))
+    else:
+        lines.append("🌊 気象データなし")
 
-    # 1号艇の展示情報
-    if boat1 is not None:
-        et_str = f"{boat1.ex_time:.2f}" if boat1.ex_time is not None else "—"
-        st_str = f"{boat1.ex_st:.2f}"   if boat1.ex_st   is not None else "—"
-        lines.append(f"🚤 1号艇 {boat1.name}: 展示 {et_str}秒 / ST {st_str}")
+    lines.append("")
 
-    # 危険度
-    lines.append(f"⚠️  1号艇危険度: {_danger_label(result.upset_score)} (スコア: {result.upset_score})")
+    # 全艇の展示タイム
+    lines.append("── 展示タイム ──")
+    sorted_boats = sorted(result.boats, key=lambda b: b.ex_time or 99)
+    for b in sorted(result.boats, key=lambda b: b.lane):
+        et = f"{b.ex_time:.2f}" if b.ex_time else "——"
+        st = f"{b.ex_st:.2f}"   if b.ex_st   else "——"
+        tl = f"チルト{b.tilt:+.1f}" if b.tilt is not None else ""
+        rank = sorted_boats.index(b) + 1 if b.ex_time else "-"
+        marker = "★" if b.lane == 1 else "  "
+        lines.append(f"{marker}{b.lane}号艇 {b.name[:4]:4s} 展示{et}({rank}位) ST{st} {tl}")
+
+    lines.append("")
 
     # 狙い目
     if result.target_lanes:
         tgt = "-".join(str(l) for l in result.target_lanes)
-        lines.append(
-            f"🎯 狙い: {result.target_lanes[0]}-{tgt[2:]}-全"
-            if len(result.target_lanes) >= 2
-            else f"🎯 狙い: {result.target_lanes[0]}軸"
-        )
+        lines.append(f"🎯 狙い: {tgt}-全")
 
     # スコア詳細
-    lines += ["", "── スコア詳細 ──"]
+    lines += ["", "── スコア内訳 ──"]
     for key, val in result.score_detail.items():
         lines.append(f"  {key}: {val}")
 
@@ -892,11 +931,23 @@ def run(race_date: Optional[str] = None) -> None:
         if not ex_times:
             scraped = pw_cache.get((venue_num, race_number), {})
             if scraped:
+                # 艇別データを補完
+                boats_data = scraped.get("boats", {})
                 for b in boats:
-                    if b.lane in scraped:
-                        b.ex_time = scraped[b.lane]["ex_time"]
-                        b.ex_st   = scraped[b.lane]["ex_st"]
-                        b.tilt    = scraped[b.lane]["tilt"]
+                    if b.lane in boats_data:
+                        b.ex_time = boats_data[b.lane]["ex_time"]
+                        b.ex_st   = boats_data[b.lane]["ex_st"]
+                        b.tilt    = boats_data[b.lane]["tilt"]
+                # 気象データを補完
+                wd = scraped.get("weather", {})
+                if wd:
+                    from dataclasses import replace as dc_replace
+                    weather = WeatherInfo(
+                        wind_speed     = wd.get("wind_speed",     weather.wind_speed),
+                        wind_direction = wd.get("wind_direction", weather.wind_direction),
+                        wave_height    = wd.get("wave_height",    weather.wave_height),
+                        weather        = weather.weather,
+                    )
         # 展示タイムが取れなければスキップ
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
         if not ex_times:
