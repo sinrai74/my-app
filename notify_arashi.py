@@ -854,21 +854,10 @@ def run(race_date: Optional[str] = None) -> None:
     except Exception:
         sent_set = set()
     for venue_num, race_number, boats, weather, *_ in race_list:
-        # 公式サイトから展示タイムを補完（APIが0の場合）
-        ex_times_api = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
-        if not ex_times_api:
-            race_date_str = str(race_date).replace("-","")
-            scraped = _scrape_beforeinfo(race_number, venue_num, race_date_str)
-            if scraped:
-                for b in boats:
-                    if b.lane in scraped:
-                        b.ex_time = scraped[b.lane]["ex_time"]
-                        b.ex_st   = scraped[b.lane]["ex_st"]
-                        b.tilt    = scraped[b.lane]["tilt"]
-                log.info("直前情報スクレイピング補完: %s %dR",
-                         VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
+        # 展示タイムがないレースはスキップ
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
-        has_exhibition = len(ex_times) > 0
+        if not ex_times:
+            continue
         try:
             score, detail, target = calculate_upset_score(boats, weather)
 
