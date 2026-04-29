@@ -767,7 +767,6 @@ def build_message(result: RaceResult) -> tuple[str, str]:
     """
     メール件名と本文を生成して (subject, body) のタプルで返す。
     """
-    boat1 = next((b for b in result.boats if b.lane == 1), None)
     w     = result.weather
     label = _danger_label(result.upset_score)
 
@@ -777,37 +776,34 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         f"{label} (score:{result.upset_score:.1f})"
     )
 
-    # ── 本文 ─────────────────────────────────────────────────
+    # ── 本文（LINEとメール共通・コンパクト版）────────────────
     lines = [
-        f"{'='*30}",
         f"【荒れ検知】{result.venue_name} {result.race_number}R",
         f"危険度: {label}  スコア: {result.upset_score:.1f}",
-        f"{'='*30}",
         "",
     ]
 
     # 気象情報
     weather_parts: list[str] = []
-    if w.wind_speed     is not None: weather_parts.append(f"風{w.wind_speed:.1f}m{w.wind_direction or ''}")
-    if w.wave_height    is not None: weather_parts.append(f"波{w.wave_height}cm")
-    if w.weather        is not None: weather_parts.append(w.weather)
+    if w.wind_speed  is not None: weather_parts.append(f"風{w.wind_speed:.1f}m{w.wind_direction or ''}")
+    if w.wave_height is not None: weather_parts.append(f"波{w.wave_height}cm")
+    if w.weather     is not None: weather_parts.append(w.weather)
     if weather_parts:
         lines.append("🌊 " + " / ".join(weather_parts))
-    else:
-        lines.append("🌊 気象データなし")
 
     lines.append("")
 
-    # 全艇の展示タイム
-    lines.append("── 展示タイム ──")
+    # 展示タイム（コンパクト版）
     sorted_boats = sorted(result.boats, key=lambda b: b.ex_time or 99)
+    lines.append("📊 展示タイム")
     for b in sorted(result.boats, key=lambda b: b.lane):
-        et = f"{b.ex_time:.2f}" if b.ex_time else "——"
-        st = f"{b.ex_st:.2f}"   if b.ex_st   else "——"
-        tl = f"チルト{b.tilt:+.1f}" if b.tilt is not None else ""
+        et   = f"{b.ex_time:.2f}" if b.ex_time else "——"
+        st   = f"{b.ex_st:.2f}"   if b.ex_st is not None else "——"
         rank = sorted_boats.index(b) + 1 if b.ex_time else "-"
         marker = "★" if b.lane == 1 else "  "
-        lines.append(f"{marker}{b.lane}号艇 {b.name[:4]:4s} 展示{et}({rank}位) ST{st} {tl}")
+        # STマイナス（フライング注意）
+        f_warn = "⚠F" if b.ex_st is not None and b.ex_st < 0 else ""
+        lines.append(f"{marker}{b.lane}:{b.name[:3]} {et}({rank}位) ST{st}{f_warn}")
 
     lines.append("")
 
@@ -816,32 +812,24 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         tgt = "-".join(str(l) for l in result.target_lanes)
         lines.append(f"🎯 狙い: {tgt}-全")
 
-    # オッズ情報
-    if result.best_combo:
-        odds_val = result.odds_map.get(result.best_combo, 0)
-        lines.append(f"💰 最高EV組み合わせ: {result.best_combo} ({odds_val:.1f}倍 EV:{result.best_ev:.1f})")
+    # オッズ（現実的なもののみ・上位3点）
     if result.odds_map and result.target_lanes:
-        lines.append("── 狙い目オッズ ──")
-        shown = 0
+        shown_odds = []
         for t1 in result.target_lanes[:2]:
             for t2 in [l for l in result.target_lanes if l != t1][:2]:
-                for t3 in [l for l in range(1,7) if l != t1 and l != t2][:3]:
+                for t3 in [l for l in range(1,7) if l != t1 and l != t2]:
                     combo = f"{t1}-{t2}-{t3}"
                     odds = result.odds_map.get(combo, 0)
-                    if odds > 0:
-                        lines.append(f"  {combo}: {odds:.1f}倍")
-                        shown += 1
-                        if shown >= 6:
-                            break
-                if shown >= 6:
-                    break
-            if shown >= 6:
-                break
+                    if 0 < odds <= 300:
+                        shown_odds.append((combo, odds))
+        shown_odds.sort(key=lambda x: x[1])
+        if shown_odds:
+            lines.append("💴 " + "  ".join(f"{c}:{o:.0f}倍" for c, o in shown_odds[:4]))
 
-    # スコア詳細
-    lines += ["", "── スコア内訳 ──"]
-    for key, val in result.score_detail.items():
-        lines.append(f"  {key}: {val}")
+    # 最高EV（現実的な場合のみ）
+    if result.best_combo and 0 < result.best_ev <= 5.0:
+        odds_val = result.odds_map.get(result.best_combo, 0)
+        lines.append(f"💰 推奨: {result.best_combo} ({odds_val:.0f}倍 EV:{result.best_ev:.2f})")
 
     return subject, "\n".join(lines)
 
@@ -1115,10 +1103,13 @@ def run(race_date: Optional[str] = None) -> None:
                             for t3 in [l for l in range(1,7) if l != t1 and l != t2]:
                                 combo = f"{t1}-{t2}-{t3}"
                                 odds  = odds_map.get(combo, 0)
-                                if odds > 0:
-                                    # 簡易期待値: ML確率 × オッズ / 100
+                                if odds > 0 and odds <= 500:  # 500倍以下の現実的なオッズのみ
+                                    # 期待値: ML確率 × 払戻 / 100
                                     p = ml_probs.get(t1, 0.05) * 0.6
-                                    ev = p * odds
+                                    ev = p * odds / 100
+                                    if ev > best_ev:
+                                        best_ev    = ev
+                                        best_combo = combo
                                     if ev > best_ev:
                                         best_ev    = ev
                                         best_combo = combo
