@@ -1,0 +1,54 @@
+name: 週次モデル再学習
+
+on:
+  # 毎週月曜日 JST 3:00 (UTC 18:00 日曜)に実行
+  schedule:
+    - cron: "0 18 * * 0"
+
+  # 手動実行
+  workflow_dispatch:
+    inputs:
+      weeks_back:
+        description: "何週間分のデータを使うか"
+        required: false
+        default: "4"
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 pandas numpy scikit-learn lightgbm
+          # 7z インストール
+          sudo apt-get install -y p7zip-full
+
+      - name: Run retraining
+        run: |
+          WEEKS="${{ github.event.inputs.weeks_back }}"
+          if [ -z "$WEEKS" ]; then
+            WEEKS="4"
+          fi
+          python retrain.py
+
+      - name: Commit updated model
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add model_all.pkl
+          git diff --staged --quiet || git commit -m "auto retrain model $(date '+%Y-%m-%d') [skip ci]"
+          git push
