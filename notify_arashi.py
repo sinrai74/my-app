@@ -964,7 +964,14 @@ def run(race_date: Optional[str] = None) -> None:
                     os.system('git config user.name "Render Bot"')
                     os.system(f"git add {sent_file}")
                     os.system(f'git commit -m "update sent races [skip ci]"')
-                    os.system("git push")
+                    # GITHUB_TOKENを使ってpush
+                    gh_token = os.getenv("GITHUB_TOKEN", "")
+                    gh_repo  = os.getenv("GITHUB_REPO", "sinrai74/my-app")
+                    if gh_token:
+                        remote = f"https://{gh_token}@github.com/{gh_repo}.git"
+                        os.system(f"git push {remote} main")
+                    else:
+                        os.system("git push")
                 except Exception as ge:
                     log.warning("sent_file保存失敗: %s", ge)
 
