@@ -954,6 +954,19 @@ def run(race_date: Optional[str] = None) -> None:
             subject, body = build_message(result)
             if send_email(subject, body):
                 notified += 1
+                # 送信済みに記録
+                sent_set.add(race_key)
+                try:
+                    with open(sent_file, "w") as sf:
+                        sf.write("\n".join(sent_set))
+                    # GitHubにコミットして永続化
+                    os.system('git config user.email "action@render.com"')
+                    os.system('git config user.name "Render Bot"')
+                    os.system(f"git add {sent_file}")
+                    os.system(f'git commit -m "update sent races [skip ci]"')
+                    os.system("git push")
+                except Exception as ge:
+                    log.warning("sent_file保存失敗: %s", ge)
 
             # Gmail レート制限対策（連続送信を避ける）
             time.sleep(1.0)
