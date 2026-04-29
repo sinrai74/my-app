@@ -77,6 +77,35 @@ VENUE_NAMES: dict[int, str] = {
 # スコアがこの値以上のレースのみ通知する
 UPSET_SCORE_THRESHOLD = 4.0   # チューニング可能
 
+# ── 場ごとの荒れスコア閾値（2026年1〜4月実績から算出）────────
+# 荒れやすい場（戸田・桐生等）は低め、荒れにくい場（大村・徳山等）は高め
+VENUE_THRESHOLDS: dict[int, float] = {
+    1:  2.2,  # 桐生   荒れ率40.1%
+    2:  1.8,  # 戸田   荒れ率43.8% ← 最も荒れやすい
+    3:  2.5,  # 江戸川 荒れ率36.9%
+    4:  2.4,  # 平和島 荒れ率38.0%
+    5:  3.0,  # 多摩川 荒れ率31.9%
+    6:  2.9,  # 浜名湖 荒れ率32.9%
+    7:  3.4,  # 蒲郡   荒れ率28.5%
+    8:  3.0,  # 常滑   荒れ率32.4%
+    9:  3.4,  # 津     荒れ率28.7%
+    10: 2.9,  # 三国   荒れ率33.0%
+    11: 2.9,  # びわこ 荒れ率33.0%
+    12: 3.3,  # 住之江 荒れ率29.3%
+    13: 3.5,  # 尼崎   荒れ率27.2%
+    14: 2.9,  # 鳴門   荒れ率33.0%
+    15: 2.9,  # 丸亀   荒れ率33.0%
+    16: 3.1,  # 児島   荒れ率31.3%
+    17: 3.3,  # 宮島   荒れ率29.4%
+    18: 3.6,  # 徳山   荒れ率26.6%
+    19: 3.1,  # 下関   荒れ率31.2%
+    20: 3.3,  # 若松   荒れ率29.5%
+    21: 2.9,  # 芦屋   （データ不足のためデフォルト）
+    22: 2.9,  # 福岡   （データ不足のためデフォルト）
+    23: 2.9,  # 唐津   荒れ率33.2%
+    24: 3.6,  # 大村   荒れ率25.9% ← 最も荒れにくい
+}
+
 # ── 各判定項目の配点 ─────────────────────────────────────────
 SCORE_WEIGHTS = {
     "ex_time_rank":    1.5,   # 展示タイムで1号艇が3位以下
@@ -1000,9 +1029,11 @@ def run(race_date: Optional[str] = None) -> None:
                     target = sorted_lanes[:3]
 
             log.debug("スコア: %s %dR score=%.2f", VENUE_NAMES.get(venue_num,f"場{venue_num}"), race_number, score)
-            if score < UPSET_SCORE_THRESHOLD:
-                log.debug("スコア不足: %s %dR score=%.2f",
-                          VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number, score)
+            # 場ごとの閾値を使用（なければデフォルト値）
+            venue_threshold = VENUE_THRESHOLDS.get(venue_num, UPSET_SCORE_THRESHOLD)
+            if score < venue_threshold:
+                log.debug("スコア不足: %s %dR score=%.2f threshold=%.1f",
+                          VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number, score, venue_threshold)
                 continue
 
             race_key = f"{race_date}_{venue_num}_{race_number}"
