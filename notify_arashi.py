@@ -850,6 +850,55 @@ def build_message(result: RaceResult) -> tuple[str, str]:
 # Gmail 送信
 # ════════════════════════════════════════════════════════════
 
+def send_line(body: str) -> bool:
+    """
+    LINE Messaging API でプッシュ通知を送信する。成功で True。
+
+    必要な環境変数:
+        LINE_TOKEN   … チャネルアクセストークン
+        LINE_USER_ID … 送信先ユーザーID（Uから始まる）
+    """
+    token   = os.getenv("LINE_TOKEN", "")
+    user_id = os.getenv("LINE_USER_ID", "")
+
+    if not token or not user_id:
+        log.debug("LINE_TOKEN / LINE_USER_ID 未設定 → LINE通知スキップ")
+        return False
+
+    try:
+        import urllib.request, json as _json
+        payload = _json.dumps({
+            "to": user_id,
+            "messages": [{"type": "text", "text": body[:2000]}]
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.line.me/v2/bot/message/push",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as res:
+            if res.status == 200:
+                log.info("LINE送信成功")
+                return True
+            else:
+                log.error("LINE送信失敗: status=%d", res.status)
+                return False
+    except Exception as e:
+        log.error("LINE送信エラー: %s", e)
+        return False
+
+
+def send_notification(subject: str, body: str) -> bool:
+    """メールとLINEの両方に通知する。どちらか一方でも成功すればTrue。"""
+    line_ok  = send_line(f"{subject}\n\n{body}")
+    email_ok = send_email(subject, body)
+    return line_ok or email_ok
+
+
 def send_email(subject: str, body: str) -> bool:
     """
     Gmail SMTP (TLS) でメールを送信する。成功で True。
@@ -1090,7 +1139,7 @@ def run(race_date: Optional[str] = None) -> None:
             )
 
             subject, body = build_message(result)
-            if send_email(subject, body):
+            if send_notification(subject, body):
                 notified += 1
                 # 送信済みに記録
                 sent_set.add(race_key)
