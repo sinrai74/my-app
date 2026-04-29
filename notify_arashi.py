@@ -137,6 +137,9 @@ class RaceResult:
     upset_score: float          = 0.0
     score_detail: dict          = field(default_factory=dict)
     target_lanes: list[int]     = field(default_factory=list)  # 狙い艇番
+    odds_map:    dict           = field(default_factory=dict)  # 3連単オッズ
+    best_combo:  str            = ""   # 最高期待値の組み合わせ
+    best_ev:     float          = 0.0  # 最高期待値
 
 
 # ════════════════════════════════════════════════════════════
@@ -784,6 +787,28 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         tgt = "-".join(str(l) for l in result.target_lanes)
         lines.append(f"🎯 狙い: {tgt}-全")
 
+    # オッズ情報
+    if result.best_combo:
+        odds_val = result.odds_map.get(result.best_combo, 0)
+        lines.append(f"💰 最高EV組み合わせ: {result.best_combo} ({odds_val:.1f}倍 EV:{result.best_ev:.1f})")
+    if result.odds_map and result.target_lanes:
+        lines.append("── 狙い目オッズ ──")
+        shown = 0
+        for t1 in result.target_lanes[:2]:
+            for t2 in [l for l in result.target_lanes if l != t1][:2]:
+                for t3 in [l for l in range(1,7) if l != t1 and l != t2][:3]:
+                    combo = f"{t1}-{t2}-{t3}"
+                    odds = result.odds_map.get(combo, 0)
+                    if odds > 0:
+                        lines.append(f"  {combo}: {odds:.1f}倍")
+                        shown += 1
+                        if shown >= 6:
+                            break
+                if shown >= 6:
+                    break
+            if shown >= 6:
+                break
+
     # スコア詳細
     lines += ["", "── スコア内訳 ──"]
     for key, val in result.score_detail.items():
@@ -995,6 +1020,37 @@ def run(race_date: Optional[str] = None) -> None:
                 score_detail = detail,
                 target_lanes = target,
             )
+
+            # ── 3連単オッズ取得・期待値計算 ──────────────────────
+            try:
+                from odds_fetch import fetch_odds
+                race_date_str = str(race_date).replace("-", "")
+                odds_map = fetch_odds(race_number, str(venue_num).zfill(2), race_date_str)
+                if odds_map and ml_probs:
+                    # 狙い目の組み合わせで期待値を計算
+                    best_combo = ""
+                    best_ev    = 0.0
+                    for t1 in target[:2]:
+                        for t2 in [l for l in target if l != t1][:2]:
+                            for t3 in [l for l in range(1,7) if l != t1 and l != t2]:
+                                combo = f"{t1}-{t2}-{t3}"
+                                odds  = odds_map.get(combo, 0)
+                                if odds > 0:
+                                    # 簡易期待値: ML確率 × オッズ / 100
+                                    p = ml_probs.get(t1, 0.05) * 0.6
+                                    ev = p * odds
+                                    if ev > best_ev:
+                                        best_ev    = ev
+                                        best_combo = combo
+                    result.odds_map   = odds_map
+                    result.best_combo = best_combo
+                    result.best_ev    = round(best_ev, 2)
+                    if best_combo:
+                        detail["最高EV"] = f"{best_combo} (EV:{best_ev:.1f} オッズ:{odds_map.get(best_combo,0):.1f}倍)"
+                        log.info("オッズ取得: %s %dR 最高EV=%s",
+                                 result.venue_name, race_number, best_combo)
+            except Exception as oe:
+                log.debug("オッズ取得失敗: %s", oe)
 
             log.info(
                 "荒れ検知: %s %dR score=%.2f target=%s",
