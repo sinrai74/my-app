@@ -1206,8 +1206,88 @@ def run(race_date: Optional[str] = None) -> None:
     # ── 前日の結果照合 ────────────────────────────────────────
     _check_yesterday_results(race_date)
 
+    # ── 翌日予告通知（21:00〜21:10のみ）────────────────────────
+    send_preview_notification()
 
-def _fetch_race_result(venue_num: int, race_number: int, race_date: str) -> dict | None:
+    # ── 連敗アラートチェック ──────────────────────────────────
+    _check_losing_streak()
+
+    # ── 選手データ自動更新（毎月1日のみ）────────────────────────
+    update_fan_files()
+
+
+def send_preview_notification() -> None:
+    """
+    翌日の注目レース予告を夜21:00頃に送信する。
+    出走表APIから翌日データを取得して荒れそうなレースをまとめて通知。
+    """
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    now_jst = datetime.now(JST)
+
+    # 21:00〜21:10のみ実行
+    if not (21 * 60 <= now_jst.hour * 60 + now_jst.minute <= 21 * 60 + 10):
+        return
+
+    tomorrow = (now_jst + timedelta(days=1)).strftime("%Y%m%d")
+    log.info("翌日予告通知開始: %s", tomorrow)
+
+    try:
+        programs = fetch_programs(tomorrow)
+        if not programs:
+            return
+
+        # 選手スペックだけで荒れ候補を選出（展示タイムはまだない）
+        candidates = []
+        for prog in programs:
+            vn  = prog.get("race_stadium_number")
+            rno = prog.get("race_number")
+            boats_raw = prog.get("boats", [])
+            if not boats_raw:
+                continue
+
+            boats = _extract_boats_from_program(prog)
+            if not boats:
+                continue
+
+            boat1 = next((b for b in boats if b.lane == 1), None)
+            if not boat1:
+                continue
+
+            others = [b for b in boats if b.lane != 1]
+            avg_other_win = sum(b.win_rate for b in others) / len(others) if others else 0
+            avg_other_motor = sum(b.motor for b in others) / len(others) if others else 0
+
+            # 1号艇が他艇より明らかに劣る場合を候補に
+            win_diff   = avg_other_win   - boat1.win_rate
+            motor_diff = avg_other_motor - boat1.motor
+
+            if win_diff > 1.0 or motor_diff > 10.0:
+                score = win_diff * 0.5 + motor_diff * 0.1
+                venue_name = VENUE_NAMES.get(int(vn), f"場{vn}")
+                candidates.append((score, venue_name, rno, boat1, others))
+
+        if not candidates:
+            log.info("翌日予告: 候補なし")
+            return
+
+        candidates.sort(reverse=True)
+        top = candidates[:5]
+
+        lines = [f"📅 明日({tomorrow[:4]}/{tomorrow[4:6]}/{tomorrow[6:]})の注目レース", ""]
+        for score, vname, rno, b1, others in top:
+            best_other = max(others, key=lambda b: b.win_rate)
+            lines.append(f"🎯 {vname} {rno}R")
+            lines.append(f"  1号艇:{b1.name[:3]} 勝率{b1.win_rate:.2f} モーター{b1.motor:.1f}%")
+            lines.append(f"  対抗:{best_other.lane}号艇 {best_other.name[:3]} 勝率{best_other.win_rate:.2f}")
+            lines.append("")
+
+        body = "\n".join(lines)
+        send_notification("【明日の注目レース予告】", body)
+        log.info("翌日予告通知送信: %d レース", len(top))
+
+    except Exception as e:
+        log.warning("翌日予告通知失敗: %s", e)
     """公式サイトから3連単結果を取得"""
     try:
         import requests as _req
@@ -1297,6 +1377,90 @@ def _check_yesterday_results(today_date: str) -> None:
 
     except Exception as e:
         log.warning("結果照合失敗: %s", e)
+
+
+def _check_losing_streak() -> None:
+    """
+    連続外れが5回以上続いたらLINE/メールでアラートを送信。
+    hit_record.csvから直近の結果を読んで判定する。
+    """
+    try:
+        import csv
+        csv_file = "hit_record.csv"
+        if not os.path.exists(csv_file):
+            return
+
+        with open(csv_file, "r", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        if len(rows) < 5:
+            return
+
+        # 直近10件の的中判定（通知した組み合わせが結果に含まれるか）
+        recent = rows[-10:]
+        miss_count = 0
+        for row in reversed(recent):
+            result_combo = row.get("result_combo", "不明")
+            notified_combo = row.get("notified_combo", "")
+            # 通知した狙い目の1着が結果の1着と一致するか
+            if result_combo == "不明":
+                continue
+            result_1st = result_combo.split("-")[0] if "-" in result_combo else ""
+            notified_1st = notified_combo.split("-")[0] if "-" in notified_combo else ""
+            if result_1st and notified_1st and result_1st != notified_1st:
+                miss_count += 1
+            else:
+                break  # 的中したら連敗ストップ
+
+        if miss_count >= 5:
+            msg = f"⚠️ 連敗アラート\n直近{miss_count}回連続で外れています。\nスコア閾値を上げることを検討してください。\n現在の閾値: {UPSET_SCORE_THRESHOLD}"
+            send_notification("【連敗アラート】", msg)
+            log.warning("連敗アラート送信: %d連敗", miss_count)
+
+    except Exception as e:
+        log.debug("連敗アラートエラー: %s", e)
+
+
+def update_fan_files() -> None:
+    """
+    毎月1日に最新のfanファイルを自動ダウンロードする。
+    """
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    now_jst = datetime.now(JST)
+
+    # 毎月1日の8:20〜8:30のみ実行
+    if now_jst.day != 1 or now_jst.hour != 8 or now_jst.minute > 30:
+        return
+
+    log.info("fanファイル自動更新開始")
+    try:
+        year2 = now_jst.strftime("%y")
+        month = now_jst.strftime("%m")
+        fan_name = f"fan{year2}{month}.txt"
+        url = f"https://www.boatrace.jp/owpc/pc/extra/data/{fan_name}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.boatrace.jp/",
+        }
+        r = requests.get(url, headers=headers, timeout=30)
+        if r.status_code == 200 and len(r.content) > 10000:
+            with open(fan_name, "wb") as f:
+                f.write(r.content)
+
+            gh_token = os.getenv("GITHUB_TOKEN", "")
+            gh_repo  = os.getenv("GITHUB_REPO", "sinrai74/my-app")
+            os.system('git config user.email "action@render.com"')
+            os.system('git config user.name "Render Bot"')
+            os.system(f"git add {fan_name}")
+            os.system(f'git commit -m "update fan file {fan_name} [skip ci]"')
+            if gh_token:
+                os.system(f"git push https://{gh_token}@github.com/{gh_repo}.git main")
+            log.info("fanファイル更新完了: %s", fan_name)
+        else:
+            log.warning("fanファイルダウンロード失敗: status=%d", r.status_code)
+    except Exception as e:
+        log.warning("fanファイル更新エラー: %s", e)
 
 
 # ════════════════════════════════════════════════════════════

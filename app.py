@@ -709,6 +709,131 @@ def history():
 def stats():
     return jsonify(calc_stats())
 
+
+@app.route("/dashboard")
+def dashboard():
+    """的中率ダッシュボード - hit_record.csvを読んで統計を返す"""
+    import csv
+    csv_path = Path("hit_record.csv")
+    if not csv_path.exists():
+        return jsonify({"error": "hit_record.csvがまだありません。数日後にお試しください。"}), 404
+
+    rows = []
+    with open(csv_path, "r", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    if not rows:
+        return jsonify({"error": "データなし"}), 404
+
+    # 場別集計
+    venue_stats = {}
+    for r in rows:
+        vn = r.get("venue", "不明")
+        if vn not in venue_stats:
+            venue_stats[vn] = {"total": 0, "hit": 0, "payout": 0}
+        venue_stats[vn]["total"] += 1
+        payout = int(r.get("payout", 0) or 0)
+        if payout > 0:
+            venue_stats[vn]["hit"] += 1
+            venue_stats[vn]["payout"] += payout
+
+    venue_list = []
+    for vn, s in sorted(venue_stats.items(), key=lambda x: x[1]["total"], reverse=True):
+        hit_rate = s["hit"] / s["total"] if s["total"] > 0 else 0
+        avg_pay  = s["payout"] / s["hit"] if s["hit"] > 0 else 0
+        venue_list.append({
+            "venue": vn, "total": s["total"],
+            "hit": s["hit"], "hit_rate": round(hit_rate, 3),
+            "avg_payout": round(avg_pay),
+        })
+
+    # 日別集計
+    date_stats = {}
+    for r in rows:
+        d = r.get("date", "")[:10]
+        if d not in date_stats:
+            date_stats[d] = {"total": 0, "hit": 0}
+        date_stats[d]["total"] += 1
+        if int(r.get("payout", 0) or 0) > 0:
+            date_stats[d]["hit"] += 1
+
+    date_list = [{"date": d, **s} for d, s in sorted(date_stats.items())]
+
+    # 全体統計
+    total  = len(rows)
+    hit    = sum(1 for r in rows if int(r.get("payout", 0) or 0) > 0)
+    payouts = [int(r.get("payout", 0) or 0) for r in rows if int(r.get("payout", 0) or 0) > 0]
+
+    return jsonify({
+        "summary": {
+            "total":    total,
+            "hit":      hit,
+            "hit_rate": round(hit / total, 3) if total > 0 else 0,
+            "avg_payout": round(sum(payouts) / len(payouts)) if payouts else 0,
+        },
+        "by_venue": venue_list,
+        "by_date":  date_list,
+    })
+
+
+@app.route("/dashboard/html")
+def dashboard_html():
+    """的中率ダッシュボードHTML版"""
+    return """<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ボートレース的中率ダッシュボード</title>
+<style>
+body{font-family:sans-serif;background:#1a1a2e;color:#eee;margin:0;padding:20px}
+h1{color:#00d4ff;text-align:center}
+.card{background:#16213e;border-radius:12px;padding:20px;margin:16px 0}
+.stat{display:inline-block;text-align:center;margin:10px 20px}
+.stat .num{font-size:2em;font-weight:bold;color:#00d4ff}
+.stat .label{font-size:0.85em;color:#aaa}
+table{width:100%;border-collapse:collapse}
+th{background:#0f3460;padding:8px;text-align:left}
+td{padding:8px;border-bottom:1px solid #333}
+tr:hover td{background:#1a3a6e}
+.hit{color:#00ff88}.miss{color:#ff6b6b}
+</style>
+</head>
+<body>
+<h1>🚤 ボートレース的中率ダッシュボード</h1>
+<div class="card" id="summary"><p style="text-align:center">読み込み中...</p></div>
+<div class="card">
+<h2>場別成績</h2>
+<table id="venue-table">
+<thead><tr><th>場</th><th>通知数</th><th>的中</th><th>的中率</th><th>平均払戻</th></tr></thead>
+<tbody id="venue-body"></tbody>
+</table>
+</div>
+<script>
+fetch('/dashboard').then(r=>r.json()).then(data=>{
+  if(data.error){document.getElementById('summary').innerHTML='<p>'+data.error+'</p>';return}
+  const s=data.summary
+  document.getElementById('summary').innerHTML=`
+    <div class="stat"><div class="num">${s.total}</div><div class="label">総通知数</div></div>
+    <div class="stat"><div class="num">${s.hit}</div><div class="label">的中数</div></div>
+    <div class="stat"><div class="num">${(s.hit_rate*100).toFixed(1)}%</div><div class="label">的中率</div></div>
+    <div class="stat"><div class="num">¥${s.avg_payout.toLocaleString()}</div><div class="label">平均払戻</div></div>
+  `
+  const tbody=document.getElementById('venue-body')
+  data.by_venue.forEach(v=>{
+    const cls=v.hit_rate>=0.3?'hit':'miss'
+    tbody.innerHTML+=`<tr>
+      <td>${v.venue}</td><td>${v.total}</td>
+      <td>${v.hit}</td>
+      <td class="${cls}">${(v.hit_rate*100).toFixed(1)}%</td>
+      <td>¥${v.avg_payout.toLocaleString()}</td>
+    </tr>`
+  })
+}).catch(e=>console.error(e))
+</script>
+</body>
+</html>"""
+
 @app.route("/record/<record_id>", methods=["DELETE"])
 def delete_record(record_id):
     affected=db_execute("DELETE FROM records WHERE id = ?",(record_id,))
