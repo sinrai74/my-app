@@ -75,35 +75,34 @@ VENUE_NAMES: dict[int, str] = {
 
 # ── 荒れスコアリング閾値 ────────────────────────────────────
 # スコアがこの値以上のレースのみ通知する
-UPSET_SCORE_THRESHOLD = 4.0   # チューニング可能
+UPSET_SCORE_THRESHOLD = 5.0   # 強い荒れだけ取るモード
 
 # ── 場ごとの荒れスコア閾値（2026年1〜4月実績から算出）────────
-# 荒れやすい場（戸田・桐生等）は低め、荒れにくい場（大村・徳山等）は高め
 VENUE_THRESHOLDS: dict[int, float] = {
-    1:  2.2,  # 桐生   荒れ率40.1%
-    2:  1.8,  # 戸田   荒れ率43.8% ← 最も荒れやすい
-    3:  2.5,  # 江戸川 荒れ率36.9%
-    4:  2.4,  # 平和島 荒れ率38.0%
-    5:  3.0,  # 多摩川 荒れ率31.9%
-    6:  2.9,  # 浜名湖 荒れ率32.9%
-    7:  3.4,  # 蒲郡   荒れ率28.5%
-    8:  3.0,  # 常滑   荒れ率32.4%
-    9:  3.4,  # 津     荒れ率28.7%
-    10: 2.9,  # 三国   荒れ率33.0%
-    11: 2.9,  # びわこ 荒れ率33.0%
-    12: 3.3,  # 住之江 荒れ率29.3%
-    13: 3.5,  # 尼崎   荒れ率27.2%
-    14: 2.9,  # 鳴門   荒れ率33.0%
-    15: 2.9,  # 丸亀   荒れ率33.0%
-    16: 3.1,  # 児島   荒れ率31.3%
-    17: 3.3,  # 宮島   荒れ率29.4%
-    18: 3.6,  # 徳山   荒れ率26.6%
-    19: 3.1,  # 下関   荒れ率31.2%
-    20: 3.3,  # 若松   荒れ率29.5%
-    21: 2.9,  # 芦屋   （データ不足のためデフォルト）
-    22: 2.9,  # 福岡   （データ不足のためデフォルト）
-    23: 2.9,  # 唐津   荒れ率33.2%
-    24: 3.6,  # 大村   荒れ率25.9% ← 最も荒れにくい
+    1:  4.5,  # 桐生   荒れ率40.1%
+    2:  4.0,  # 戸田   荒れ率43.8% ← 最も荒れやすい
+    3:  4.5,  # 江戸川 荒れ率36.9%
+    4:  4.5,  # 平和島 荒れ率38.0%
+    5:  5.0,  # 多摩川 荒れ率31.9%
+    6:  5.0,  # 浜名湖 荒れ率32.9%
+    7:  5.5,  # 蒲郡   荒れ率28.5%
+    8:  5.0,  # 常滑   荒れ率32.4%
+    9:  5.5,  # 津     荒れ率28.7%
+    10: 5.0,  # 三国   荒れ率33.0%
+    11: 5.0,  # びわこ 荒れ率33.0%
+    12: 5.5,  # 住之江 荒れ率29.3%
+    13: 5.5,  # 尼崎   荒れ率27.2%
+    14: 5.0,  # 鳴門   荒れ率33.0%
+    15: 5.0,  # 丸亀   荒れ率33.0%
+    16: 5.0,  # 児島   荒れ率31.3%
+    17: 5.5,  # 宮島   荒れ率29.4%
+    18: 6.0,  # 徳山   荒れ率26.6%
+    19: 5.0,  # 下関   荒れ率31.2%
+    20: 5.5,  # 若松   荒れ率29.5%
+    21: 5.0,  # 芦屋
+    22: 5.0,  # 福岡
+    23: 5.0,  # 唐津   荒れ率33.2%
+    24: 6.0,  # 大村   荒れ率25.9% ← 最も荒れにくい
 }
 
 # ── 各判定項目の配点 ─────────────────────────────────────────
@@ -754,24 +753,56 @@ def calculate_upset_score(
         if boat1.motor < 30.0:
             upset_score += 1.0
 
-    # ── ②2号艇の強さを特別扱い ──────────────────────────────────
+    # ── ②1号艇飛びスコア（別管理）──────────────────────────────
+    if boat1:
+        boat1_risk = 0
+        if boat1.win_rate < 5.5:
+            boat1_risk += 1
+        if boat1.avg_st > 0.17:
+            boat1_risk += 1
+        if boat1.motor < 35.0:
+            boat1_risk += 1
+        if boat1.ex_st is not None and boat1.ex_st > 0.16:
+            boat1_risk += 1
+        if boat1_risk >= 2:
+            upset_score += 2.5
+
+    # ── ③2号艇の強さを特別扱い ──────────────────────────────────
     if boat1 and boat2:
+        if boat2.win_rate > boat1.win_rate:
+            upset_score += 1.2
         if boat2.win_rate > boat1.win_rate + 1.0:
             upset_score += 1.5
         if boat2.ex_st is not None and boat1.ex_st is not None:
-            if boat2.ex_st < boat1.ex_st - 0.03:
+            if boat2.ex_st < boat1.ex_st:
                 upset_score += 1.5
+            if boat2.ex_st < boat1.ex_st - 0.03:
+                upset_score += 1.5  # 追加ボーナス
+        if boat2.motor > boat1.motor:
+            upset_score += 1.0
 
-    # ── ③展示タイムの「隊形」チェック（外が速い構図）────────────
+    # ── ④展示タイムの「隊形」チェック（外が速い構図）────────────
     inner_times = [b.ex_time for b in boats if b.lane in [1,2,3] and b.ex_time and b.ex_time > 0]
     outer_times = [b.ex_time for b in boats if b.lane in [4,5,6] and b.ex_time and b.ex_time > 0]
+    inner_avg = outer_avg = None
     if inner_times and outer_times:
         inner_avg = sum(inner_times) / len(inner_times)
         outer_avg = sum(outer_times) / len(outer_times)
         if outer_avg < inner_avg:
             upset_score += 1.5
 
-    # ── ④天候補正（重みを70%に調整）────────────────────────────
+    # ── ⑤荒れ確定トリガー（2つ以上で+3.0）────────────────────────
+    trigger = 0
+    if boat1 and boat1.ex_st and boat1.ex_st > 0.18:
+        trigger += 1
+    if boat2 and boat2.ex_st and boat2.ex_st < 0.13:
+        trigger += 1
+    if inner_avg and outer_avg and outer_avg < inner_avg:
+        trigger += 1
+    if trigger >= 2:
+        upset_score += 3.0
+
+    # ── ⑥天候補正（重みを70%に調整）────────────────────────────
     if weather:
         if weather.wind_speed and weather.wind_speed >= 5.0:
             wind_bonus = min((weather.wind_speed - 5.0) * 0.3, 1.5)
@@ -782,26 +813,23 @@ def calculate_upset_score(
             wave_bonus = min((weather.wave_height - 15) * 0.05, 1.0)
             upset_score += wave_bonus * 0.6
 
-    # ── ⑤MLスコア：逆転時のみ強く加点 ─────────────────────────
-    # （MLスコアはrun()内で加算するため、ここでは基本スコアのみ）
-
-    # ── ⑥レース種別補正 ─────────────────────────────────────────
+    # ── ⑦レース種別補正 ─────────────────────────────────────────
     grade_penalty = {0: 0.0, 1: -0.3, 2: -0.5, 3: -0.8, 4: -1.2}
     upset_score += grade_penalty.get(race_grade, 0.0)
     upset_score = max(upset_score, 0.0)
 
-    # ── 💡スタート事故パターン検知（ドカ荒れ専用トリガー）────────
-    if boat1 and boat1.ex_st is not None and boat1.ex_st > 0.20:
-        fast_starters = sum(1 for b in boats if b.ex_st is not None and b.ex_st < 0.13)
+    # ── 💡万舟ゾーン突入条件 ────────────────────────────────────
+    if boat1 and boat1.ex_st is not None and boat1.ex_st > 0.18:
+        fast_starters = sum(1 for b in boats if b.ex_st is not None and b.ex_st < 0.12)
         if fast_starters >= 2:
-            upset_score += 2.5
+            upset_score += 3.0
 
     # 狙い目
     target = [lane for lane, p, s in probs if lane != 1][:3]
 
-    # ── ⑥通知条件修正：1号艇1位でも確率低い場合は通知 ─────────
+    # ── ④通知条件：1号艇1位でも確率65%未満は通知 ────────────────
     top_lane, top_prob, top_score = probs[0]
-    if top_lane == 1 and boat1_prob > 0.6:
+    if top_lane == 1 and boat1_prob > 0.65:
         upset_score = 0.0
 
     grade_names = {0: '一般', 1: 'G3', 2: 'G2', 3: 'G1', 4: 'SG'}
