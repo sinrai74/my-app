@@ -173,7 +173,8 @@ class RaceResult:
     odds_map:    dict           = field(default_factory=dict)
     best_combo:  str            = ""
     best_ev:     float          = 0.0
-    race_grade:  int            = 0    # 0=一般, 1=G3, 2=G2, 3=G1, 4=SG
+    race_grade:  int            = 0
+    recommended_bets: list      = field(default_factory=list)  # 推奨買い目リスト
 
 
 # ════════════════════════════════════════════════════════════
@@ -848,6 +849,127 @@ def calculate_upset_score(
 
     return upset_score, detail, target
 
+def _generate_patterns(target_lanes: list[int], upset_score: float) -> dict[str, list]:
+    """
+    荒れスコアとターゲット艇から5パターンの買い目を生成する。
+    target_lanes: [最有力, 2番手, 3番手]（1号艇除く）
+    """
+    t = target_lanes
+    t1 = t[0] if len(t) > 0 else 2
+    t2 = t[1] if len(t) > 1 else 3
+    t3 = t[2] if len(t) > 2 else 4
+
+    # ①本命崩れ（2軸・差し）
+    pattern_nami = [
+        f"{t1}-1-{t2}", f"{t1}-1-{t3}",
+        f"{t1}-{t2}-1", f"{t1}-{t3}-1",
+    ]
+
+    # ②まくり型（外伸び）
+    outer = [l for l in [3,4,5,6] if l != 1 and l != t1][:2]
+    pattern_makuri = []
+    for o in outer:
+        pattern_makuri += [f"{o}-1-{t1}", f"{o}-{t1}-1", f"{o}-1-{t2}"]
+
+    # ③差し型（内崩れ）
+    pattern_sashi = [
+        f"{t1}-{t2}-1", f"{t2}-{t1}-1",
+        f"{t1}-{t2}-{t3}", f"{t2}-{t1}-{t3}",
+    ]
+
+    # ④万舟狙い（穴）- スコア高い時のみ積極的に
+    ana_lanes = [l for l in [4,5,6] if l not in [1, t1]][:2]
+    pattern_ana = []
+    for a in ana_lanes:
+        pattern_ana += [
+            f"{a}-{t1}-{t2}", f"{t1}-{a}-{t2}",
+            f"{a}-{t2}-{t1}",
+        ]
+
+    # ⑤保険（軽く押さえ）
+    pattern_safe = [f"1-{t1}-{t2}", f"1-{t2}-{t1}"]
+
+    # スコアで使うパターンを切り替え
+    if upset_score > 6:
+        use = ["nami", "makuri", "ana"]
+    elif upset_score > 5:
+        use = ["nami", "sashi", "makuri"]
+    else:
+        use = ["nami", "safe"]
+
+    all_patterns = {
+        "nami":   pattern_nami,
+        "makuri": pattern_makuri,
+        "sashi":  pattern_sashi,
+        "ana":    pattern_ana,
+        "safe":   pattern_safe,
+    }
+    return {k: v for k, v in all_patterns.items() if k in use}
+
+
+def _evaluate_bets(
+    patterns: dict[str, list],
+    ml_probs: dict[int, float],
+    odds_map: dict[str, float],
+    bankroll: int = 10000,
+) -> list[dict]:
+    """
+    パターン別にEV計算→スコア統合→推奨買い目を返す。
+    """
+    # パターン補正係数
+    pattern_bonus = {"nami": 1.1, "sashi": 1.0, "makuri": 1.05, "ana": 1.2, "safe": 0.9}
+
+    all_candidates = []
+    for pname, combos in patterns.items():
+        for combo in combos:
+            # 重複除去
+            parts = combo.split("-")
+            if len(parts) != 3 or len(set(parts)) != 3:
+                continue
+            a, b, c = int(parts[0]), int(parts[1]), int(parts[2])
+
+            # ML確率から3連単確率を推定
+            pa = ml_probs.get(a, 0.05)
+            pb = ml_probs.get(b, 0.04)
+            pc = ml_probs.get(c, 0.03)
+            prob = pa * pb * pc * 6  # 順列補正
+
+            odds = odds_map.get(combo, 0)
+            if odds <= 0 or odds > 500:
+                continue
+
+            ev = prob * odds * pattern_bonus.get(pname, 1.0)
+
+            # バランス型スコア
+            score_val = ev * 0.7 + prob * 100 * 0.3
+
+            all_candidates.append({
+                "combo":   combo,
+                "pattern": pname,
+                "prob":    round(prob, 4),
+                "odds":    odds,
+                "ev":      round(ev, 3),
+                "score":   round(score_val, 3),
+            })
+
+    # EV >= 1.0 でフィルタ（荒れ狙いなのでやや低め）
+    filtered = [t for t in all_candidates if t["ev"] >= 1.0]
+    filtered.sort(key=lambda x: x["score"], reverse=True)
+
+    # 上位5点に資金配分（ケリー基準）
+    top = filtered[:5]
+    for t in top:
+        b_val = t["odds"] - 1
+        if b_val <= 0:
+            t["amount"] = 0
+            continue
+        kelly = (t["prob"] * t["odds"] - 1) / b_val
+        kelly = max(0.0, min(kelly, 0.15))  # 最大15%
+        t["amount"] = int(bankroll * kelly / 100) * 100  # 100円単位
+
+    return top
+
+
 def _danger_label(score: float) -> str:
     if score >= 7.0:
         return "🔴 非常に高"
@@ -925,8 +1047,18 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         if shown_odds:
             lines.append("💴 " + "  ".join(f"{c}:{o:.0f}倍" for c, o in shown_odds[:4]))
 
-    # 最高EV（現実的な場合のみ）
-    if result.best_combo and 0 < result.best_ev <= 5.0:
+    # 推奨買い目（パターン評価エンジン出力）
+    if result.recommended_bets:
+        lines.append("🎯 推奨買い目")
+        pattern_jp = {"nami":"本命崩れ","makuri":"まくり","sashi":"差し","ana":"万舟","safe":"保険"}
+        for bet in result.recommended_bets[:5]:
+            pname = pattern_jp.get(bet["pattern"], bet["pattern"])
+            amt   = f" ¥{bet['amount']:,}" if bet.get("amount", 0) > 0 else ""
+            lines.append(
+                f"  {bet['combo']} {bet['odds']:.0f}倍 "
+                f"EV:{bet['ev']:.2f} [{pname}]{amt}"
+            )
+    elif result.best_combo:
         odds_val = result.odds_map.get(result.best_combo, 0)
         lines.append(f"💰 推奨: {result.best_combo} ({odds_val:.0f}倍 EV:{result.best_ev:.2f})")
 
@@ -1154,38 +1286,38 @@ def run(race_date: Optional[str] = None) -> None:
                 race_grade   = race_grade,
             )
 
-            # ── 3連単オッズ取得・期待値計算 ──────────────────────
+            # ── 3連単オッズ取得 → パターン評価エンジン ──────────
             try:
                 from odds_fetch import fetch_odds
                 race_date_str = str(race_date).replace("-", "")
                 odds_map = fetch_odds(race_number, str(venue_num).zfill(2), race_date_str)
                 if odds_map and ml_probs:
-                    # 狙い目の組み合わせで期待値を計算
-                    best_combo = ""
-                    best_ev    = 0.0
-                    for t1 in target[:2]:
-                        for t2 in [l for l in target if l != t1][:2]:
-                            for t3 in [l for l in range(1,7) if l != t1 and l != t2]:
-                                combo = f"{t1}-{t2}-{t3}"
-                                odds  = odds_map.get(combo, 0)
-                                if odds > 0 and odds <= 500:
-                                    p = ml_probs.get(t1, 0.05) * 0.6
-                                    ev = p * odds / 100
-                                    if ev > best_ev:
-                                        best_ev    = ev
-                                        best_combo = combo
-                    result.odds_map   = odds_map
-                    result.best_combo = best_combo
-                    result.best_ev    = round(best_ev, 2)
-                    if best_combo:
-                        detail["最高EV"] = f"{best_combo} (EV:{best_ev:.2f} オッズ:{odds_map.get(best_combo,0):.0f}倍)"
-                        log.info("オッズ取得: %s %dR 最高EV=%s EV=%.2f",
-                                 result.venue_name, race_number, best_combo, best_ev)
+                    result.odds_map = odds_map
 
-                    # ── 払戻期待値フィルタ（緩和：0.15未満のみスキップ）──
-                    if odds_map and best_ev < 0.15:
-                        log.debug("期待値不足スキップ: %s %dR EV=%.2f",
-                                  result.venue_name, race_number, best_ev)
+                    # パターン生成
+                    patterns = _generate_patterns(target, score)
+
+                    # EV評価 → 推奨買い目
+                    recommended = _evaluate_bets(patterns, ml_probs, odds_map)
+                    result.recommended_bets = recommended
+
+                    if recommended:
+                        best = recommended[0]
+                        result.best_combo = best["combo"]
+                        result.best_ev    = best["ev"]
+                        detail["推奨"] = (
+                            f"{best['combo']} "
+                            f"({best['odds']:.0f}倍 EV:{best['ev']:.2f} "
+                            f"パターン:{best['pattern']})"
+                        )
+                        log.info("パターン評価: %s %dR 推奨=%s EV=%.2f (%d点)",
+                                 result.venue_name, race_number,
+                                 best["combo"], best["ev"], len(recommended))
+
+                    # EVフィルタ（推奨買い目が全くない場合のみスキップ）
+                    if odds_map and not recommended:
+                        log.debug("推奨買い目なし: %s %dR",
+                                  result.venue_name, race_number)
                         continue
 
             except Exception as oe:
