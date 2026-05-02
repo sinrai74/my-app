@@ -735,41 +735,73 @@ def calculate_upset_score(
 
     probs.sort(key=lambda x: x[1], reverse=True)
 
+    boat1 = next((b for b in boats if b.lane == 1), None)
+    boat2 = next((b for b in boats if b.lane == 2), None)
     boat1_prob = next((p for lane, p, s in probs if lane == 1), 0.5)
     boat1_rank = next((i+1 for i, (lane, p, s) in enumerate(probs) if lane == 1), 1)
 
-    # 荒れスコア
+    # 荒れスコア基本
     upset_score = (1 - boat1_prob) * 10
     if probs[0][0] != 1:
         upset_score += 2.0
 
-    # ── 天候補正 ──────────────────────────────────────────────
+    # ── ①1号艇の絶対評価（弱い1号艇は即荒れ候補）──────────────
+    if boat1:
+        if boat1.win_rate < 5.0:
+            upset_score += 1.5
+        if boat1.avg_st > 0.17:
+            upset_score += 1.0
+        if boat1.motor < 30.0:
+            upset_score += 1.0
+
+    # ── ②2号艇の強さを特別扱い ──────────────────────────────────
+    if boat1 and boat2:
+        if boat2.win_rate > boat1.win_rate + 1.0:
+            upset_score += 1.5
+        if boat2.ex_st is not None and boat1.ex_st is not None:
+            if boat2.ex_st < boat1.ex_st - 0.03:
+                upset_score += 1.5
+
+    # ── ③展示タイムの「隊形」チェック（外が速い構図）────────────
+    inner_times = [b.ex_time for b in boats if b.lane in [1,2,3] and b.ex_time and b.ex_time > 0]
+    outer_times = [b.ex_time for b in boats if b.lane in [4,5,6] and b.ex_time and b.ex_time > 0]
+    if inner_times and outer_times:
+        inner_avg = sum(inner_times) / len(inner_times)
+        outer_avg = sum(outer_times) / len(outer_times)
+        if outer_avg < inner_avg:
+            upset_score += 1.5
+
+    # ── ④天候補正（重みを70%に調整）────────────────────────────
     if weather:
-        # 強風補正（5m以上で荒れやすい）
         if weather.wind_speed and weather.wind_speed >= 5.0:
             wind_bonus = min((weather.wind_speed - 5.0) * 0.3, 1.5)
-            upset_score += wind_bonus
-        # 雨補正
+            upset_score += wind_bonus * 0.6
         if weather.weather and '雨' in weather.weather:
-            upset_score += 0.5
-        # 高波補正
+            upset_score += 0.5 * 0.6
         if weather.wave_height and weather.wave_height >= 15:
             wave_bonus = min((weather.wave_height - 15) * 0.05, 1.0)
-            upset_score += wave_bonus
+            upset_score += wave_bonus * 0.6
 
-    # ── レース種別補正 ──────────────────────────────────────
-    # G1・SG・MB（グレードが高いほど実力差が出て荒れにくい）
-    # 0=一般/予選, 1=G3, 2=G2, 3=G1, 4=SG/MB
+    # ── ⑤MLスコア：逆転時のみ強く加点 ─────────────────────────
+    # （MLスコアはrun()内で加算するため、ここでは基本スコアのみ）
+
+    # ── ⑥レース種別補正 ─────────────────────────────────────────
     grade_penalty = {0: 0.0, 1: -0.3, 2: -0.5, 3: -0.8, 4: -1.2}
     upset_score += grade_penalty.get(race_grade, 0.0)
     upset_score = max(upset_score, 0.0)
 
+    # ── 💡スタート事故パターン検知（ドカ荒れ専用トリガー）────────
+    if boat1 and boat1.ex_st is not None and boat1.ex_st > 0.20:
+        fast_starters = sum(1 for b in boats if b.ex_st is not None and b.ex_st < 0.13)
+        if fast_starters >= 2:
+            upset_score += 2.5
+
     # 狙い目
     target = [lane for lane, p, s in probs if lane != 1][:3]
 
-    # 通知条件: 1号艇が1位でない
+    # ── ⑥通知条件修正：1号艇1位でも確率低い場合は通知 ─────────
     top_lane, top_prob, top_score = probs[0]
-    if top_lane == 1:
+    if top_lane == 1 and boat1_prob > 0.6:
         upset_score = 0.0
 
     grade_names = {0: '一般', 1: 'G3', 2: 'G2', 3: 'G1', 4: 'SG'}
@@ -1050,13 +1082,12 @@ def run(race_date: Optional[str] = None) -> None:
             ml_probs = _predict_win_prob(boats)
             if ml_probs:
                 prob_1 = ml_probs.get(1, 0.0)
-                # 1号艇以外の最有力艇の確率と比較
                 other_probs = {l: p for l, p in ml_probs.items() if l != 1}
                 best_other_lane = max(other_probs, key=other_probs.get) if other_probs else None
                 best_other_prob = other_probs.get(best_other_lane, 0.0)
-                # 1号艇より他艇が強い場合スコア加算
-                if best_other_prob > prob_1 * 0.5:
-                    ml_score = best_other_prob * 6.0  # 最大6点
+                # ⑤逆転している時だけ強く加点
+                if best_other_prob > prob_1:
+                    ml_score = best_other_prob * 8.0
                     score += ml_score
                     detail["MLスコア"] = f"対抗{best_other_lane}号艇ML確率{best_other_prob:.2f} +{ml_score:.2f}点"
                     sorted_lanes = sorted(
@@ -1118,9 +1149,8 @@ def run(race_date: Optional[str] = None) -> None:
                         log.info("オッズ取得: %s %dR 最高EV=%s EV=%.2f",
                                  result.venue_name, race_number, best_combo, best_ev)
 
-                    # ── 払戻期待値フィルタ ──────────────────────
-                    # オッズが取得できていて期待値が極端に低い場合はスキップ
-                    if odds_map and best_ev < 0.3:
+                    # ── 払戻期待値フィルタ（緩和：0.15未満のみスキップ）──
+                    if odds_map and best_ev < 0.15:
                         log.debug("期待値不足スキップ: %s %dR EV=%.2f",
                                   result.venue_name, race_number, best_ev)
                         continue
