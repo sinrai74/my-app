@@ -1272,7 +1272,6 @@ def _run_main(race_date: str | None = None) -> None:
                 other_probs = {l: p for l, p in ml_probs.items() if l != 1}
                 best_other_lane = max(other_probs, key=other_probs.get) if other_probs else None
                 best_other_prob = other_probs.get(best_other_lane, 0.0)
-                # ⑤逆転している時だけ強く加点
                 if best_other_prob > prob_1:
                     ml_score = best_other_prob * 8.0
                     score += ml_score
@@ -1282,6 +1281,9 @@ def _run_main(race_date: str | None = None) -> None:
                         key=lambda l: ml_probs.get(l, 0), reverse=True
                     )
                     target = sorted_lanes[:3]
+            else:
+                log.warning("ML予測失敗: %s %dR → MLスコアなし",
+                            VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
 
             log.debug("スコア: %s %dR score=%.2f", VENUE_NAMES.get(venue_num,f"場{venue_num}"), race_number, score)
             # 場ごとの閾値を使用（なければデフォルト値）
