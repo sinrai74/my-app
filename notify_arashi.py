@@ -1364,6 +1364,7 @@ def _run_main(race_date: str | None = None) -> None:
                     # GitHubにコミットして永続化
                     os.system('git config user.email "action@render.com"')
                     os.system('git config user.name "Render Bot"')
+                    os.system("git checkout main")
                     os.system(f"git add {sent_file}")
                     os.system(f'git commit -m "update sent races [skip ci]"')
                     # GITHUB_TOKENを使ってpush
