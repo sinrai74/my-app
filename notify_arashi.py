@@ -1028,18 +1028,35 @@ def run(race_date: Optional[str] = None) -> None:
     log.info("処理対象: %d レース（締切前: %d / 全体: %d）", len(filtered), len(filtered), len(race_list))
     race_list = filtered
 
-    # ── Playwright一括取得（展示タイムがないレースをまとめて取得）──
-    no_ex_races = [
-        (vn, rno) for vn, rno, boats, *_ in race_list
-        if not any(b.ex_time and b.ex_time > 0 for b in boats)
-    ]
+    # ── Playwright一括取得（締切30分以内かつ展示タイムなしのレースのみ）──
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    now_jst = datetime.now(JST).replace(tzinfo=None)
+
+    no_ex_races = []
+    for item in race_list:
+        vn, rno, boats = item[0], item[1], item[2]
+        closed_at = item[4] if len(item) > 4 else ""
+        if any(b.ex_time and b.ex_time > 0 for b in boats):
+            continue  # 既に展示タイムあり
+        # 締切30分以内のレースのみ対象
+        if closed_at:
+            try:
+                closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
+                minutes_to_close = (closed_dt - now_jst).total_seconds() / 60
+                if 0 < minutes_to_close <= 35:
+                    no_ex_races.append((vn, rno))
+            except Exception:
+                pass
+
     if no_ex_races:
-        log.info("Playwright一括取得: %d レース", len(no_ex_races))
+        log.info("Playwright一括取得: %d レース（締切35分以内）", len(no_ex_races))
         race_date_str = str(race_date).replace("-", "")
         pw_cache = _scrape_beforeinfo_bulk(no_ex_races, race_date_str)
         log.info("Playwright取得完了: %d レース", len(pw_cache))
     else:
         pw_cache = {}
+        log.info("Playwright取得: 対象なし")
 
     # ── 荒れ判定 & 通知 ──────────────────────────────────────
     notified = 0
