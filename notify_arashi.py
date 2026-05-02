@@ -1044,13 +1044,13 @@ def run(race_date: Optional[str] = None) -> None:
             try:
                 closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
                 minutes_to_close = (closed_dt - now_jst).total_seconds() / 60
-                if 0 < minutes_to_close <= 35:
+                if 0 < minutes_to_close <= 15:
                     no_ex_races.append((vn, rno))
             except Exception:
                 pass
 
     if no_ex_races:
-        log.info("Playwright一括取得: %d レース（締切35分以内）", len(no_ex_races))
+        log.info("Playwright一括取得: %d レース（締切15分以内）", len(no_ex_races))
         race_date_str = str(race_date).replace("-", "")
         pw_cache = _scrape_beforeinfo_bulk(no_ex_races, race_date_str)
         log.info("Playwright取得完了: %d レース", len(pw_cache))
