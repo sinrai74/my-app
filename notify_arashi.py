@@ -1186,6 +1186,28 @@ def run(race_date: Optional[str] = None) -> None:
         log.info("時間帯外のためスキップ (JST %02d:%02d)", now_jst.hour, now_jst.minute)
         return
 
+    # ── 二重実行防止 ──────────────────────────────────────────
+    lock_file = "notify_running.lock"
+    if os.path.exists(lock_file):
+        # ロックファイルが古い（10分以上）場合は削除して続行
+        import time as _time
+        lock_age = _time.time() - os.path.getmtime(lock_file)
+        if lock_age < 600:
+            log.info("別のプロセスが実行中のためスキップ (age=%.0fs)", lock_age)
+            return
+        else:
+            os.remove(lock_file)
+    # ロックファイル作成
+    open(lock_file, "w").close()
+    try:
+        _run_main(race_date)
+    finally:
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+
+
+def _run_main(race_date: str | None = None) -> None:
+    """メイン処理本体"""
     if race_date is None:
         race_date = date.today().strftime("%Y%m%d")
 
