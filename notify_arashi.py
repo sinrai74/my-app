@@ -1028,36 +1028,6 @@ def run(race_date: Optional[str] = None) -> None:
     log.info("処理対象: %d レース（締切前: %d / 全体: %d）", len(filtered), len(filtered), len(race_list))
     race_list = filtered
 
-    # ── Playwright一括取得（締切30分以内かつ展示タイムなしのレースのみ）──
-    from datetime import datetime, timezone, timedelta
-    JST = timezone(timedelta(hours=9))
-    now_jst = datetime.now(JST).replace(tzinfo=None)
-
-    no_ex_races = []
-    for item in race_list:
-        vn, rno, boats = item[0], item[1], item[2]
-        closed_at = item[4] if len(item) > 4 else ""
-        if any(b.ex_time and b.ex_time > 0 for b in boats):
-            continue  # 既に展示タイムあり
-        # 締切30分以内のレースのみ対象
-        if closed_at:
-            try:
-                closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
-                minutes_to_close = (closed_dt - now_jst).total_seconds() / 60
-                if 0 < minutes_to_close <= 15:
-                    no_ex_races.append((vn, rno))
-            except Exception:
-                pass
-
-    if no_ex_races:
-        log.info("Playwright一括取得: %d レース（締切15分以内）", len(no_ex_races))
-        race_date_str = str(race_date).replace("-", "")
-        pw_cache = _scrape_beforeinfo_bulk(no_ex_races, race_date_str)
-        log.info("Playwright取得完了: %d レース", len(pw_cache))
-    else:
-        pw_cache = {}
-        log.info("Playwright取得: 対象なし")
-
     # ── 荒れ判定 & 通知 ──────────────────────────────────────
     notified = 0
     # 送信済みレースを記録（日付_場コード_レース番号）
@@ -1069,29 +1039,7 @@ def run(race_date: Optional[str] = None) -> None:
         sent_set = set()
     for venue_num, race_number, boats, weather, *rest in race_list:
         race_grade = rest[1] if len(rest) > 1 else 0
-        # 展示タイムがない場合はPlaywrightで一括取得済みデータを使う
-        ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
-        if not ex_times:
-            scraped = pw_cache.get((venue_num, race_number), {})
-            if scraped:
-                # 艇別データを補完
-                boats_data = scraped.get("boats", {})
-                for b in boats:
-                    if b.lane in boats_data:
-                        b.ex_time = boats_data[b.lane]["ex_time"]
-                        b.ex_st   = boats_data[b.lane]["ex_st"]
-                        b.tilt    = boats_data[b.lane]["tilt"]
-                # 気象データを補完
-                wd = scraped.get("weather", {})
-                if wd:
-                    from dataclasses import replace as dc_replace
-                    weather = WeatherInfo(
-                        wind_speed     = wd.get("wind_speed",     weather.wind_speed),
-                        wind_direction = wd.get("wind_direction", weather.wind_direction),
-                        wave_height    = wd.get("wave_height",    weather.wave_height),
-                        weather        = weather.weather,
-                    )
-        # 展示タイムが取れなければスキップ
+        # 展示タイムが取れなければスキップ（APIで取れなかった場合）
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
         if not ex_times:
             continue
