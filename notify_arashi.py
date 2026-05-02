@@ -264,6 +264,13 @@ def _scrape_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
     results = {}
     try:
         from playwright.sync_api import sync_playwright
+        # Chromiumが存在しない場合は自動インストール
+        import subprocess as _sp
+        try:
+            _sp.run(["playwright", "install", "chromium"], check=True,
+                    capture_output=True, timeout=120)
+        except Exception as _ie:
+            log.debug("playwright install: %s", _ie)
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
