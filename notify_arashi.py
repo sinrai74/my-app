@@ -1258,10 +1258,9 @@ def _run_main(race_date: str | None = None) -> None:
         sent_set = set()
     for venue_num, race_number, boats, weather, *rest in race_list:
         race_grade = rest[1] if len(rest) > 1 else 0
-        # 展示タイムが取れなければスキップ（APIで取れなかった場合）
+        # 展示タイムの有無を記録（スキップせずに続行）
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
-        if not ex_times:
-            continue
+        has_exhibition = len(ex_times) > 0
         try:
             score, detail, target = calculate_upset_score(boats, weather, race_grade)
 
@@ -1293,10 +1292,24 @@ def _run_main(race_date: str | None = None) -> None:
                           VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number, score, venue_threshold)
                 continue
 
-            race_key = f"{race_date}_{venue_num}_{race_number}"
-            if race_key in sent_set:
-                log.debug("送信済みスキップ: %s %dR", VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
-                continue
+            # ── 送信済みチェック ──────────────────────────────────
+            race_key    = f"{race_date}_{venue_num}_{race_number}"
+            race_key_ex = f"{race_date}_{venue_num}_{race_number}_ex"
+
+            if has_exhibition:
+                # 展示タイムあり：展示ありキーで未送信なら通知（展示なし送信済みでも再通知）
+                if race_key_ex in sent_set:
+                    log.debug("送信済みスキップ(展示あり): %s %dR",
+                              VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
+                    continue
+                notify_key = race_key_ex
+            else:
+                # 展示タイムなし：通常キーで未送信なら通知（展示あり送信済みならスキップ）
+                if race_key in sent_set or race_key_ex in sent_set:
+                    log.debug("送信済みスキップ(展示なし): %s %dR",
+                              VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
+                    continue
+                notify_key = race_key
 
             result = RaceResult(
                 venue_name   = VENUE_NAMES.get(venue_num, f"場{venue_num}"),
@@ -1357,7 +1370,7 @@ def _run_main(race_date: str | None = None) -> None:
             if send_notification(subject, body):
                 notified += 1
                 # 送信済みに記録
-                sent_set.add(race_key)
+                sent_set.add(notify_key)
                 try:
                     with open(sent_file, "w") as sf:
                         sf.write("\n".join(sent_set))
