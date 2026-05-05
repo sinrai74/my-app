@@ -174,7 +174,8 @@ class RaceResult:
     best_combo:  str            = ""
     best_ev:     float          = 0.0
     race_grade:  int            = 0
-    recommended_bets: list      = field(default_factory=list)  # 推奨買い目リスト
+    recommended_bets: list      = field(default_factory=list)
+    closed_at:   str            = ""  # 締切時刻
 
 
 # ════════════════════════════════════════════════════════════
@@ -999,8 +1000,18 @@ def build_message(result: RaceResult) -> tuple[str, str]:
     grade_names = {0: '', 1: '🏆G3', 2: '🏆G2', 3: '🏆G1', 4: '🏆SG'}
     grade_label = grade_names.get(result.race_grade, '')
 
+    # 締切時刻をJSTで表示
+    closed_str = ""
+    if result.closed_at:
+        try:
+            from datetime import datetime as _dt
+            closed_dt = _dt.strptime(result.closed_at, "%Y-%m-%d %H:%M:%S")
+            closed_str = f" 締切{closed_dt.strftime('%H:%M')}"
+        except Exception:
+            pass
+
     lines = [
-        f"【荒れ検知】{result.venue_name} {result.race_number}R {grade_label}".strip(),
+        f"【荒れ検知】{result.venue_name} {result.race_number}R {grade_label}{closed_str}".strip(),
         f"危険度: {label}  スコア: {result.upset_score:.1f}",
         "",
     ]
@@ -1334,6 +1345,7 @@ def _run_main(race_date: str | None = None) -> None:
                 score_detail = detail,
                 target_lanes = target,
                 race_grade   = race_grade,
+                closed_at    = closed_at,
             )
 
             # ── 3連単オッズ取得 → パターン評価エンジン ──────────
