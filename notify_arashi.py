@@ -1258,6 +1258,55 @@ def _run_main(race_date: str | None = None) -> None:
     log.info("処理対象: %d レース（締切前: %d / 全体: %d）", len(filtered), len(filtered), len(race_list))
     race_list = filtered
 
+    # ── Playwright一括取得（展示タイムなし・締切15分以内のみ）────
+    pw_targets = []
+    for item in race_list:
+        vn, rno, boats = item[0], item[1], item[2]
+        closed_at = item[4] if len(item) > 4 else ""
+        if any(b.ex_time and b.ex_time > 0 for b in boats):
+            continue  # 既に展示タイムあり
+        if closed_at:
+            try:
+                closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
+                minutes_to_close = (closed_dt - now).total_seconds() / 60
+                if 0 < minutes_to_close <= 15:
+                    pw_targets.append((vn, rno))
+            except Exception:
+                pass
+
+    pw_cache = {}
+    if pw_targets:
+        log.info("Playwright取得: %d レース（締切15分以内）", len(pw_targets))
+        race_date_str = str(race_date).replace("-", "")
+        pw_cache = _scrape_beforeinfo_bulk(pw_targets, race_date_str)
+        log.info("Playwright取得完了: %d レース", len(pw_cache))
+
+        # 取得できたデータをboatsに反映
+        for item in race_list:
+            vn, rno, boats, weather = item[0], item[1], item[2], item[3]
+            scraped = pw_cache.get((vn, rno), {})
+            if not scraped:
+                continue
+            boats_data = scraped.get("boats", {})
+            for b in boats:
+                if b.lane in boats_data:
+                    bd = boats_data[b.lane]
+                    b.ex_time = bd.get("ex_time")
+                    b.ex_st   = bd.get("ex_st")
+                    b.tilt    = bd.get("tilt")
+            wd = scraped.get("weather", {})
+            if wd:
+                from dataclasses import replace as _replace
+                new_weather = WeatherInfo(
+                    wind_speed     = wd.get("wind_speed",     weather.wind_speed),
+                    wind_direction = wd.get("wind_direction", weather.wind_direction),
+                    wave_height    = wd.get("wave_height",    weather.wave_height),
+                    weather        = weather.weather,
+                )
+                # weatherを更新（tupleなので直接変更できないためrace_listを再構築）
+                idx = race_list.index(item)
+                race_list[idx] = (vn, rno, boats, new_weather) + item[4:]
+
     # ── 荒れ判定 & 通知 ──────────────────────────────────────
     notified = 0
     # 送信済みレースを記録（日付_場コード_レース番号）
