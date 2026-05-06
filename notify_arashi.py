@@ -1308,8 +1308,17 @@ def _run_main(race_date: str | None = None) -> None:
                             VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
 
             log.debug("スコア: %s %dR score=%.2f", VENUE_NAMES.get(venue_num,f"場{venue_num}"), race_number, score)
+
+            # ── 展示タイムなしはスコアを補正（精度が低いため）────────
+            if not has_exhibition:
+                score *= 0.7  # 30%減点
+                detail["展示補正"] = "展示タイムなし（スコア×0.7）"
+
             # 場ごとの閾値を使用（なければデフォルト値）
             venue_threshold = VENUE_THRESHOLDS.get(venue_num, UPSET_SCORE_THRESHOLD)
+            # 展示タイムなしは閾値を+1.0引き上げ（より厳選）
+            if not has_exhibition:
+                venue_threshold += 1.0
             if score < venue_threshold:
                 log.debug("スコア不足: %s %dR score=%.2f threshold=%.1f",
                           VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number, score, venue_threshold)
