@@ -1275,12 +1275,12 @@ def _run_main(race_date: str | None = None) -> None:
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
         has_exhibition = len(ex_times) > 0
 
-        # 展示タイムなしの場合は締切20分以内のレースのみ通知
+        # 展示タイムなしの場合は締切15分以内のレースのみ通知
         if not has_exhibition and closed_at:
             try:
                 closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
                 minutes_to_close = (closed_dt - now).total_seconds() / 60
-                if minutes_to_close > 20:
+                if minutes_to_close > 15:
                     continue
             except Exception:
                 pass
