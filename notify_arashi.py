@@ -148,6 +148,7 @@ class BoatInfo:
     ex_time:   Optional[float] = None   # 展示タイム（直前情報）
     ex_st:     Optional[float] = None   # 展示ST（直前情報）
     tilt:      Optional[float] = None   # チルト角
+    racer_class: str     = ""    # 等級（A1/A2/B1/B2）
 
 
 @dataclass
@@ -393,11 +394,12 @@ def _extract_boats_from_program(program: dict) -> list[BoatInfo]:
         if not lane:
             continue
         boats.append(BoatInfo(
-            lane     = int(lane),
-            name     = b.get("racer_name", f"{lane}号艇"),
-            win_rate = float(b.get("racer_national_top_1_percent") or 0),
-            motor    = float(b.get("racer_assigned_motor_top_2_percent") or 0),
-            avg_st   = float(b.get("racer_average_start_timing") or 0.18),
+            lane         = int(lane),
+            name         = b.get("racer_name", f"{lane}号艇"),
+            win_rate     = float(b.get("racer_national_top_1_percent") or 0),
+            motor        = float(b.get("racer_assigned_motor_top_2_percent") or 0),
+            avg_st       = float(b.get("racer_average_start_timing") or 0.18),
+            racer_class  = str(b.get("racer_class") or b.get("racer_grade") or ""),
         ))
     return sorted(boats, key=lambda x: x.lane)
 
@@ -731,74 +733,107 @@ def calculate_upset_score(
 ) -> tuple:
     import math
 
-    def sigmoid(x):
+    def logit(p: float) -> float:
+        p = max(0.001, min(0.999, p))
+        return math.log(p / (1 - p))
+
+    def sigmoid(x: float) -> float:
         return 1 / (1 + math.exp(-x))
 
-    probs = []
+    def add_effect(base_prob: float, effect: float) -> float:
+        """確率空間で効果を加算（確率が崩れない）"""
+        return sigmoid(logit(base_prob) + effect)
+
+    # ── 各艇のベース確率計算 ──────────────────────────────────
+    raw_scores = []
     for b in boats:
         s = calc_boat_score(b, boats, weather)
-        p = sigmoid(s / 3.0)
-        probs.append((b.lane, p, s))
+        raw_scores.append((b.lane, s))
 
-    probs.sort(key=lambda x: x[1], reverse=True)
+    # softmaxで確率に変換（合計1になる）
+    max_s = max(s for _, s in raw_scores)
+    exp_scores = [(lane, math.exp(s - max_s)) for lane, s in raw_scores]
+    total = sum(e for _, e in exp_scores)
+    lane_probs = {lane: e / total for lane, e in exp_scores}
 
+    boat1_prob = lane_probs.get(1, 1/6)
     boat1 = next((b for b in boats if b.lane == 1), None)
     boat2 = next((b for b in boats if b.lane == 2), None)
-    boat1_prob = next((p for lane, p, s in probs if lane == 1), 0.5)
-    boat1_rank = next((i+1 for i, (lane, p, s) in enumerate(probs) if lane == 1), 1)
 
-    # 荒れスコア基本
-    upset_score = (1 - boat1_prob) * 10
-    if probs[0][0] != 1:
-        upset_score += 2.0
+    # 1号艇以外の最有力艇
+    other_probs = {l: p for l, p in lane_probs.items() if l != 1}
+    best_other_lane = max(other_probs, key=other_probs.get) if other_probs else 2
+    best_other_prob = other_probs.get(best_other_lane, 0.0)
 
-    # ── ①②1号艇の弱さ評価（統合・重複排除）──────────────────
+    # 荒れ確率の初期値 = 1号艇以外が勝つ確率
+    upset_prob = 1.0 - boat1_prob
+
+    # ── ①1号艇の弱さ（確率空間で加算）──────────────────────────
     if boat1:
-        boat1_risk = 0
-        if boat1.win_rate < 5.5:
-            boat1_risk += 1
-            if boat1.win_rate < 5.0:
-                boat1_risk += 1  # 特に弱い場合は2点
+        # ST系（1つにまとめる）
+        st_risk = 0.0
         if boat1.avg_st > 0.17:
-            boat1_risk += 1
-        if boat1.motor < 35.0:
-            boat1_risk += 1
+            st_risk += 0.3
         if boat1.ex_st is not None and boat1.ex_st > 0.16:
-            boat1_risk += 1
+            st_risk += 0.3
+        if st_risk > 0:
+            upset_prob = add_effect(upset_prob, st_risk)
 
-        # リスク数に応じて加点（上限を設ける）
-        if boat1_risk >= 4:
-            upset_score += 3.0
-        elif boat1_risk >= 3:
-            upset_score += 2.0
-        elif boat1_risk >= 2:
-            upset_score += 1.0
+        # 勝率系（1つにまとめる）
+        wr_risk = 0.0
+        if boat1.win_rate < 5.0:
+            wr_risk += 0.5
+        elif boat1.win_rate < 5.5:
+            wr_risk += 0.2
+        if wr_risk > 0:
+            upset_prob = add_effect(upset_prob, wr_risk)
 
-    # ── ③2号艇の強さを特別扱い ──────────────────────────────────
-    if boat1 and boat2:
-        if boat2.win_rate > boat1.win_rate + 1.0:
-            upset_score += 1.5
-        elif boat2.win_rate > boat1.win_rate:
-            upset_score += 0.8
-        if boat2.ex_st is not None and boat1.ex_st is not None:
-            if boat2.ex_st < boat1.ex_st - 0.03:
-                upset_score += 1.5
-            elif boat2.ex_st < boat1.ex_st:
-                upset_score += 0.8
-        if boat2.motor > boat1.motor + 5.0:
-            upset_score += 0.8
+        # 装備系（1つにまとめる）
+        eq_risk = 0.0
+        if boat1.motor < 35.0:
+            eq_risk += 0.2
+        if boat1.racer_class in ("B1", "B2"):
+            eq_risk += 0.3
+        if eq_risk > 0:
+            upset_prob = add_effect(upset_prob, eq_risk)
 
-    # ── ④展示タイムの「隊形」チェック（外が速い構図）────────────
-    inner_times = [b.ex_time for b in boats if b.lane in [1,2,3] and b.ex_time and b.ex_time > 0]
-    outer_times = [b.ex_time for b in boats if b.lane in [4,5,6] and b.ex_time and b.ex_time > 0]
+    # ── ②2号艇の強さ（MLベース確率で比較）────────────────────
+    boat2_prob = lane_probs.get(2, 0.0)
+    if boat2 and boat2_prob > boat1_prob:
+        effect = (boat2_prob - boat1_prob) * 2.0
+        upset_prob = add_effect(upset_prob, effect)
+
+    # ── ③展示系特徴量 ────────────────────────────────────────
+    ex_all = [(b.lane, b.ex_time) for b in boats if b.ex_time and b.ex_time > 0]
+    st_all = [(b.lane, b.ex_st) for b in boats if b.ex_st is not None]
+
+    # 展示順位の分散（バラけ＝荒れ）
+    if len(ex_all) >= 4:
+        import statistics
+        ex_times_vals = [t for _, t in ex_all]
+        ex_std = statistics.stdev(ex_times_vals)
+        if ex_std > 0.05:
+            upset_prob = add_effect(upset_prob, ex_std * 3.0)
+
+    # STの分散（バラけ＝事故）
+    if len(st_all) >= 4:
+        st_vals = [s for _, s in st_all]
+        st_std = statistics.stdev(st_vals)
+        if st_std > 0.04:
+            upset_prob = add_effect(upset_prob, st_std * 2.0)
+
+    # 展示隊形（外が速い＝まくり）
+    inner_times = [t for l, t in ex_all if l in [1,2,3]]
+    outer_times = [t for l, t in ex_all if l in [4,5,6]]
     inner_avg = outer_avg = None
     if inner_times and outer_times:
         inner_avg = sum(inner_times) / len(inner_times)
         outer_avg = sum(outer_times) / len(outer_times)
         if outer_avg < inner_avg:
-            upset_score += 1.5
+            effect = (inner_avg - outer_avg) * 20.0
+            upset_prob = add_effect(upset_prob, min(effect, 0.5))
 
-    # ── ⑤荒れ確定トリガー（2つ以上で+3.0）────────────────────────
+    # ── ④トリガー（足すのではなく倍率）─────────────────────
     trigger = 0
     if boat1 and boat1.ex_st and boat1.ex_st > 0.18:
         trigger += 1
@@ -807,105 +842,65 @@ def calculate_upset_score(
     if inner_avg and outer_avg and outer_avg < inner_avg:
         trigger += 1
     if trigger >= 2:
-        upset_score += 3.0
+        upset_prob = min(upset_prob * 1.2, 0.95)  # 倍率で
 
-    # ── ⑥天候補正（重みを70%に調整）────────────────────────────
+    # ── ⑤天候補正（倍率）────────────────────────────────────
     if weather:
         if weather.wind_speed and weather.wind_speed >= 5.0:
-            wind_bonus = min((weather.wind_speed - 5.0) * 0.3, 1.5)
-            upset_score += wind_bonus * 0.6
+            wind_mult = 1.0 + min((weather.wind_speed - 5.0) * 0.02, 0.08)
+            upset_prob = min(upset_prob * wind_mult, 0.95)
         if weather.weather and '雨' in weather.weather:
-            upset_score += 0.5 * 0.6
+            upset_prob = min(upset_prob * 1.03, 0.95)
         if weather.wave_height and weather.wave_height >= 15:
-            wave_bonus = min((weather.wave_height - 15) * 0.05, 1.0)
-            upset_score += wave_bonus * 0.6
+            wave_mult = 1.0 + min((weather.wave_height - 15) * 0.003, 0.06)
+            upset_prob = min(upset_prob * wave_mult, 0.95)
 
-    # ── ⑦レース種別補正 ─────────────────────────────────────────
-    grade_penalty = {0: 0.0, 1: -0.3, 2: -0.5, 3: -0.8, 4: -1.2}
-    upset_score += grade_penalty.get(race_grade, 0.0)
-    upset_score = max(upset_score, 0.0)
+    # ── ⑥等級差（1号艇B級×他にA1）────────────────────────────
+    if boat1 and boat1.racer_class in ("B1", "B2"):
+        a1_others = [b for b in boats if b.lane != 1 and b.racer_class == "A1"]
+        if a1_others:
+            upset_prob = add_effect(upset_prob, 0.4)
 
-    # ── 💡万舟ゾーン突入条件 ────────────────────────────────────
-    if boat1 and boat1.ex_st is not None and boat1.ex_st > 0.18:
-        fast_starters = sum(1 for b in boats if b.ex_st is not None and b.ex_st < 0.12)
-        if fast_starters >= 2:
-            upset_score += 3.0
+    # ── ⑦レース種別補正 ──────────────────────────────────────
+    grade_effects = {0: 0.0, 1: -0.1, 2: -0.2, 3: -0.3, 4: -0.5}
+    upset_prob = add_effect(upset_prob, grade_effects.get(race_grade, 0.0))
+    upset_prob = max(0.0, min(upset_prob, 0.95))
 
-    # 狙い目
-    target = [lane for lane, p, s in probs if lane != 1][:3]
+    # スコアは確率×10（0〜9.5の範囲）
+    upset_score = upset_prob * 10.0
 
-    # ── ④通知条件：1号艇1位でも確率65%未満は通知 ────────────────
-    top_lane, top_prob, top_score = probs[0]
-    if top_lane == 1 and boat1_prob > 0.65:
+    # 通知条件：1号艇が65%超で最有力ならスコア0
+    if boat1_prob > 0.65 and best_other_prob < boat1_prob:
         upset_score = 0.0
+
+    # 狙い目（確率上位3艇、1号艇除く）
+    target = sorted(other_probs, key=other_probs.get, reverse=True)[:3]
+
+    # boat1_rankをprobs形式で計算
+    sorted_lanes = sorted(lane_probs, key=lane_probs.get, reverse=True)
+    boat1_rank = sorted_lanes.index(1) + 1 if 1 in sorted_lanes else 6
 
     grade_names = {0: '一般', 1: 'G3', 2: 'G2', 3: 'G1', 4: 'SG'}
     detail = {
-        "予測1位": f"{top_lane}号艇(確率{top_prob:.1%})",
-        "1号艇確率": f"{boat1_prob:.1%}(rank{boat1_rank})",
-        "展示": f"{next((b.ex_time for b in boats if b.lane==1), None)}秒",
-        "展示ST": f"{next((b.ex_st for b in boats if b.lane==1), None)}",
+        "荒れ確率":   f"{upset_prob:.1%}",
+        "1号艇確率":  f"{boat1_prob:.1%}(rank{boat1_rank})",
+        "最有力":     f"{best_other_lane}号艇({best_other_prob:.1%})",
+        "展示":       f"{next((b.ex_time for b in boats if b.lane==1), None)}秒",
         "レース種別": grade_names.get(race_grade, f'grade{race_grade}'),
     }
 
     return upset_score, detail, target
 
+
 def _generate_patterns(target_lanes: list[int], upset_score: float) -> dict[str, list]:
     """
-    荒れスコアとターゲット艇から5パターンの買い目を生成する。
-    target_lanes: [最有力, 2番手, 3番手]（1号艇除く）
+    全三連単120通りを生成する。EVランキングで評価するため
+    荒れスコアによる事前フィルタは行わない。
+    target_lanes / upset_score は後段の参照用に引数として残す。
     """
-    t = target_lanes
-    t1 = t[0] if len(t) > 0 else 2
-    t2 = t[1] if len(t) > 1 else 3
-    t3 = t[2] if len(t) > 2 else 4
-
-    # ①本命崩れ（2軸・差し）
-    pattern_nami = [
-        f"{t1}-1-{t2}", f"{t1}-1-{t3}",
-        f"{t1}-{t2}-1", f"{t1}-{t3}-1",
-    ]
-
-    # ②まくり型（外伸び）
-    outer = [l for l in [3,4,5,6] if l != 1 and l != t1][:2]
-    pattern_makuri = []
-    for o in outer:
-        pattern_makuri += [f"{o}-1-{t1}", f"{o}-{t1}-1", f"{o}-1-{t2}"]
-
-    # ③差し型（内崩れ）
-    pattern_sashi = [
-        f"{t1}-{t2}-1", f"{t2}-{t1}-1",
-        f"{t1}-{t2}-{t3}", f"{t2}-{t1}-{t3}",
-    ]
-
-    # ④万舟狙い（穴）- スコア高い時のみ積極的に
-    ana_lanes = [l for l in [4,5,6] if l not in [1, t1]][:2]
-    pattern_ana = []
-    for a in ana_lanes:
-        pattern_ana += [
-            f"{a}-{t1}-{t2}", f"{t1}-{a}-{t2}",
-            f"{a}-{t2}-{t1}",
-        ]
-
-    # ⑤保険（軽く押さえ）
-    pattern_safe = [f"1-{t1}-{t2}", f"1-{t2}-{t1}"]
-
-    # スコアで使うパターンを切り替え
-    if upset_score > 6:
-        use = ["nami", "makuri", "ana"]
-    elif upset_score > 5:
-        use = ["nami", "sashi", "makuri"]
-    else:
-        use = ["nami", "safe"]
-
-    all_patterns = {
-        "nami":   pattern_nami,
-        "makuri": pattern_makuri,
-        "sashi":  pattern_sashi,
-        "ana":    pattern_ana,
-        "safe":   pattern_safe,
-    }
-    return {k: v for k, v in all_patterns.items() if k in use}
+    from itertools import permutations
+    all_combos = [f"{a}-{b}-{c}" for a, b, c in permutations(range(1, 7), 3)]
+    return {"all": all_combos}
 
 
 def _evaluate_bets(
@@ -913,60 +908,76 @@ def _evaluate_bets(
     ml_probs: dict[int, float],
     odds_map: dict[str, float],
     bankroll: int = 10000,
+    target_lanes: list[int] | None = None,
 ) -> list[dict]:
     """
-    パターン別にEV計算→スコア統合→推奨買い目を返す。
+    全三連単120通りをEV順でランキングし、EV>=1.0の買い目を返す。
+    パターンラベルはEV計算後に付与（荒れスコアによる事前絞り込みなし）。
     """
-    # パターン補正係数
-    pattern_bonus = {"nami": 1.1, "sashi": 1.0, "makuri": 1.05, "ana": 1.2, "safe": 0.9}
+    # ── Luce選択モデルで三連単確率を計算 ──────────────────────
+    def trifecta_prob(a: int, b: int, c: int, probs: dict) -> float:
+        """P(1位=a, 2位=b, 3位=c) = P(a) * P(b|残り) * P(c|残り2)"""
+        pa = probs.get(a, 0.01)
+        remaining1 = {l: p for l, p in probs.items() if l != a}
+        total1 = sum(remaining1.values()) or 1
+        pb = remaining1.get(b, 0.01) / total1
+        remaining2 = {l: p for l, p in remaining1.items() if l != b}
+        total2 = sum(remaining2.values()) or 1
+        pc = remaining2.get(c, 0.01) / total2
+        return pa * pb * pc
 
-    all_candidates = []
-    for pname, combos in patterns.items():
-        for combo in combos:
-            # 重複除去
-            parts = combo.split("-")
-            if len(parts) != 3 or len(set(parts)) != 3:
-                continue
-            a, b, c = int(parts[0]), int(parts[1]), int(parts[2])
+    # パターンラベル付与用（後付け）
+    tgt = target_lanes or []
+    t1 = tgt[0] if len(tgt) > 0 else None
+    t2 = tgt[1] if len(tgt) > 1 else None
 
-            # ML確率から3連単確率を推定
-            pa = ml_probs.get(a, 0.05)
-            pb = ml_probs.get(b, 0.04)
-            pc = ml_probs.get(c, 0.03)
-            prob = pa * pb * pc * 6  # 順列補正
+    def _label(a: int, b: int, c: int) -> str:
+        if a == 1:
+            return "本命軸"
+        if a in [4, 5, 6]:
+            return "万舟"
+        if t1 and a == t1 and b == 1:
+            return "差し"
+        if t1 and a == t1 and b != 1:
+            return "まくり"
+        return "本命崩れ"
 
-            odds = odds_map.get(combo, 0)
-            if odds <= 0 or odds > 500:
-                continue
+    from itertools import permutations
+    all_combos = [f"{a}-{b}-{c}" for a, b, c in permutations(range(1, 7), 3)]
 
-            ev = prob * odds * pattern_bonus.get(pname, 1.0)
+    candidates = []
+    for combo in all_combos:
+        parts = combo.split("-")
+        a, b, c = int(parts[0]), int(parts[1]), int(parts[2])
 
-            # バランス型スコア
-            score_val = ev * 0.7 + prob * 100 * 0.3
+        prob = trifecta_prob(a, b, c, ml_probs)
+        odds = odds_map.get(combo, 0)
+        if odds <= 0 or odds > 500:
+            continue
 
-            all_candidates.append({
-                "combo":   combo,
-                "pattern": pname,
-                "prob":    round(prob, 4),
-                "odds":    odds,
-                "ev":      round(ev, 3),
-                "score":   round(score_val, 3),
-            })
+        ev = prob * odds
+        candidates.append({
+            "combo":   combo,
+            "pattern": _label(a, b, c),
+            "prob":    round(prob, 5),
+            "odds":    odds,
+            "ev":      round(ev, 3),
+            "score":   round(ev, 3),
+        })
 
-    # EV >= 1.0 でフィルタ（荒れ狙いなのでやや低め）
-    filtered = [t for t in all_candidates if t["ev"] >= 1.0]
-    filtered.sort(key=lambda x: x["score"], reverse=True)
+    # EVで降順ソート → EV>=1.0のみ
+    candidates.sort(key=lambda x: x["ev"], reverse=True)
+    filtered = [t for t in candidates if t["ev"] >= 1.0]
 
-    # 上位5点に資金配分（ケリー基準）
-    top = filtered[:5]
+    top = filtered[:8]
     for t in top:
         b_val = t["odds"] - 1
         if b_val <= 0:
             t["amount"] = 0
             continue
         kelly = (t["prob"] * t["odds"] - 1) / b_val
-        kelly = max(0.0, min(kelly, 0.15))  # 最大15%
-        t["amount"] = int(bankroll * kelly / 100) * 100  # 100円単位
+        kelly = max(0.0, min(kelly, 0.15))
+        t["amount"] = int(bankroll * kelly / 100) * 100
 
     return top
 
@@ -990,9 +1001,13 @@ def build_message(result: RaceResult) -> tuple[str, str]:
     label = _danger_label(result.upset_score)
 
     # ── 件名 ─────────────────────────────────────────────────
+    top_ev_str = ""
+    if result.recommended_bets:
+        top_ev_str = f" EV:{result.recommended_bets[0]['ev']:.2f}"
+
     subject = (
         f"【荒れ検知】{result.venue_name} {result.race_number}R "
-        f"{label} (score:{result.upset_score:.1f})"
+        f"{label} (score:{result.upset_score:.1f}{top_ev_str})"
     )
 
     # ── 本文（LINEとメール共通・コンパクト版）────────────────
@@ -1035,7 +1050,8 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         marker = "★" if b.lane == 1 else "  "
         # STマイナス（フライング注意）
         f_warn = "⚠F" if b.ex_st is not None and b.ex_st < 0 else ""
-        lines.append(f"{marker}{b.lane}:{b.name[:3]} {et}({rank}位) ST{st}{f_warn}")
+        cls = f"[{b.racer_class}]" if b.racer_class else ""
+        lines.append(f"{marker}{b.lane}:{b.name[:3]}{cls} {et}({rank}位) ST{st}{f_warn}")
 
     lines.append("")
 
@@ -1058,16 +1074,22 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         if shown_odds:
             lines.append("💴 " + "  ".join(f"{c}:{o:.0f}倍" for c, o in shown_odds[:4]))
 
-    # 推奨買い目（パターン評価エンジン出力）
+    # 推奨買い目（EV順ランキング）
     if result.recommended_bets:
-        lines.append("🎯 推奨買い目")
-        pattern_jp = {"nami":"本命崩れ","makuri":"まくり","sashi":"差し","ana":"万舟","safe":"保険"}
-        for bet in result.recommended_bets[:5]:
+        lines.append("💰 EV上位買い目（期待値順）")
+        pattern_jp = {
+            "本命軸": "本命軸", "本命崩れ": "本命崩れ",
+            "差し": "差し", "まくり": "まくり", "万舟": "万舟",
+            # 旧パターン名後方互換
+            "nami":"本命崩れ","makuri":"まくり","sashi":"差し","ana":"万舟","safe":"保険",
+        }
+        for i, bet in enumerate(result.recommended_bets[:8], 1):
             pname = pattern_jp.get(bet["pattern"], bet["pattern"])
             amt   = f" ¥{bet['amount']:,}" if bet.get("amount", 0) > 0 else ""
+            ev_bar = "★" * min(int(bet["ev"] * 2), 5)
             lines.append(
-                f"  {bet['combo']} {bet['odds']:.0f}倍 "
-                f"EV:{bet['ev']:.2f} [{pname}]{amt}"
+                f"  {i}. {bet['combo']}  {bet['odds']:.0f}倍 "
+                f"EV:{bet['ev']:.2f}{ev_bar}  [{pname}]{amt}"
             )
     elif result.best_combo:
         odds_val = result.odds_map.get(result.best_combo, 0)
@@ -1360,18 +1382,55 @@ def _run_main(race_date: str | None = None) -> None:
 
             # ── 展示タイムなしはスコアを補正（精度が低いため）────────
             if not has_exhibition:
-                score *= 0.7  # 30%減点
-                detail["展示補正"] = "展示タイムなし（スコア×0.7）"
+                score *= 0.5  # 50%減点（改善⑧）
+                detail["展示補正"] = "展示タイムなし（スコア×0.5）"
 
-            # 場ごとの閾値を使用（なければデフォルト値）
+            # ═══════════════════════════════════════════════════════
+            # ▼ EV計算を先に行う（EVフィルタが主軸）
+            # ═══════════════════════════════════════════════════════
+            recommended = []
+            odds_map: dict = {}
+
+            if ml_probs:
+                try:
+                    from odds_fetch import fetch_odds
+                    race_date_str = str(race_date).replace("-", "")
+                    odds_map = fetch_odds(race_number, str(venue_num).zfill(2), race_date_str) or {}
+                except Exception as oe:
+                    log.debug("オッズ取得失敗: %s", oe)
+
+                if odds_map:
+                    # 全120通りのEVランキング（荒れスコアによる事前絞り込みなし）
+                    patterns = _generate_patterns(target, score)
+                    recommended = _evaluate_bets(patterns, ml_probs, odds_map, target_lanes=target)
+                    detail["EV上位"] = (
+                        f"{recommended[0]['combo']} EV={recommended[0]['ev']:.2f}"
+                        if recommended else "なし"
+                    )
+
+            # ── ①EVがある → 通知（荒れスコアはサブフィルタ）────────
+            # ── ②EVなし  → 荒れスコア閾値でフォールバック判定 ──────
             venue_threshold = VENUE_THRESHOLDS.get(venue_num, UPSET_SCORE_THRESHOLD)
-            # 展示タイムなしは閾値を+1.0引き上げ（より厳選）
             if not has_exhibition:
-                venue_threshold += 1.0
-            if score < venue_threshold:
-                log.debug("スコア不足: %s %dR score=%.2f threshold=%.1f",
-                          VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number, score, venue_threshold)
-                continue
+                venue_threshold += 1.5
+
+            has_ev_signal = bool(recommended)
+
+            if not has_ev_signal:
+                # オッズ取得できなかった / EVなし → 荒れスコアのみで判断
+                if score < venue_threshold:
+                    log.debug("スコア不足(EVなし): %s %dR score=%.2f threshold=%.1f",
+                              VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number,
+                              score, venue_threshold)
+                    continue
+            else:
+                # EVあり → 荒れスコアが最低ラインを超えていればOK（閾値を緩める）
+                loose_threshold = venue_threshold * 0.6
+                if score < loose_threshold:
+                    log.debug("スコア不足(EV有): %s %dR score=%.2f loose_threshold=%.1f",
+                              VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number,
+                              score, loose_threshold)
+                    continue
 
             # ── 送信済みチェック ──────────────────────────────────
             race_key    = f"{race_date}_{venue_num}_{race_number}"
@@ -1403,44 +1462,22 @@ def _run_main(race_date: str | None = None) -> None:
                 target_lanes = target,
                 race_grade   = race_grade,
                 closed_at    = closed_at,
+                odds_map     = odds_map,
+                recommended_bets = recommended,
             )
 
-            # ── 3連単オッズ取得 → パターン評価エンジン ──────────
-            try:
-                from odds_fetch import fetch_odds
-                race_date_str = str(race_date).replace("-", "")
-                odds_map = fetch_odds(race_number, str(venue_num).zfill(2), race_date_str)
-                if odds_map and ml_probs:
-                    result.odds_map = odds_map
-
-                    # パターン生成
-                    patterns = _generate_patterns(target, score)
-
-                    # EV評価 → 推奨買い目
-                    recommended = _evaluate_bets(patterns, ml_probs, odds_map)
-                    result.recommended_bets = recommended
-
-                    if recommended:
-                        best = recommended[0]
-                        result.best_combo = best["combo"]
-                        result.best_ev    = best["ev"]
-                        detail["推奨"] = (
-                            f"{best['combo']} "
-                            f"({best['odds']:.0f}倍 EV:{best['ev']:.2f} "
-                            f"パターン:{best['pattern']})"
-                        )
-                        log.info("パターン評価: %s %dR 推奨=%s EV=%.2f (%d点)",
-                                 result.venue_name, race_number,
-                                 best["combo"], best["ev"], len(recommended))
-
-                    # EVフィルタ（推奨買い目が全くない場合のみスキップ）
-                    if odds_map and not recommended:
-                        log.debug("推奨買い目なし: %s %dR",
-                                  result.venue_name, race_number)
-                        continue
-
-            except Exception as oe:
-                log.debug("オッズ取得失敗: %s", oe)
+            if recommended:
+                best = recommended[0]
+                result.best_combo = best["combo"]
+                result.best_ev    = best["ev"]
+                detail["推奨"] = (
+                    f"{best['combo']} "
+                    f"({best['odds']:.0f}倍 EV:{best['ev']:.2f} "
+                    f"パターン:{best['pattern']})"
+                )
+                log.info("EV上位: %s %dR 推奨=%s EV=%.2f (%d点)",
+                         result.venue_name, race_number,
+                         best["combo"], best["ev"], len(recommended))
 
             log.info(
                 "荒れ検知: %s %dR score=%.2f target=%s",
