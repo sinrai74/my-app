@@ -285,7 +285,7 @@ def _scrape_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
                 url = (f"https://www.boatrace.jp/owpc/pc/race/beforeinfo"
                        f"?rno={race_number}&jcd={str(venue_num).zfill(2)}&hd={race_date}")
                 try:
-                    page.goto(url, wait_until="networkidle", timeout=20000)
+                    page.goto(url, wait_until="networkidle", timeout=10000)
                     tables = page.query_selector_all("table")
                     if len(tables) < 2:
                         continue
