@@ -338,8 +338,11 @@ def _scrape_beforeinfo_bs4(venue_num: int, race_number: int, race_date: str) -> 
     url = (f"https://www.boatrace.jp/owpc/pc/race/beforeinfo"
            f"?rno={race_number}&jcd={str(venue_num).zfill(2)}&hd={race_date}")
     try:
-        r = requests.get(url, headers=HTTP_HEADERS, timeout=HTTP_TIMEOUT)
+        r = requests.get(url, headers=HTTP_HEADERS, timeout=6)   # 6秒で打ち切り
         r.raise_for_status()
+    except requests.Timeout:
+        log.warning("[fallback] タイムアウト(6s): 場%d %dR → スキップ", venue_num, race_number)
+        return {}
     except requests.RequestException as e:
         log.warning("[fallback] 直前情報スクレイピング失敗: %s", e)
         return {}
@@ -519,11 +522,17 @@ def _get_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
     # ── ③ fallback: 個別 BS4 スクレイピング ───────────────────
     if fallback_targets:
         log.info("[fallback] BS4スクレイピング対象: %d レース", len(fallback_targets))
-        for venue_num, race_number in fallback_targets:
+        for idx, (venue_num, race_number) in enumerate(fallback_targets, 1):
+            log.info("[fallback] %d/%d 取得中: 場%d %dR",
+                     idx, len(fallback_targets), venue_num, race_number)
             r = _scrape_beforeinfo_bs4(venue_num, race_number, race_date)
             if r:
                 results[(venue_num, race_number)] = r
-            time.sleep(0.5)   # レート制限対策（Playwrightより軽いが一応）
+                log.info("[fallback] ✅ 取得成功: 場%d %dR", venue_num, race_number)
+            else:
+                log.info("[fallback] ⬜ 取得失敗（展示前）: 場%d %dR", venue_num, race_number)
+            if idx < len(fallback_targets):
+                time.sleep(0.3)   # 最終レース後はsleepしない
 
     log.info("[直前情報] API=%d件 / fallback=%d件 / 計=%d件",
              api_count, len(results) - api_count, len(results))
