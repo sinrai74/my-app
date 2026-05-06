@@ -1278,12 +1278,12 @@ def build_message(result: RaceResult) -> tuple[str, str]:
             # 旧パターン名後方互換
             "nami":"本命崩れ","makuri":"まくり","sashi":"差し","ana":"万舟","safe":"保険",
         }
-        for i, bet in enumerate(result.recommended_bets[:8], 1):
+        for bet in result.recommended_bets[:8]:
             pname = pattern_jp.get(bet["pattern"], bet["pattern"])
             amt   = f" ¥{bet['amount']:,}" if bet.get("amount", 0) > 0 else ""
             ev_bar = "★" * min(int(bet["ev"] * 2), 5)
             lines.append(
-                f"  {i}. {bet['combo']}  {bet['odds']:.0f}倍 "
+                f"  {bet['combo']}  {bet['odds']:.0f}倍 "
                 f"EV:{bet['ev']:.2f}{ev_bar}  [{pname}]{amt}"
             )
     elif result.best_combo:
