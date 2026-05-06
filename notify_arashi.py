@@ -262,97 +262,283 @@ def _predict_win_prob(boats: list) -> dict[int, float]:
         return {}
 
 
-def _scrape_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
+def _fetch_beforeinfo_api(venue_num: int, race_number: int, race_date: str) -> dict:
     """
-    Playwrightを1回だけ起動して複数レースの展示タイムと気象データをまとめて取得。
-    race_list: [(venue_num, race_number), ...]
-    戻り値: {(venue_num, race_number): {"boats": {lane: {...}}, "weather": {...}}}
+    ① BoatraceOpenAPI previews から展示タイム・ST・気象を取得する（軽量・高速）。
+    戻り値: {"boats": {lane: {ex_time, ex_st, tilt}}, "weather": {...}}
+    展示タイムが1艇も取れなかった場合は {} を返す。
     """
-    results = {}
+    url = f"{PREVIEWS_URL}/{race_date[:4]}/{race_date}.json"
+    data = _safe_get(url)
+    if not data:
+        return {}
+
+    previews = data.get("previews", [])
+    target = next(
+        (p for p in previews
+         if p.get("race_stadium_number") == venue_num
+         and p.get("race_number") == race_number),
+        None
+    )
+    if target is None:
+        return {}
+
+    boats: dict[int, dict] = {}
+    boats_raw = target.get("boats", {})
+    pb_list = list(boats_raw.values()) if isinstance(boats_raw, dict) else boats_raw
+    for pb in pb_list:
+        if not isinstance(pb, dict):
+            continue
+        lane = pb.get("racer_boat_number")
+        if not lane:
+            continue
+        ex_time = pb.get("racer_exhibition_time")
+        ex_st   = pb.get("racer_start_timing")
+        tilt    = pb.get("racer_tilt_adjustment")
+        boats[lane] = {
+            "ex_time": float(ex_time) if ex_time and float(ex_time) > 0 else None,
+            "ex_st":   float(ex_st)   if ex_st   is not None else None,
+            "tilt":    float(tilt)    if tilt    is not None else None,
+        }
+
+    # 展示タイムが1艇も取れていなければ「まだ公開前」
+    if not any(v["ex_time"] for v in boats.values()):
+        return {}
+
+    # 気象情報
+    wd_num = target.get("race_wind_direction_number")
+    wd_str = None
+    if wd_num is not None:
+        n = int(wd_num)
+        wd_str = "追" if n in (1, 2) else "向" if n in (9, 10) else "横"
+    ws  = target.get("race_wind")
+    wh  = target.get("race_wave")
+    wdc = target.get("race_weather_number")
+
+    return {
+        "boats": boats,
+        "weather": {
+            "wind_speed":     float(ws)  if ws  is not None else None,
+            "wind_direction": wd_str,
+            "wave_height":    int(wh)    if wh  is not None else None,
+            "weather_label":  {1:"晴",2:"曇",3:"雨",4:"雪"}.get(int(wdc)) if wdc is not None else None,
+        },
+    }
+
+
+def _scrape_beforeinfo_bs4(venue_num: int, race_number: int, race_date: str) -> dict:
+    """
+    ② fallback: requests + BeautifulSoup で公式サイトの直前情報ページを取得。
+    Playwright 不要・軽量。
+    戻り値: {"boats": {lane: {...}}, "weather": {...}}
+    """
+    import re as _re
+    from bs4 import BeautifulSoup as _BS
+
+    url = (f"https://www.boatrace.jp/owpc/pc/race/beforeinfo"
+           f"?rno={race_number}&jcd={str(venue_num).zfill(2)}&hd={race_date}")
     try:
-        from playwright.sync_api import sync_playwright
-        # Chromiumが存在しない場合は自動インストール
-        import subprocess as _sp
-        try:
-            _sp.run(["playwright", "install", "chromium"], check=True,
-                    capture_output=True, timeout=120)
-        except Exception as _ie:
-            log.debug("playwright install: %s", _ie)
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            for venue_num, race_number in race_list:
-                url = (f"https://www.boatrace.jp/owpc/pc/race/beforeinfo"
-                       f"?rno={race_number}&jcd={str(venue_num).zfill(2)}&hd={race_date}")
-                try:
-                    page.goto(url, wait_until="networkidle", timeout=10000)
-                    tables = page.query_selector_all("table")
-                    if len(tables) < 2:
-                        continue
+        r = requests.get(url, headers=HTTP_HEADERS, timeout=HTTP_TIMEOUT)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        log.warning("[fallback] 直前情報スクレイピング失敗: %s", e)
+        return {}
 
-                    # ── 気象データ（Table[0]）──────────────────────
-                    weather_data = {}
-                    if len(tables) >= 1:
-                        t0_rows = tables[0].query_selector_all("tr")
-                        for row in t0_rows:
-                            cells = [td.inner_text().strip() for td in row.query_selector_all("td")]
-                            # 風速・風向・波高を探す
-                            for i, cell in enumerate(cells):
-                                if "m" in cell and len(cell) <= 6:
-                                    try:
-                                        ws = float(cell.replace("m", "").strip())
-                                        if 0 <= ws <= 30:
-                                            weather_data["wind_speed"] = ws
-                                    except ValueError:
-                                        pass
-                                if "cm" in cell:
-                                    try:
-                                        wh = int(cell.replace("cm", "").strip())
-                                        weather_data["wave_height"] = wh
-                                    except ValueError:
-                                        pass
-                                if cell in ("向かい風", "追い風", "横風", "向", "追", "横"):
-                                    wd = "向" if "向" in cell else "追" if "追" in cell else "横"
-                                    weather_data["wind_direction"] = wd
+    soup = _BS(r.content, "html.parser")
+    boats: dict[int, dict] = {}
+    weather_data: dict = {}
 
-                    # ── 艇別データ（Table[1]）──────────────────────
-                    boats = {}
-                    rows = tables[1].query_selector_all("tr")
-                    for i, row in enumerate(rows):
-                        cells = [td.inner_text().strip() for td in row.query_selector_all("td")]
-                        if cells and cells[0].isdigit() and 1 <= int(cells[0]) <= 6:
-                            lane = int(cells[0])
-                            try:
-                                ex_time = float(cells[4]) if len(cells) > 4 and cells[4] else None
-                                tilt    = float(cells[5]) if len(cells) > 5 and cells[5] else None
-                            except ValueError:
-                                ex_time = tilt = None
-                            ex_st = None
-                            for j in range(i+1, min(i+5, len(rows))):
-                                sc = [td.inner_text().strip() for td in rows[j].query_selector_all("td")]
-                                if len(sc) >= 3 and sc[1] == "ST":
-                                    try:
-                                        ex_st = float("0"+sc[2]) if sc[2].startswith(".") else float(sc[2])
-                                    except ValueError:
-                                        pass
-                                    break
-                            boats[lane] = {"ex_time": ex_time, "ex_st": ex_st, "tilt": tilt}
-                    if boats:
-                        results[(venue_num, race_number)] = {
-                            "boats": boats,
-                            "weather": weather_data,
-                        }
-                except Exception as e:
-                    log.warning("Playwright取得失敗: 場%s %sR %s", venue_num, race_number, e)
-            browser.close()
-    except Exception as e:
-        log.warning("Playwright起動失敗: %s", e)
+    # ── 気象情報（テーブル内テキストから抽出）────────────────
+    for txt in soup.get_text(separator=" ").split():
+        m_ws = _re.match(r"^(\d+\.?\d*)m$", txt)
+        m_wh = _re.match(r"^(\d+)cm$", txt)
+        if m_ws:
+            try:
+                ws = float(m_ws.group(1))
+                if 0 <= ws <= 30:
+                    weather_data["wind_speed"] = ws
+            except ValueError:
+                pass
+        if m_wh:
+            try:
+                weather_data["wave_height"] = int(m_wh.group(1))
+            except ValueError:
+                pass
+    for kw, val in [("向かい風","向"),("追い風","追"),("横風","横")]:
+        if kw in soup.get_text():
+            weather_data["wind_direction"] = val
+            break
+
+    # ── 展示タイム・ST（tbody tr を走査）─────────────────────
+    for table in soup.find_all("table"):
+        rows = table.select("tbody tr")
+        for i, tr in enumerate(rows):
+            tds = [td.get_text(strip=True) for td in tr.find_all("td")]
+            if not tds or not tds[0].isdigit():
+                continue
+            if not (1 <= int(tds[0]) <= 6):
+                continue
+            lane = int(tds[0])
+            ex_time = ex_st = tilt = None
+            try:
+                for col in tds[1:]:
+                    val = col.replace(",", "")
+                    fv = float(val)
+                    if 6.0 <= fv <= 7.5 and ex_time is None:
+                        ex_time = fv
+                    elif -1.0 <= fv <= 1.0 and tilt is None:
+                        tilt = fv
+            except ValueError:
+                pass
+            # ST は次数行に "ST" + 数値のパターン
+            for j in range(i + 1, min(i + 5, len(rows))):
+                sc = [td.get_text(strip=True) for td in rows[j].find_all("td")]
+                if "ST" in sc:
+                    idx = sc.index("ST")
+                    for k in range(idx + 1, len(sc)):
+                        try:
+                            sv = sc[k]
+                            sv = "0" + sv if sv.startswith(".") else sv
+                            ex_st = float(sv)
+                            break
+                        except ValueError:
+                            pass
+                    break
+
+            boats[lane] = {"ex_time": ex_time, "ex_st": ex_st, "tilt": tilt}
+
+    if not any(v["ex_time"] for v in boats.values()):
+        log.debug("[fallback] 展示タイムなし: 場%d %dR", venue_num, race_number)
+        return {}
+
+    return {"boats": boats, "weather": weather_data}
+
+
+def _get_beforeinfo(venue_num: int, race_number: int, race_date: str) -> dict:
+    """
+    API優先・fallback付きで直前情報を取得する。
+
+    ① BoatraceOpenAPI previews（軽量・高速）
+       → 展示タイムが取れたら即返す
+    ② requests + BeautifulSoup（fallback）
+       → Playwright 不使用で軽量
+    ③ 両方ダメ → {} を返す（展示タイムなしで続行）
+    """
+    # ① API
+    result = _fetch_beforeinfo_api(venue_num, race_number, race_date)
+    if result:
+        log.debug("[API] 直前情報取得: 場%d %dR", venue_num, race_number)
+        return result
+
+    # ② fallback（BS4スクレイピング）
+    log.info("[fallback] API取得失敗 → BS4スクレイピング: 場%d %dR", venue_num, race_number)
+    result = _scrape_beforeinfo_bs4(venue_num, race_number, race_date)
+    if result:
+        return result
+
+    # ③ 両方失敗
+    log.debug("[fallback] 展示タイム取得不可: 場%d %dR（展示前or障害）", venue_num, race_number)
+    return {}
+
+
+def _get_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
+    """
+    複数レースの直前情報を一括取得する。
+    race_list: [(venue_num, race_number), ...]
+    戻り値: {(venue_num, race_number): {"boats": {...}, "weather": {...}}}
+
+    まず previews API を1回だけ叩いて全レース分を取得し、
+    取れなかったレースだけ個別 fallback を呼ぶ。
+    """
+    results: dict = {}
+
+    # ── ① previews API を1回だけ叩く ──────────────────────────
+    url = f"{PREVIEWS_URL}/{race_date[:4]}/{race_date}.json"
+    api_data = _safe_get(url)
+    preview_map: dict[tuple, dict] = {}
+    if api_data:
+        for p in api_data.get("previews", []):
+            key = (p.get("race_stadium_number"), p.get("race_number"))
+            preview_map[key] = p
+
+    # ── ② 各レースを処理 ──────────────────────────────────────
+    fallback_targets = []
+    for venue_num, race_number in race_list:
+        key = (venue_num, race_number)
+        preview = preview_map.get(key)
+        if preview is None:
+            fallback_targets.append(key)
+            continue
+
+        # APIデータから展示タイムを組み立て
+        boats: dict[int, dict] = {}
+        boats_raw = preview.get("boats", {})
+        pb_list = list(boats_raw.values()) if isinstance(boats_raw, dict) else boats_raw
+        for pb in pb_list:
+            if not isinstance(pb, dict):
+                continue
+            lane = pb.get("racer_boat_number")
+            if not lane:
+                continue
+            ex_time = pb.get("racer_exhibition_time")
+            ex_st   = pb.get("racer_start_timing")
+            tilt    = pb.get("racer_tilt_adjustment")
+            boats[lane] = {
+                "ex_time": float(ex_time) if ex_time and float(ex_time) > 0 else None,
+                "ex_st":   float(ex_st)   if ex_st   is not None else None,
+                "tilt":    float(tilt)    if tilt    is not None else None,
+            }
+
+        if not any(v["ex_time"] for v in boats.values()):
+            # 展示タイム未公開 → fallback
+            fallback_targets.append(key)
+            continue
+
+        # 気象情報
+        wd_num = preview.get("race_wind_direction_number")
+        wd_str = None
+        if wd_num is not None:
+            n = int(wd_num)
+            wd_str = "追" if n in (1, 2) else "向" if n in (9, 10) else "横"
+        ws  = preview.get("race_wind")
+        wh  = preview.get("race_wave")
+        wdc = preview.get("race_weather_number")
+
+        results[key] = {
+            "boats": boats,
+            "weather": {
+                "wind_speed":     float(ws) if ws is not None else None,
+                "wind_direction": wd_str,
+                "wave_height":    int(wh)   if wh is not None else None,
+                "weather_label":  {1:"晴",2:"曇",3:"雨",4:"雪"}.get(int(wdc)) if wdc else None,
+            },
+        }
+
+    api_count = len(results)
+
+    # ── ③ fallback: 個別 BS4 スクレイピング ───────────────────
+    if fallback_targets:
+        log.info("[fallback] BS4スクレイピング対象: %d レース", len(fallback_targets))
+        for venue_num, race_number in fallback_targets:
+            r = _scrape_beforeinfo_bs4(venue_num, race_number, race_date)
+            if r:
+                results[(venue_num, race_number)] = r
+            time.sleep(0.5)   # レート制限対策（Playwrightより軽いが一応）
+
+    log.info("[直前情報] API=%d件 / fallback=%d件 / 計=%d件",
+             api_count, len(results) - api_count, len(results))
     return results
 
 
+# ── 後方互換ラッパー（既存コードから呼ばれる箇所用）──────────────
+def _scrape_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
+    """後方互換: _get_beforeinfo_bulk に委譲"""
+    return _get_beforeinfo_bulk(race_list, race_date)
+
+
 def _scrape_beforeinfo(race_no: int, venue_code: int, race_date: str) -> dict:
-    """単体取得（後方互換用）- boatsデータのみ返す"""
-    result = _scrape_beforeinfo_bulk([(venue_code, race_no)], race_date)
+    """後方互換: 単体取得"""
+    result = _get_beforeinfo_bulk([(venue_code, race_no)], race_date)
     entry = result.get((venue_code, race_no), {})
     return entry.get("boats", {})
 
@@ -1280,7 +1466,8 @@ def _run_main(race_date: str | None = None) -> None:
     log.info("処理対象: %d レース（締切前: %d / 全体: %d）", len(filtered), len(filtered), len(race_list))
     race_list = filtered
 
-    # ── Playwright一括取得（展示タイムなし・締切15分以内のみ）────
+    # ── 直前情報一括取得（展示タイムなし・締切15分以内のみ）──────
+    # API優先 → 失敗時のみ BS4 fallback（Playwright不使用）
     pw_targets = []
     for item in race_list:
         vn, rno, boats = item[0], item[1], item[2]
@@ -1298,10 +1485,10 @@ def _run_main(race_date: str | None = None) -> None:
 
     pw_cache = {}
     if pw_targets:
-        log.info("Playwright取得: %d レース（締切15分以内）", len(pw_targets))
+        log.info("直前情報取得: %d レース（締切15分以内）", len(pw_targets))
         race_date_str = str(race_date).replace("-", "")
-        pw_cache = _scrape_beforeinfo_bulk(pw_targets, race_date_str)
-        log.info("Playwright取得完了: %d レース", len(pw_cache))
+        pw_cache = _get_beforeinfo_bulk(pw_targets, race_date_str)
+        log.info("直前情報取得完了: %d レース", len(pw_cache))
 
         # 取得できたデータをboatsに反映
         for item in race_list:
