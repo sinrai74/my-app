@@ -752,42 +752,41 @@ def calculate_upset_score(
     if probs[0][0] != 1:
         upset_score += 2.0
 
-    # ── ①1号艇の絶対評価（弱い1号艇は即荒れ候補）──────────────
-    if boat1:
-        if boat1.win_rate < 5.0:
-            upset_score += 1.5
-        if boat1.avg_st > 0.17:
-            upset_score += 1.0
-        if boat1.motor < 30.0:
-            upset_score += 1.0
-
-    # ── ②1号艇飛びスコア（別管理）──────────────────────────────
+    # ── ①②1号艇の弱さ評価（統合・重複排除）──────────────────
     if boat1:
         boat1_risk = 0
         if boat1.win_rate < 5.5:
             boat1_risk += 1
+            if boat1.win_rate < 5.0:
+                boat1_risk += 1  # 特に弱い場合は2点
         if boat1.avg_st > 0.17:
             boat1_risk += 1
         if boat1.motor < 35.0:
             boat1_risk += 1
         if boat1.ex_st is not None and boat1.ex_st > 0.16:
             boat1_risk += 1
-        if boat1_risk >= 2:
-            upset_score += 2.5
+
+        # リスク数に応じて加点（上限を設ける）
+        if boat1_risk >= 4:
+            upset_score += 3.0
+        elif boat1_risk >= 3:
+            upset_score += 2.0
+        elif boat1_risk >= 2:
+            upset_score += 1.0
 
     # ── ③2号艇の強さを特別扱い ──────────────────────────────────
     if boat1 and boat2:
-        if boat2.win_rate > boat1.win_rate:
-            upset_score += 1.2
         if boat2.win_rate > boat1.win_rate + 1.0:
             upset_score += 1.5
+        elif boat2.win_rate > boat1.win_rate:
+            upset_score += 0.8
         if boat2.ex_st is not None and boat1.ex_st is not None:
-            if boat2.ex_st < boat1.ex_st:
-                upset_score += 1.5
             if boat2.ex_st < boat1.ex_st - 0.03:
-                upset_score += 1.5  # 追加ボーナス
-        if boat2.motor > boat1.motor:
-            upset_score += 1.0
+                upset_score += 1.5
+            elif boat2.ex_st < boat1.ex_st:
+                upset_score += 0.8
+        if boat2.motor > boat1.motor + 5.0:
+            upset_score += 0.8
 
     # ── ④展示タイムの「隊形」チェック（外が速い構図）────────────
     inner_times = [b.ex_time for b in boats if b.lane in [1,2,3] and b.ex_time and b.ex_time > 0]
@@ -1296,7 +1295,7 @@ def _run_main(race_date: str | None = None) -> None:
                 best_other_lane = max(other_probs, key=other_probs.get) if other_probs else None
                 best_other_prob = other_probs.get(best_other_lane, 0.0)
                 if best_other_prob > prob_1:
-                    ml_score = best_other_prob * 8.0
+                    ml_score = min(best_other_prob * 8.0, 4.0)  # 上限4.0点
                     score += ml_score
                     detail["MLスコア"] = f"対抗{best_other_lane}号艇ML確率{best_other_prob:.2f} +{ml_score:.2f}点"
                     sorted_lanes = sorted(
