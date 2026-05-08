@@ -1701,20 +1701,19 @@ def _run_main(race_date: str | None = None) -> None:
                 try:
                     with open(sent_file, "w") as sf:
                         sf.write("\n".join(sent_set))
-                    # GitHubにコミットして永続化
-                    os.system('git config user.email "action@render.com"')
-                    os.system('git config user.name "Render Bot"')
-                    os.system("git checkout main")
-                    os.system(f"git add {sent_file}")
-                    os.system(f'git commit -m "update sent races [skip ci]"')
-                    # GITHUB_TOKENを使ってpush
+                    # GitHub Actions上のみgit操作（ローカル実行時はスキップ）
                     gh_token = os.getenv("GITHUB_TOKEN", "")
                     gh_repo  = os.getenv("GITHUB_REPO", "sinrai74/my-app")
                     if gh_token:
+                        os.system('git config user.email "action@render.com"')
+                        os.system('git config user.name "Render Bot"')
+                        os.system("git checkout main")
+                        os.system(f"git add {sent_file}")
+                        os.system(f'git commit -m "update sent races [skip ci]"')
                         remote = f"https://{gh_token}@github.com/{gh_repo}.git"
                         os.system(f"git push {remote} main")
                     else:
-                        os.system("git push")
+                        log.debug("ローカル実行: git push スキップ（sent_fileはローカルに保存済み）")
                 except Exception as ge:
                     log.warning("sent_file保存失敗: %s", ge)
 
@@ -1895,15 +1894,17 @@ def _check_yesterday_results(today_date: str) -> None:
                 writer.writeheader()
             writer.writerows(records)
 
-        # GitHubにコミット
+        # GitHub Actions上のみgit操作（ローカル実行時はスキップ）
         gh_token = os.getenv("GITHUB_TOKEN", "")
         gh_repo  = os.getenv("GITHUB_REPO", "sinrai74/my-app")
-        os.system('git config user.email "action@render.com"')
-        os.system('git config user.name "Render Bot"')
-        os.system(f"git add {csv_file}")
-        os.system(f'git commit -m "update hit record {yesterday} [skip ci]"')
         if gh_token:
+            os.system('git config user.email "action@render.com"')
+            os.system('git config user.name "Render Bot"')
+            os.system(f"git add {csv_file}")
+            os.system(f'git commit -m "update hit record {yesterday} [skip ci]"')
             os.system(f"git push https://{gh_token}@github.com/{gh_repo}.git main")
+        else:
+            log.debug("ローカル実行: git push スキップ（hit_recordはローカルに保存済み）")
 
         log.info("結果照合完了: %s に記録", csv_file)
 
@@ -1982,11 +1983,11 @@ def update_fan_files() -> None:
 
             gh_token = os.getenv("GITHUB_TOKEN", "")
             gh_repo  = os.getenv("GITHUB_REPO", "sinrai74/my-app")
-            os.system('git config user.email "action@render.com"')
-            os.system('git config user.name "Render Bot"')
-            os.system(f"git add {fan_name}")
-            os.system(f'git commit -m "update fan file {fan_name} [skip ci]"')
             if gh_token:
+                os.system('git config user.email "action@render.com"')
+                os.system('git config user.name "Render Bot"')
+                os.system(f"git add {fan_name}")
+                os.system(f'git commit -m "update fan file {fan_name} [skip ci]"')
                 os.system(f"git push https://{gh_token}@github.com/{gh_repo}.git main")
             log.info("fanファイル更新完了: %s", fan_name)
         else:
