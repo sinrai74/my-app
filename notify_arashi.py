@@ -1955,7 +1955,7 @@ def _fetch_race_result(venue_num: int, race_number: int, race_date: str) -> dict
     return None
 
 
-
+def _check_losing_streak() -> None:
     """
     連続外れが5回以上続いたらLINE/メールでアラートを送信。
     hit_record.csvから直近の結果を読んで判定する。
