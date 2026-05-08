@@ -54,6 +54,7 @@ MAIL_TO = "bigkirinuki@gmail.com"   # 通知先メールアドレス
 # BoatraceOpenAPI エンドポイント
 PROGRAMS_URL = "https://boatraceopenapi.github.io/programs/v2"
 PREVIEWS_URL = "https://boatraceopenapi.github.io/previews/v2"
+RESULTS_URL  = "https://boatraceopenapi.github.io/results/v2"
 
 HTTP_HEADERS = {
     "User-Agent": (
@@ -1868,7 +1869,8 @@ def _check_yesterday_results(today_date: str) -> None:
         log.info("前日結果照合: %d レース", len(sent_keys))
         records = []
         for key in sent_keys:
-            parts = key.split("_")
+            # キー形式: 20260509_12_6 or 20260509_12_6_ex
+            parts = key.replace("_ex", "").split("_")
             if len(parts) != 3:
                 continue
             _, venue_num, race_number = parts
@@ -1912,7 +1914,48 @@ def _check_yesterday_results(today_date: str) -> None:
         log.warning("結果照合失敗: %s", e)
 
 
-def _check_losing_streak() -> None:
+def _fetch_race_result(venue_num: int, race_number: int, race_date: str) -> dict | None:
+    """
+    BoatraceOpenAPI から前日レース結果（3連単着順・払戻）を取得する。
+    戻り値: {"combo": "2-3-1", "payout": 4520} or None
+    """
+    url = f"{RESULTS_URL}/{race_date[:4]}/{race_date}.json"
+    data = _safe_get(url)
+    if not data:
+        return None
+
+    for r in data.get("results", []):
+        if (r.get("race_stadium_number") == venue_num
+                and r.get("race_number") == race_number):
+            # 3連単着順
+            boats = r.get("boats", [])
+            if isinstance(boats, dict):
+                boats = list(boats.values())
+            order = sorted(
+                [b for b in boats if isinstance(b, dict) and b.get("racer_rank")],
+                key=lambda b: b.get("racer_rank", 99)
+            )
+            if len(order) >= 3:
+                combo = "-".join(str(b.get("racer_boat_number", "?")) for b in order[:3])
+            else:
+                combo = "不明"
+
+            # 3連単払戻
+            payout = 0
+            for pay in r.get("payouts", []):
+                if isinstance(pay, dict) and pay.get("bet_type") in ("3T", "三連単", 7):
+                    try:
+                        payout = int(pay.get("payout_amount", 0))
+                    except (ValueError, TypeError):
+                        pass
+                    break
+
+            return {"combo": combo, "payout": payout}
+
+    return None
+
+
+
     """
     連続外れが5回以上続いたらLINE/メールでアラートを送信。
     hit_record.csvから直近の結果を読んで判定する。
