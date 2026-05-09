@@ -1336,7 +1336,13 @@ def _evaluate_bets(
     if not candidates:
         return []
 
-    # ── 見送り条件（中途半端レースを消す）───────────────────
+    # ── 見送り条件①: 最高probが低すぎる（全体的に確率低い）──
+    max_prob_val = max(c["prob"] for c in candidates)
+    if max_prob_val < 0.025:
+        log.debug("最高prob不足（全体的に確率低い）→ 見送り: max_prob=%.4f", max_prob_val)
+        return []
+
+    # ── 見送り条件②（中途半端レースを消す）─────────────────
     candidates.sort(key=lambda x: x["composite"], reverse=True)
     if len(candidates) >= 2:
         top_ev    = candidates[0]["ev"]
@@ -1601,6 +1607,10 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         shown_odds.sort(key=lambda x: x[1])
         if shown_odds:
             lines.append("💴 " + "  ".join(f"{c}:{o:.0f}倍" for c, o in shown_odds[:4]))
+
+    # オッズ急落アラート
+    if result.score_detail.get("オッズ急落"):
+        lines.append(f"📉 オッズ急落: {result.score_detail['オッズ急落']}")
 
     # 推奨買い目（EV順ランキング）
     if result.recommended_bets:
@@ -1927,7 +1937,15 @@ def _run_main(race_date: str | None = None) -> None:
                     log.debug("オッズ取得失敗: %s", oe)
 
                 if odds_map:
-                    # 全120通りのEVランキング（荒れスコアによる事前絞り込みなし）
+                    # ── オッズ急落チェック ─────────────────────────
+                    dropped = _check_odds_drop(venue_num, race_number, odds_map)
+                    if dropped:
+                        detail["オッズ急落"] = " / ".join(dropped[:3])
+                        log.info("オッズ急落: %s %dR %s",
+                                 VENUE_NAMES.get(venue_num, f"場{venue_num}"),
+                                 race_number, dropped[:3])
+
+                    # 全120通りのEVランキング
                     patterns = _generate_patterns(target, score)
                     recommended = _evaluate_bets(
                         patterns, ml_probs, odds_map,
@@ -2028,20 +2046,41 @@ def _run_main(race_date: str | None = None) -> None:
                          result.venue_name, race_number,
                          best["combo"], best["ev"], len(recommended))
 
-                # ── 予測ログ保存（キャリブレーション用）────────────
+                # ── 予測ログ保存（完全版・キャリブレーション用）────────
                 try:
                     import json as _json
                     pred_file = f"pred_{race_date}_{venue_num}_{race_number}.json"
+                    NIGHT_VENUES = {4, 6, 12, 17, 20, 21, 22, 23, 24}
+                    _pred_data = {
+                        # 買い目情報
+                        "race_id":   f"{race_date}_{venue_num}_{race_number}",
+                        "venue":     VENUE_NAMES.get(venue_num, f"場{venue_num}"),
+                        "venue_num": venue_num,
+                        "race":      race_number,
+                        "night":     int(venue_num in NIGHT_VENUES),
+                        # 推奨買い目
+                        "buy":       [b["combo"] for b in recommended],
+                        "combo":     best["combo"],
+                        "odds":      best["odds"],
+                        "prob":      best["prob"],
+                        "ev":        best["ev"],
+                        "composite": best.get("composite", 0),
+                        # モデルスコア
+                        "upset_score": round(score, 3),
+                        # 気象情報
+                        "wind_speed": weather.wind_speed if weather else None,
+                        "wind_dir":   weather.wind_direction if weather else None,
+                        "wave":       weather.wave_height if weather else None,
+                        "weather":    weather.weather if weather else None,
+                        # 結果（後で埋める）
+                        "result":    "",
+                        "hit":       -1,
+                        "profit":    0,
+                    }
                     with open(pred_file, "w", encoding="utf-8") as pf:
-                        _json.dump({
-                            "combo": best["combo"],
-                            "prob":  best["prob"],
-                            "ev":    best["ev"],
-                            "odds":  best["odds"],
-                            "score": score,
-                        }, pf)
-                except Exception:
-                    pass
+                        _json.dump(_pred_data, pf, ensure_ascii=False)
+                except Exception as _pe:
+                    log.debug("予測ログ保存失敗: %s", _pe)
 
             log.info(
                 "荒れ検知: %s %dR score=%.2f target=%s",
@@ -2204,6 +2243,90 @@ def send_preview_notification() -> None:
     return None
 
 
+def _run_calibration_check(csv_file: str = "hit_record.csv") -> None:
+    """
+    hit_record.csv から予測確率のキャリブレーションを確認する。
+    予測prob群ごとの実測的中率を表示。
+    """
+    try:
+        import csv
+        if not os.path.exists(csv_file):
+            return
+        with open(csv_file, "r", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        valid = [r for r in rows
+                 if r.get("pred_prob") and r.get("hit") != "" and r.get("hit") is not None]
+        if len(valid) < 10:
+            return
+
+        # prob帯別に集計
+        bands = [
+            (0.000, 0.020, "<2%"),
+            (0.020, 0.030, "2-3%"),
+            (0.030, 0.050, "3-5%"),
+            (0.050, 0.080, "5-8%"),
+            (0.080, 1.000, "8%+"),
+        ]
+        log.info("── キャリブレーション分析 (%d件) ──", len(valid))
+        for lo, hi, label in bands:
+            seg = [r for r in valid
+                   if lo <= float(r["pred_prob"]) < hi]
+            if not seg:
+                continue
+            actual_hit_rate = sum(int(r["hit"]) for r in seg) / len(seg)
+            avg_pred        = sum(float(r["pred_prob"]) for r in seg) / len(seg)
+            total_profit    = sum(int(r.get("profit", 0)) for r in seg)
+            roi = (sum(int(r.get("payout",0)) for r in seg) /
+                   (len(seg) * 100)) if seg else 0
+            gap = actual_hit_rate - avg_pred
+            flag = "⚠️ 過大予測" if gap < -0.01 else ("✅ 良好" if abs(gap) < 0.005 else "📈 過小予測")
+            log.info("  prob%s: n=%d 予測%.1f%% 実測%.1f%% ROI=%.2f 利益%+d円 %s",
+                     label, len(seg),
+                     avg_pred*100, actual_hit_rate*100,
+                     roi, total_profit, flag)
+
+        # 勝ちパターン分析
+        hits = [r for r in valid if int(r.get("hit", 0)) == 1]
+        if hits:
+            log.info("── 勝ちパターン (%d件) ──", len(hits))
+            from collections import Counter
+            wind_cnt  = Counter(r.get("wind_dir","不明") for r in hits)
+            venue_cnt = Counter(r.get("venue","不明")    for r in hits)
+            night_cnt = Counter(r.get("night","0")       for r in hits)
+            log.info("  風向き: %s", dict(wind_cnt.most_common(3)))
+            log.info("  場: %s",    dict(venue_cnt.most_common(5)))
+            log.info("  ナイター: %s", dict(night_cnt))
+
+    except Exception as e:
+        log.debug("キャリブレーション分析失敗: %s", e)
+
+
+# ── オッズキャッシュ（急落監視用）────────────────────────────
+_odds_cache: dict[str, dict[str, float]] = {}   # key: "venue_race", value: odds_map
+
+
+def _check_odds_drop(
+    venue_num: int, race_number: int,
+    new_odds: dict[str, float],
+    drop_threshold: float = 0.15,
+) -> list[str]:
+    """
+    前回オッズと比較して15%以上急落した組み合わせを返す。
+    急落 = 市場が急に注目 = 情報あり = 信頼度UP。
+    """
+    key = f"{venue_num}_{race_number}"
+    prev = _odds_cache.get(key, {})
+    dropped = []
+    for combo, new_o in new_odds.items():
+        old_o = prev.get(combo, 0)
+        if old_o > 0 and new_o < old_o * (1 - drop_threshold):
+            drop_rate = (old_o - new_o) / old_o
+            dropped.append(f"{combo}({old_o:.0f}→{new_o:.0f} -{drop_rate:.0%})")
+    _odds_cache[key] = new_odds.copy()
+    return dropped
+
+
 def _check_yesterday_results(today_date: str) -> None:
     """前日の送信済みレースと結果を照合してCSVに記録"""
     try:
@@ -2230,35 +2353,61 @@ def _check_yesterday_results(today_date: str) -> None:
             _, venue_num, race_number = parts
             result = _fetch_race_result(int(venue_num), int(race_number), yesterday)
 
-            # sent_keyからpred情報を読み込む（pred_YYYYMMDD_venue_race.json があれば）
+            # pred_file から全フィールド読み込み
             pred_file = f"pred_{yesterday}_{venue_num}_{race_number}.json"
-            pred_combo = ""
-            pred_prob  = ""
-            pred_ev    = ""
+            pd_data: dict = {}
             if os.path.exists(pred_file):
                 try:
                     import json as _json
                     with open(pred_file) as pf:
-                        pd = _json.load(pf)
-                    pred_combo = pd.get("combo", "")
-                    pred_prob  = pd.get("prob", "")
-                    pred_ev    = pd.get("ev", "")
+                        pd_data = _json.load(pf)
                 except Exception:
                     pass
 
+            pred_combo = pd_data.get("combo", "")
+            pred_prob  = pd_data.get("prob", "")
+            pred_ev    = pd_data.get("ev", "")
+            pred_odds  = pd_data.get("odds", 0)
+
             result_combo = result["combo"] if result else "不明"
-            hit = 1 if pred_combo and result_combo == pred_combo else 0
+            payout       = result["payout"] if result else 0
+            hit          = 1 if pred_combo and result_combo == pred_combo else 0
+            # 利益 = 的中時: 払戻 - 100円 / 外れ: -100円
+            profit = (payout - 100) if hit else -100
+
+            # pred_fileに結果を書き戻す
+            if pd_data and os.path.exists(pred_file):
+                try:
+                    import json as _json
+                    pd_data.update({
+                        "result":  result_combo,
+                        "hit":     hit,
+                        "profit":  profit,
+                        "payout":  payout,
+                    })
+                    with open(pred_file, "w", encoding="utf-8") as pf:
+                        _json.dump(pd_data, pf, ensure_ascii=False)
+                except Exception:
+                    pass
 
             records.append({
-                "date":          yesterday,
-                "venue":         VENUE_NAMES.get(int(venue_num), f"場{venue_num}"),
-                "race":          race_number,
-                "pred_combo":    pred_combo,
-                "pred_prob":     pred_prob,
-                "pred_ev":       pred_ev,
-                "result_combo":  result_combo,
-                "payout":        result["payout"] if result else 0,
-                "hit":           hit,
+                "date":        yesterday,
+                "venue":       pd_data.get("venue", VENUE_NAMES.get(int(venue_num), f"場{venue_num}")),
+                "venue_num":   venue_num,
+                "race":        race_number,
+                "night":       pd_data.get("night", 0),
+                "pred_combo":  pred_combo,
+                "pred_prob":   pred_prob,
+                "pred_ev":     pred_ev,
+                "pred_odds":   pred_odds,
+                "upset_score": pd_data.get("upset_score", ""),
+                "wind_speed":  pd_data.get("wind_speed", ""),
+                "wind_dir":    pd_data.get("wind_dir", ""),
+                "wave":        pd_data.get("wave", ""),
+                "result_combo": result_combo,
+                "payout":      payout,
+                "hit":         hit,
+                "profit":      profit,
             })
 
         if not records:
@@ -2266,14 +2415,21 @@ def _check_yesterday_results(today_date: str) -> None:
 
         import csv
         csv_file = "hit_record.csv"
-        fieldnames = ["date","venue","race","pred_combo","pred_prob","pred_ev",
-                      "result_combo","payout","hit"]
+        fieldnames = [
+            "date","venue","venue_num","race","night",
+            "pred_combo","pred_prob","pred_ev","pred_odds","upset_score",
+            "wind_speed","wind_dir","wave",
+            "result_combo","payout","hit","profit",
+        ]
         write_header = not os.path.exists(csv_file)
         with open(csv_file, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             if write_header:
                 writer.writeheader()
             writer.writerows(records)
+
+        # ── キャリブレーション簡易分析 ───────────────────────────
+        _run_calibration_check(csv_file)
 
         # GitHub Actions上のみgit操作（ローカル実行時はスキップ）
         gh_token = os.getenv("GITHUB_TOKEN", "")
@@ -2438,6 +2594,11 @@ if __name__ == "__main__":
         help=f"荒れスコア閾値（デフォルト: {UPSET_SCORE_THRESHOLD}）",
     )
     parser.add_argument(
+        "--calibration",
+        action="store_true",
+        help="hit_record.csv のキャリブレーション分析を表示して終了",
+    )
+    parser.add_argument(
         "--loop",
         action="store_true",
         help="15分ごとに繰り返し実行（ローカル常駐モード）",
@@ -2445,6 +2606,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     UPSET_SCORE_THRESHOLD = args.threshold
+
+    if args.calibration:
+        _run_calibration_check("hit_record.csv")
+        import sys; sys.exit(0)
 
     if args.loop:
         # ── ローカル常駐モード ────────────────────────────────
