@@ -1269,14 +1269,30 @@ def _build_why_bet(
         if wh >= 5:
             reasons.append(f"波高{wh}cm")
 
-    # 1号艇弱さ
+    # 1号艇弱さ（詳細理由）
     if boats:
         boat1 = next((b for b in boats if b.lane == 1), None)
         if boat1:
-            if boat1.ex_st and boat1.ex_st >= 0.18:
+            if boat1.ex_st and boat1.ex_st >= 0.20:
+                reasons.append(f"1号艇ST大幅遅れ{boat1.ex_st:.2f}")
+            elif boat1.ex_st and boat1.ex_st >= 0.18:
                 reasons.append(f"1号艇ST遅れ{boat1.ex_st:.2f}")
             if boat1.win_rate and boat1.win_rate < 5.0:
                 reasons.append(f"1号艇勝率低({boat1.win_rate:.1f})")
+            if boat1.racer_class in ("B1","B2"):
+                reasons.append(f"1号艇{boat1.racer_class}級")
+            # 展示順位
+            if has_exhibition and boat1.ex_time:
+                ex_all = sorted([b.ex_time for b in boats if b.ex_time and b.ex_time > 0])
+                rank1  = ex_all.index(boat1.ex_time) + 1 if boat1.ex_time in ex_all else len(ex_all)
+                if rank1 >= 5:
+                    reasons.append(f"1号艇展示{rank1}位(最下位圏)")
+            # モーター
+            motors = sorted([b.motor for b in boats if b.motor], reverse=True)
+            if motors and boat1.motor:
+                m_rank = motors.index(boat1.motor) + 1
+                if m_rank >= 5:
+                    reasons.append(f"1号艇モーター{m_rank}位")
 
     # 特殊パターン
     if monster_lane > 0 and first == monster_lane:
@@ -1520,15 +1536,213 @@ def _evaluate_bets(
         total = sum(result_count.values()) or 1
         return {k: v / total for k, v in result_count.items()}
 
-    # ── MC確率とPL確率を統合 ──────────────────────────────
-    # MC確率は展開を反映しているが分散が大きい → PL確率と50:50でブレンド
+    # ── MCシミュレーション（展開補正あり）────────────────────
     mc_probs: dict[str, float] = {}
     if has_exhibition and boats:
         mc_probs = _mc_trifecta_probs(ml_probs, n_sim=3000)
 
+    # ════════════════════════════════════════════════════════
+    # ① 確率キャリブレーション補正
+    # ════════════════════════════════════════════════════════
+
+    def _load_calibration_table(csv_file: str = "hit_record.csv") -> list[tuple]:
+        """
+        hit_record.csv から確率帯別の実測的中率テーブルを作成する。
+        戻り値: [(pred_mid, actual_rate), ...]  isotonic回帰の近似
+        """
+        import csv as _csv
+        if not os.path.exists(csv_file):
+            return []
+        try:
+            with open(csv_file, "r", encoding="utf-8") as f:
+                rows = list(_csv.DictReader(f))
+            valid = [r for r in rows
+                     if r.get("pred_prob") and r.get("hit") not in ("",None,"-1")]
+            if len(valid) < 20:
+                return []
+            bands = [(0,0.02),(0.02,0.03),(0.03,0.05),(0.05,0.08),(0.08,1.0)]
+            table = []
+            for lo, hi in bands:
+                seg = [r for r in valid if lo <= float(r["pred_prob"]) < hi]
+                if len(seg) < 3:
+                    continue
+                pred_mid = sum(float(r["pred_prob"]) for r in seg) / len(seg)
+                actual   = sum(int(r["hit"] or 0)   for r in seg) / len(seg)
+                table.append((pred_mid, actual))
+            return table
+        except Exception:
+            return []
+
+    def _calibrate_prob(raw_prob: float, calib_table: list[tuple]) -> float:
+        """
+        キャリブレーションテーブルで確率を補正する（線形補間）。
+        テーブルがない場合はそのまま返す。
+        """
+        if not calib_table or len(calib_table) < 2:
+            return raw_prob
+        # 最近傍補間
+        if raw_prob <= calib_table[0][0]:
+            ratio = calib_table[0][1] / max(calib_table[0][0], 1e-6)
+            return raw_prob * ratio
+        if raw_prob >= calib_table[-1][0]:
+            ratio = calib_table[-1][1] / max(calib_table[-1][0], 1e-6)
+            return min(raw_prob * ratio, 0.99)
+        for i in range(len(calib_table)-1):
+            x0, y0 = calib_table[i]
+            x1, y1 = calib_table[i+1]
+            if x0 <= raw_prob <= x1:
+                t = (raw_prob - x0) / max(x1 - x0, 1e-9)
+                return y0 + t * (y1 - y0)
+        return raw_prob
+
+    # キャリブレーションテーブルをロード
+    calib_table = _load_calibration_table()
+    if calib_table:
+        log.debug("キャリブレーション補正: %d帯", len(calib_table))
+
+    # ════════════════════════════════════════════════════════
+    # ② 市場融合モデル（オッズ → 市場確率 → モデルとブレンド）
+    # ════════════════════════════════════════════════════════
+
+    def _market_implied_probs(
+        odds_map: dict[str, float],
+        takeout_rate: float = 0.25,  # 競艇の控除率は約25%
+    ) -> dict[str, float]:
+        """
+        三連単オッズから市場の暗示確率を計算する。
+        implied_prob = 1 / odds * (1 - takeout_rate) で近似。
+        """
+        if not odds_map:
+            return {}
+        implied = {}
+        for combo, odds in odds_map.items():
+            if odds > 0:
+                implied[combo] = (1.0 / odds) * (1.0 - takeout_rate)
+        # 合計が1になるよう正規化
+        total = sum(implied.values()) or 1.0
+        return {k: v / total for k, v in implied.items()}
+
+    market_implied = _market_implied_probs(odds_map)
+
+    # ════════════════════════════════════════════════════════
+    # ③ シナリオ別Monte Carlo
+    # ════════════════════════════════════════════════════════
+
+    def _scenario_mc(
+        probs: dict[int, float],
+        scenario: str,   # "4攻め" / "1逃げ" / "差し"
+        n_sim: int = 1500,
+    ) -> dict[str, float]:
+        """シナリオに応じた展開重みで三連単確率を推定する。"""
+        import random as _rand
+
+        # シナリオに応じた1着確率の歪み
+        adj = dict(probs)
+        if scenario == "4攻め":
+            adj[4] = adj.get(4, 0) * 2.0
+            adj[1] = adj.get(1, 0) * 0.6
+        elif scenario == "1逃げ":
+            adj[1] = adj.get(1, 0) * 1.8
+            for l in [2,3,4]: adj[l] = adj.get(l,0) * 0.7
+        elif scenario == "差し":
+            adj[2] = adj.get(2, 0) * 1.5
+            adj[3] = adj.get(3, 0) * 1.3
+            adj[1] = adj.get(1, 0) * 0.7
+
+        total = sum(adj.values()) or 1.0
+        adj = {l: p/total for l, p in adj.items()}
+        lanes = list(adj.keys())
+
+        result_count: dict[str, int] = {}
+        for _ in range(n_sim):
+            first = _rand.choices(lanes, weights=[adj[l] for l in lanes])[0]
+            rem   = {l: probs[l] for l in lanes if l != first}
+            t1    = sum(rem.values()) or 1
+            rem2  = {l: p/t1 for l, p in rem.items()}
+            sec_l = list(rem2.keys())
+            second = _rand.choices(sec_l, weights=[rem2[l] for l in sec_l])[0]
+            thi_l = [l for l in lanes if l != first and l != second]
+            if not thi_l: continue
+            thi_w = [probs.get(l, 0.001) for l in thi_l]
+            third = _rand.choices(thi_l, weights=thi_w)[0]
+            k = f"{first}-{second}-{third}"
+            result_count[k] = result_count.get(k, 0) + 1
+
+        total_sim = sum(result_count.values()) or 1
+        return {k: v/total_sim for k, v in result_count.items()}
+
+    # シナリオ確率を計算してブレンド
+    scenario_probs: dict[str, float] = {}
+    if has_exhibition and boats and ml_probs:
+        import random as _rnd; _rnd.seed(42)
+        sc_4  = _scenario_mc(ml_probs, "4攻め",  1000)
+        sc_1  = _scenario_mc(ml_probs, "1逃げ",  1000)
+        sc_sa = _scenario_mc(ml_probs, "差し",   1000)
+        # 荒れスコアに応じてシナリオ重みを変える
+        # 荒れ強い → 4攻め・差し優先 / 荒れ弱い → 1逃げ優先
+        w_4  = min(upset_score / 10.0, 0.5)
+        w_sa = min(upset_score / 15.0, 0.3)
+        w_1  = max(1.0 - w_4 - w_sa, 0.2)
+        total_w = w_4 + w_1 + w_sa
+        w_4 /= total_w; w_1 /= total_w; w_sa /= total_w
+        for combo in set(list(sc_4.keys()) + list(sc_1.keys()) + list(sc_sa.keys())):
+            scenario_probs[combo] = (
+                sc_4.get(combo,0) * w_4 +
+                sc_1.get(combo,0) * w_1 +
+                sc_sa.get(combo,0) * w_sa
+            )
+
+    # ════════════════════════════════════════════════════════
+    # ⑤ 隊列崩れ率（formation_break_prob）
+    # ════════════════════════════════════════════════════════
+
+    def _calc_formation_break_prob(
+        boats: list,
+        probs: dict[int, float],
+        weather,
+    ) -> float:
+        """
+        「123/456」の標準隊形が崩れる確率を推定する。
+        1・2・3号艇以外が1着になる確率を基本として、
+        気象・展示隊形を加味して補正する。
+        """
+        outer_prob = sum(probs.get(l, 0) for l in [4, 5, 6])
+
+        # 展示タイムで外側が速い場合は崩れやすい
+        ex_inner = [b.ex_time for b in boats if b.lane in [1,2,3] and b.ex_time]
+        ex_outer = [b.ex_time for b in boats if b.lane in [4,5,6] and b.ex_time]
+        if ex_inner and ex_outer:
+            avg_in  = sum(ex_inner) / len(ex_inner)
+            avg_out = sum(ex_outer) / len(ex_outer)
+            if avg_out < avg_in:
+                outer_prob = min(outer_prob * 1.3, 0.95)
+
+        # 気象補正
+        if weather:
+            ws = weather.wind_speed or 0
+            if weather.wind_direction == "向" and ws >= 5:
+                outer_prob = min(outer_prob * 1.2, 0.95)
+            if weather.wave_height and weather.wave_height >= 5:
+                outer_prob = min(outer_prob * 1.1, 0.95)
+
+        return round(outer_prob, 3)
+
+    formation_break = _calc_formation_break_prob(boats or [], ml_probs, weather)
+    if formation_break >= 0.40:
+        detail["隊列崩れ率"] = f"{formation_break:.0%}  ⚠️"
+    elif formation_break >= 0.25:
+        detail["隊列崩れ率"] = f"{formation_break:.0%}"
+
+    # ════════════════════════════════════════════════════════
+    # 最終確率計算: PL × MC × シナリオ × 市場 のブレンド
+    # ════════════════════════════════════════════════════════
+
     def trifecta_prob(a: int, b: int, c: int) -> float:
-        """PL確率とMC確率をブレンドした三連単確率"""
-        # PL確率（Luce モデル）
+        """
+        PL確率・MC確率・シナリオ確率・市場確率をブレンドした
+        キャリブレーション補正済み三連単確率
+        """
+        # ── PL確率（Luce モデル）────────────────────────────
         pa = ml_probs.get(a, 0.001)
         rem1 = {l: p for l, p in ml_probs.items() if l != a}
         t1_  = sum(rem1.values()) or 1
@@ -1538,43 +1752,55 @@ def _evaluate_bets(
         pc   = rem2.get(c, 0.001) / t2_
         pl_prob = pa * pb * pc
 
-        # MC確率（展開補正あり）
-        combo   = f"{a}-{b}-{c}"
+        combo = f"{a}-{b}-{c}"
+
+        # ── MC確率（展開補正）────────────────────────────────
         mc_prob = mc_probs.get(combo, pl_prob)
 
-        # ブレンド（展示あり:50:50 / 展示なし:PL100%）
-        prob = (pl_prob * 0.5 + mc_prob * 0.5) if mc_probs else pl_prob
+        # ── シナリオ確率 ──────────────────────────────────────
+        sc_prob = scenario_probs.get(combo, pl_prob)
 
-        # ── 個別補正 ────────────────────────────────────────
-        # 1号艇2着残り補正
+        # ── 市場暗示確率（②市場融合）────────────────────────
+        mkt_prob = market_implied.get(combo, pl_prob)
+
+        # ── ブレンド ──────────────────────────────────────────
+        # 展示あり: PL×0.30 + MC×0.25 + シナリオ×0.25 + 市場×0.20
+        # 展示なし: PL×0.50 + 市場×0.50
+        if mc_probs and scenario_probs:
+            prob = (pl_prob  * 0.30 +
+                    mc_prob  * 0.25 +
+                    sc_prob  * 0.25 +
+                    mkt_prob * 0.20)
+        elif market_implied:
+            prob = pl_prob * 0.70 + mkt_prob * 0.30
+        else:
+            prob = pl_prob
+
+        # ── ①キャリブレーション補正 ──────────────────────────
+        prob = _calibrate_prob(prob, calib_table)
+
+        # ── 個別補正 ──────────────────────────────────────────
         if a != 1 and b == 1:
             prob *= 1.15
-        # 1残り荒れ補正
-        if a == 1 and odds_map.get(f"{a}-{b}-{c}", 0) >= 15:
+        if a == 1 and odds_map.get(combo, 0) >= 15:
             prob *= 1.12
-        # 6号艇1着減点
         if a == 6:
             prob *= 0.70
-        # コース補正（2・3着）
         course_bonus = {1: 1.25, 2: 1.10, 3: 1.05, 4: 0.95, 5: 0.85, 6: 0.75}
         prob *= course_bonus.get(b, 1.0)
         prob *= course_bonus.get(c, 1.0)
-        # 4カド補正
         if a == 4 and lane4_boost > 0:
             prob *= (1.0 + lane4_boost * 0.05)
-        # モンスター艇補正
         if a == monster_lane and monster_boost > 1.0:
             prob *= monster_boost
-        # 展示タイム順位ボーナス
         if a in ex_rank:
             prob *= ex_rank_bonus.get(ex_rank[a], 1.0)
-        # オッズ歪み補正
         if a in model_rank and a in market_rank:
             value_gap = market_rank[a] - model_rank[a]
             if value_gap >= 2:
                 prob *= (1.0 + value_gap * 0.04)
 
-        return prob
+        return max(prob, 1e-6)
 
     # ── 軸候補チェック（実力差なしレースは見送り）────────────
     if ml_probs:
@@ -3299,8 +3525,29 @@ def _run_calibration_check(csv_file: str = "hit_record.csv") -> None:
                      avg_pred*100, actual_hit_rate*100,
                      roi, total_profit, flag)
 
-        # 勝ちパターン分析
-        hits = [r for r in valid if int(r.get("hit", 0)) == 1]
+        # キャリブレーション補正提案
+        overfit = [l for lo,hi,l in bands
+                   if any(abs(float(r["pred_prob"])-(lo+hi)/2) < (hi-lo)/2
+                          for r in valid
+                          if lo <= float(r["pred_prob"]) < hi)]
+        calib_rows = []
+        for lo, hi, label in bands:
+            seg = [r for r in valid if lo <= float(r["pred_prob"]) < hi]
+            if len(seg) < 3: continue
+            avg_pred = sum(float(r["pred_prob"]) for r in seg) / len(seg)
+            actual   = sum(int(r["hit"] or 0) for r in seg) / len(seg)
+            ratio    = actual / avg_pred if avg_pred > 0 else 1.0
+            calib_rows.append((label, len(seg), avg_pred, actual, ratio))
+
+        log.info("── キャリブレーション補正テーブル ──")
+        log.info("  %s  %s  %s  %s  %s", "帯".ljust(6), "n".rjust(4),
+                 "予測".rjust(7), "実測".rjust(7), "補正率".rjust(7))
+        for label, n, pred, actual, ratio in calib_rows:
+            flag = "⚠️ 過大" if ratio < 0.7 else ("📈 過小" if ratio > 1.3 else "✅")
+            log.info("  %s  %s  %s  %s  %s  %s",
+                     label.ljust(6), str(n).rjust(4),
+                     f"{pred:.3f}".rjust(7), f"{actual:.3f}".rjust(7),
+                     f"×{ratio:.2f}".rjust(7), flag)
         if hits:
             log.info("── 勝ちパターン (%d件) ──", len(hits))
             from collections import Counter
