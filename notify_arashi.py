@@ -1106,84 +1106,121 @@ def _evaluate_bets(
     bankroll: int = 10000,
     target_lanes: list[int] | None = None,
     has_exhibition: bool = True,
+    boats: list | None = None,
 ) -> list[dict]:
     """
     全三連単120通りをEV順でランキングして推奨買い目を返す。
 
-    改善点:
-      ① オッズ帯別EV閾値（万舟ほど厳しく）
-      ② prob下限（低確率すぎる万舟を除外）
-      ③ 1号艇2着残り補正（荒れでも2着1号艇は多い）
-      ④ コース補正を2・3着にも適用
-      ⑤ 展示なし時はEV閾値・prob下限を厳しく
+    パラメータ設定:
+      EV_MIN   = 1.28 (低倍) / 1.38 (中倍) / 1.48 (高倍)
+      MIN_PROB = 0.020
+      MAX_ODDS = 80  （超万舟は的中率崩壊するため除外）
+      MAX_BETS = 5   （買い目を絞る）
     """
-    # ── Luce選択モデルで三連単確率を計算 ──────────────────────
-    def trifecta_prob(a: int, b: int, c: int, probs: dict) -> float:
-        pa = probs.get(a, 0.001)
-        remaining1 = {l: p for l, p in probs.items() if l != a}
-        total1 = sum(remaining1.values()) or 1
-        pb = remaining1.get(b, 0.001) / total1
-        remaining2 = {l: p for l, p in remaining1.items() if l != b}
-        total2 = sum(remaining2.values()) or 1
-        pc = remaining2.get(c, 0.001) / total2
+    # ── ベースパラメータ ──────────────────────────────────────
+    EV_LOW   = 1.28   # オッズ<40
+    EV_MID   = 1.38   # オッズ40〜80
+    EV_HIGH  = 1.48   # オッズ>80（万舟）※使わないがフォールバック用
+    MIN_PROB = 0.020
+    MAX_ODDS = 80     # これ以上は的中率崩壊 → 除外
+    MAX_BETS = 5      # 買い目数上限
+
+    # 展示なし → さらに厳しく（精度低下分を閾値に反映）
+    if not has_exhibition:
+        EV_LOW   += 0.20
+        EV_MID   += 0.20
+        MIN_PROB += 0.008
+
+    # ── 展示タイム順位ボーナス（STより安定）─────────────────
+    ex_rank_bonus = {1: 1.20, 2: 1.10, 3: 1.00, 4: 0.92, 5: 0.85, 6: 0.78}
+    ex_rank: dict[int, int] = {}
+    if boats and has_exhibition:
+        ex_data = [(b.lane, b.ex_time) for b in boats
+                   if b.ex_time and b.ex_time > 0]
+        ex_data.sort(key=lambda x: x[1])   # タイム昇順（速い=1位）
+        ex_rank = {lane: rank + 1 for rank, (lane, _) in enumerate(ex_data)}
+
+    # ── 4カド攻め補正（4コースが1号艇に迫る場合）────────────
+    lane4_boost = 0.0
+    if ml_probs:
+        p1 = ml_probs.get(1, 0.0)
+        p4 = ml_probs.get(4, 0.0)
+        if p4 > p1 * 0.9:
+            lane4_boost = 1.2   # 荒れスコア+1.2相当の買い意欲
+
+    # ── 三連単確率計算（Luce + 各種補正）────────────────────
+    def trifecta_prob(a: int, b: int, c: int) -> float:
+        pa = ml_probs.get(a, 0.001)
+        rem1 = {l: p for l, p in ml_probs.items() if l != a}
+        t1_  = sum(rem1.values()) or 1
+        pb   = rem1.get(b, 0.001) / t1_
+        rem2 = {l: p for l, p in rem1.items() if l != b}
+        t2_  = sum(rem2.values()) or 1
+        pc   = rem2.get(c, 0.001) / t2_
 
         prob = pa * pb * pc
 
-        # ③ 1号艇2着残り補正（荒れでも2着1号艇は多い）
+        # 1号艇2着残り補正（荒れでも2着1号艇は多い）
         if a != 1 and b == 1:
             prob *= 1.15
 
-        # ④ コース補正を2・3着にも適用（展開を反映）
+        # 1残り荒れ補正（1号艇1着でオッズ15以上 = 意外な荒れ）
+        if a == 1:
+            odds_val = odds_map.get(f"{a}-{b}-{c}", 0)
+            if odds_val >= 15:
+                prob *= 1.12
+
+        # 6号艇1着は現実的に少ない → 減点
+        if a == 6:
+            prob *= 0.70
+
+        # コース補正を2・3着にも適用（展開反映）
         course_bonus = {1: 1.25, 2: 1.10, 3: 1.05, 4: 0.95, 5: 0.85, 6: 0.75}
         prob *= course_bonus.get(b, 1.0)
         prob *= course_bonus.get(c, 1.0)
+
+        # 4カド補正
+        if a == 4 and lane4_boost > 0:
+            prob *= (1.0 + lane4_boost * 0.05)
+
+        # 展示タイム順位ボーナス（1着艇に適用）
+        if a in ex_rank:
+            prob *= ex_rank_bonus.get(ex_rank[a], 1.0)
 
         return prob
 
     # パターンラベル付与
     tgt = target_lanes or []
-    t1  = tgt[0] if len(tgt) > 0 else None
+    t1  = tgt[0] if tgt else None
 
     def _label(a: int, b: int, c: int) -> str:
-        if a == 1:           return "本命軸"
-        if a in [4, 5, 6]:  return "万舟"
-        if t1 and a == t1 and b == 1: return "差し"
-        if t1 and a == t1 and b != 1: return "まくり"
+        if a == 1:                            return "本命軸"
+        if a == 4 and lane4_boost > 0:        return "4カド"
+        if a in [5, 6]:                       return "万舟"
+        if t1 and a == t1 and b == 1:         return "差し"
+        if t1 and a == t1 and b != 1:         return "まくり"
         return "本命崩れ"
 
-    # ⑤ 展示なし時はパラメータを厳しく
-    ev_base_low  = 1.15  # 低オッズ帯
-    ev_base_mid  = 1.30  # 中オッズ帯
-    ev_base_high = 1.45  # 高オッズ帯（万舟）
-    prob_min     = 0.018
-    if not has_exhibition:
-        ev_base_low  += 0.15
-        ev_base_mid  += 0.15
-        ev_base_high += 0.15
-        prob_min     += 0.005
-
+    # ── 全通り評価 ────────────────────────────────────────────
     from itertools import permutations
     candidates = []
     for a, b, c in permutations(range(1, 7), 3):
         combo = f"{a}-{b}-{c}"
-        prob  = trifecta_prob(a, b, c, ml_probs)
         odds  = odds_map.get(combo, 0)
-        if odds <= 0 or odds > 500:
+
+        # オッズ上限（超万舟は除外）
+        if odds <= 0 or odds > MAX_ODDS:
             continue
 
-        # ① オッズ帯別EV閾値
-        if odds >= 80:
-            ev_threshold = ev_base_high
-        elif odds >= 40:
-            ev_threshold = ev_base_mid
-        else:
-            ev_threshold = ev_base_low
+        prob = trifecta_prob(a, b, c)
 
+        # prob下限
+        if prob < MIN_PROB:
+            continue
+
+        # オッズ帯別EV閾値
+        ev_threshold = EV_MID if odds >= 40 else EV_LOW
         ev = prob * odds
-
-        # ② prob下限
-        if prob < prob_min:
-            continue
         if ev < ev_threshold:
             continue
 
@@ -1195,9 +1232,11 @@ def _evaluate_bets(
             "ev":      round(ev, 3),
         })
 
+    # EV降順 → 上位MAX_BETSのみ
     candidates.sort(key=lambda x: x["ev"], reverse=True)
+    top = candidates[:MAX_BETS]
 
-    top = candidates[:8]
+    # ケリー基準で賭け金計算
     for t in top:
         b_val = t["odds"] - 1
         if b_val <= 0:
@@ -1609,10 +1648,9 @@ def _run_main(race_date: str | None = None) -> None:
 
             log.debug("スコア: %s %dR score=%.2f", VENUE_NAMES.get(venue_num,f"場{venue_num}"), race_number, score)
 
-            # ── 展示タイムなしはスコアを補正（精度が低いため）────────
+            # ── 展示タイムなし → EV閾値・prob下限を厳しくする（_evaluate_bets内で対処）
             if not has_exhibition:
-                score *= 0.75  # 展示なし → 弱気モード（0.5は切りすぎ）
-                detail["展示補正"] = "展示タイムなし（スコア×0.75）"
+                detail["展示補正"] = "展示タイムなし（EV閾値+0.20・prob下限+0.008）"
 
             # ═══════════════════════════════════════════════════════
             # ▼ EV計算を先に行う（EVフィルタが主軸）
@@ -1635,6 +1673,7 @@ def _run_main(race_date: str | None = None) -> None:
                         patterns, ml_probs, odds_map,
                         target_lanes=target,
                         has_exhibition=has_exhibition,
+                        boats=boats,
                     )
                     detail["EV上位"] = (
                         f"{recommended[0]['combo']} EV={recommended[0]['ev']:.2f}"
