@@ -1153,16 +1153,222 @@ def _evaluate_bets(
     target_lanes: list[int] | None = None,
     has_exhibition: bool = True,
     boats: list | None = None,
+    upset_score: float = 0.0,
 ) -> list[dict]:
     """
-    全三連単120通りをEV順でランキングして推奨買い目を返す。
+    全三連単120通りを複合スコア順でランキングして推奨買い目を返す。
 
-    パラメータ設定:
-      EV_MIN   = 1.28 (低倍) / 1.38 (中倍) / 1.48 (高倍)
-      MIN_PROB = 0.020
-      MAX_ODDS = 80  （超万舟は的中率崩壊するため除外）
-      MAX_BETS = 5   （買い目を絞る）
+    スコア = EV×0.45 + prob×0.35 + upset_score正規化×0.20
+    見送り条件:
+      - 上位EVと2位EVの差が0.08未満（中途半端）
+      - 軸候補なし（最強艇が2位の0.9倍未満）
     """
+    # ── ベースパラメータ ──────────────────────────────────────
+    EV_LOW   = 1.28
+    EV_MID   = 1.38
+    MIN_PROB = 0.020
+    MAX_ODDS = 80
+    MAX_BETS = 5
+
+    if not has_exhibition:
+        EV_LOW   += 0.20
+        EV_MID   += 0.20
+        MIN_PROB += 0.008
+
+    # ── 展示タイム順位ボーナス ────────────────────────────────
+    ex_rank_bonus = {1: 1.20, 2: 1.10, 3: 1.00, 4: 0.92, 5: 0.85, 6: 0.78}
+    ex_rank: dict[int, int] = {}
+    if boats and has_exhibition:
+        ex_data = [(b.lane, b.ex_time) for b in boats
+                   if b.ex_time and b.ex_time > 0]
+        ex_data.sort(key=lambda x: x[1])
+        ex_rank = {lane: rank + 1 for rank, (lane, _) in enumerate(ex_data)}
+
+    # ── モンスター艇検出（1艇だけ異常に強い）────────────────
+    # 展示タイムが他より0.05秒以上速い = モンスター
+    monster_lane = 0
+    monster_boost = 1.0
+    if boats and has_exhibition and ex_rank:
+        ex_times = {b.lane: b.ex_time for b in boats
+                    if b.ex_time and b.ex_time > 0}
+        if len(ex_times) >= 2:
+            sorted_ex = sorted(ex_times.items(), key=lambda x: x[1])
+            best_lane, best_time = sorted_ex[0]
+            second_time = sorted_ex[1][1]
+            gap = second_time - best_time
+            if gap >= 0.05:   # 0.05秒以上の差 = モンスター
+                monster_lane  = best_lane
+                monster_boost = 1.0 + gap * 8.0   # 0.05秒差 → ×1.4
+                log.debug("モンスター艇検出: %d号艇 gap=%.3f boost=%.2f",
+                          monster_lane, gap, monster_boost)
+
+    # ── 4カド攻め補正 ─────────────────────────────────────────
+    lane4_boost = 0.0
+    if ml_probs:
+        p1 = ml_probs.get(1, 0.0)
+        p4 = ml_probs.get(4, 0.0)
+        if p4 > p1 * 0.9:
+            lane4_boost = 1.2
+
+    # ── オッズ歪み検出（モデル順位 vs オッズ順位）────────────
+    # モデルが高評価なのに市場オッズが高い = 過小評価 = バリュー
+    model_rank: dict[int, int] = {}
+    if ml_probs:
+        sorted_ml = sorted(ml_probs.items(), key=lambda x: -x[1])
+        model_rank = {lane: rank+1 for rank, (lane,_) in enumerate(sorted_ml)}
+
+    # 1着オッズの市場ランク（オッズが低い=人気=市場ランク1）
+    lane_avg_odds: dict[int, float] = {}
+    for lane in range(1, 7):
+        lane_odds = [v for k, v in odds_map.items()
+                     if k.startswith(f"{lane}-") and v > 0]
+        if lane_odds:
+            lane_avg_odds[lane] = sum(lane_odds) / len(lane_odds)
+    sorted_market = sorted(lane_avg_odds.items(), key=lambda x: x[1])
+    market_rank = {lane: rank+1 for rank, (lane,_) in enumerate(sorted_market)}
+
+    # ── 三連単確率計算 ────────────────────────────────────────
+    def trifecta_prob(a: int, b: int, c: int) -> float:
+        pa = ml_probs.get(a, 0.001)
+        rem1 = {l: p for l, p in ml_probs.items() if l != a}
+        t1_  = sum(rem1.values()) or 1
+        pb   = rem1.get(b, 0.001) / t1_
+        rem2 = {l: p for l, p in rem1.items() if l != b}
+        t2_  = sum(rem2.values()) or 1
+        pc   = rem2.get(c, 0.001) / t2_
+
+        prob = pa * pb * pc
+
+        # 1号艇2着残り補正
+        if a != 1 and b == 1:
+            prob *= 1.15
+
+        # 1残り荒れ補正
+        if a == 1 and odds_map.get(f"{a}-{b}-{c}", 0) >= 15:
+            prob *= 1.12
+
+        # 6号艇1着減点
+        if a == 6:
+            prob *= 0.70
+
+        # コース補正（2・3着）
+        course_bonus = {1: 1.25, 2: 1.10, 3: 1.05, 4: 0.95, 5: 0.85, 6: 0.75}
+        prob *= course_bonus.get(b, 1.0)
+        prob *= course_bonus.get(c, 1.0)
+
+        # 4カド補正
+        if a == 4 and lane4_boost > 0:
+            prob *= (1.0 + lane4_boost * 0.05)
+
+        # モンスター艇補正（1着に来た場合）
+        if a == monster_lane and monster_boost > 1.0:
+            prob *= monster_boost
+
+        # 展示タイム順位ボーナス
+        if a in ex_rank:
+            prob *= ex_rank_bonus.get(ex_rank[a], 1.0)
+
+        # オッズ歪み補正（モデル上位なのに市場で過小評価）
+        if a in model_rank and a in market_rank:
+            value_gap = market_rank[a] - model_rank[a]
+            if value_gap >= 2:   # 市場が2ランク以上低く見ている
+                prob *= (1.0 + value_gap * 0.04)
+
+        return prob
+
+    # ── 軸候補チェック（実力差なしレースは見送り）────────────
+    if ml_probs:
+        sorted_probs = sorted(ml_probs.values(), reverse=True)
+        if len(sorted_probs) >= 2:
+            top_p, second_p = sorted_probs[0], sorted_probs[1]
+            if top_p < second_p * 1.08:
+                # 軸なし = 運ゲー → スキップ
+                log.debug("軸候補なし（実力差不足）→ 見送り: top=%.3f 2nd=%.3f",
+                          top_p, second_p)
+                return []
+
+    # パターンラベル
+    tgt = target_lanes or []
+    t1  = tgt[0] if tgt else None
+
+    def _label(a: int, b: int, c: int) -> str:
+        if a == monster_lane and monster_boost > 1.0: return "モンスター"
+        if a == 1:                                    return "本命軸"
+        if a == 4 and lane4_boost > 0:               return "4カド"
+        if a in [5, 6]:                               return "万舟"
+        if t1 and a == t1 and b == 1:                return "差し"
+        if t1 and a == t1 and b != 1:                return "まくり"
+        return "本命崩れ"
+
+    # ── 全通り評価 ────────────────────────────────────────────
+    from itertools import permutations
+    candidates = []
+    for a, b, c in permutations(range(1, 7), 3):
+        combo = f"{a}-{b}-{c}"
+        odds  = odds_map.get(combo, 0)
+        if odds <= 0 or odds > MAX_ODDS:
+            continue
+
+        prob = trifecta_prob(a, b, c)
+        if prob < MIN_PROB:
+            continue
+
+        ev_threshold = EV_MID if odds >= 40 else EV_LOW
+        ev = prob * odds
+        if ev < ev_threshold:
+            continue
+
+        # ── 複合スコア（EVを単独使用しない）────────────────
+        ev_norm    = min(ev / 3.0, 1.0)          # 3.0を上限として正規化
+        prob_norm  = min(prob / 0.10, 1.0)        # 10%を上限として正規化
+        score_norm = min(upset_score / 10.0, 1.0) # 荒れスコア正規化
+        composite  = ev_norm * 0.45 + prob_norm * 0.35 + score_norm * 0.20
+
+        candidates.append({
+            "combo":     combo,
+            "pattern":   _label(a, b, c),
+            "prob":      round(prob, 5),
+            "odds":      odds,
+            "ev":        round(ev, 3),
+            "composite": round(composite, 4),
+        })
+
+    if not candidates:
+        return []
+
+    # ── 見送り条件（中途半端レースを消す）───────────────────
+    candidates.sort(key=lambda x: x["composite"], reverse=True)
+    if len(candidates) >= 2:
+        top_ev    = candidates[0]["ev"]
+        second_ev = candidates[1]["ev"]
+        if top_ev - second_ev < 0.08:
+            log.debug("EV差不足（中途半端）→ 見送り: top=%.3f 2nd=%.3f",
+                      top_ev, second_ev)
+            return []
+
+    # ── 同型制限（同じ1着艇は最大2点）→ 上位MAX_BETS ────────
+    head_count: dict[int, int] = {}
+    top = []
+    for c in candidates:
+        head = int(c["combo"].split("-")[0])
+        if head_count.get(head, 0) >= 2:
+            continue
+        head_count[head] = head_count.get(head, 0) + 1
+        top.append(c)
+        if len(top) >= MAX_BETS:
+            break
+
+    # ケリー基準で賭け金計算
+    for t in top:
+        b_val = t["odds"] - 1
+        if b_val <= 0:
+            t["amount"] = 0
+            continue
+        kelly = (t["prob"] * t["odds"] - 1) / b_val
+        kelly = max(0.0, min(kelly, 0.15))
+        t["amount"] = int(bankroll * kelly / 100) * 100
+
+    return top
     # ── ベースパラメータ ──────────────────────────────────────
     EV_LOW   = 1.28   # オッズ<40
     EV_MID   = 1.38   # オッズ40〜80
@@ -1728,6 +1934,7 @@ def _run_main(race_date: str | None = None) -> None:
                         target_lanes=target,
                         has_exhibition=has_exhibition,
                         boats=boats,
+                        upset_score=score,
                     )
                     detail["EV上位"] = (
                         f"{recommended[0]['combo']} EV={recommended[0]['ev']:.2f}"
@@ -1820,6 +2027,21 @@ def _run_main(race_date: str | None = None) -> None:
                 log.info("EV上位: %s %dR 推奨=%s EV=%.2f (%d点)",
                          result.venue_name, race_number,
                          best["combo"], best["ev"], len(recommended))
+
+                # ── 予測ログ保存（キャリブレーション用）────────────
+                try:
+                    import json as _json
+                    pred_file = f"pred_{race_date}_{venue_num}_{race_number}.json"
+                    with open(pred_file, "w", encoding="utf-8") as pf:
+                        _json.dump({
+                            "combo": best["combo"],
+                            "prob":  best["prob"],
+                            "ev":    best["ev"],
+                            "odds":  best["odds"],
+                            "score": score,
+                        }, pf)
+                except Exception:
+                    pass
 
             log.info(
                 "荒れ検知: %s %dR score=%.2f target=%s",
@@ -2002,29 +2224,53 @@ def _check_yesterday_results(today_date: str) -> None:
         log.info("前日結果照合: %d レース", len(sent_keys))
         records = []
         for key in sent_keys:
-            # キー形式: 20260509_12_6 or 20260509_12_6_ex
             parts = key.replace("_ex", "").split("_")
             if len(parts) != 3:
                 continue
             _, venue_num, race_number = parts
             result = _fetch_race_result(int(venue_num), int(race_number), yesterday)
+
+            # sent_keyからpred情報を読み込む（pred_YYYYMMDD_venue_race.json があれば）
+            pred_file = f"pred_{yesterday}_{venue_num}_{race_number}.json"
+            pred_combo = ""
+            pred_prob  = ""
+            pred_ev    = ""
+            if os.path.exists(pred_file):
+                try:
+                    import json as _json
+                    with open(pred_file) as pf:
+                        pd = _json.load(pf)
+                    pred_combo = pd.get("combo", "")
+                    pred_prob  = pd.get("prob", "")
+                    pred_ev    = pd.get("ev", "")
+                except Exception:
+                    pass
+
+            result_combo = result["combo"] if result else "不明"
+            hit = 1 if pred_combo and result_combo == pred_combo else 0
+
             records.append({
-                "date": yesterday,
-                "venue": VENUE_NAMES.get(int(venue_num), f"場{venue_num}"),
-                "race": race_number,
-                "result_combo": result["combo"] if result else "不明",
-                "payout": result["payout"] if result else 0,
+                "date":          yesterday,
+                "venue":         VENUE_NAMES.get(int(venue_num), f"場{venue_num}"),
+                "race":          race_number,
+                "pred_combo":    pred_combo,
+                "pred_prob":     pred_prob,
+                "pred_ev":       pred_ev,
+                "result_combo":  result_combo,
+                "payout":        result["payout"] if result else 0,
+                "hit":           hit,
             })
 
         if not records:
             return
 
-        # CSVに追記
         import csv
         csv_file = "hit_record.csv"
+        fieldnames = ["date","venue","race","pred_combo","pred_prob","pred_ev",
+                      "result_combo","payout","hit"]
         write_header = not os.path.exists(csv_file)
         with open(csv_file, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["date","venue","race","result_combo","payout"])
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             if write_header:
                 writer.writeheader()
             writer.writerows(records)
