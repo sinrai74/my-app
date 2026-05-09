@@ -1728,10 +1728,7 @@ def _evaluate_bets(
         return round(outer_prob, 3)
 
     formation_break = _calc_formation_break_prob(boats or [], ml_probs, weather)
-    if formation_break >= 0.40:
-        detail["隊列崩れ率"] = f"{formation_break:.0%}  ⚠️"
-    elif formation_break >= 0.25:
-        detail["隊列崩れ率"] = f"{formation_break:.0%}"
+    log.debug("隊列崩れ率: %.0f%%", formation_break * 100)
 
     # ════════════════════════════════════════════════════════
     # 最終確率計算: PL × MC × シナリオ × 市場 のブレンド
@@ -2082,6 +2079,7 @@ def _evaluate_bets(
         t["regime"]       = regime
         t["disagreement"] = disagreement
         t["uncertainty"]  = round(entropy_norm, 3)
+        t["formation_break"] = formation_break
 
     return top
 
@@ -2742,6 +2740,13 @@ def _run_main(race_date: str | None = None) -> None:
                         f"{recommended[0]['combo']} EV={recommended[0]['ev']:.2f}"
                         if recommended else "なし"
                     )
+                    # 隊列崩れ率（recommendedから取得）
+                    if recommended:
+                        fb = recommended[0].get("formation_break", 0)
+                        if fb >= 0.40:
+                            detail["隊列崩れ率"] = f"{fb:.0%} ⚠️"
+                        elif fb >= 0.25:
+                            detail["隊列崩れ率"] = f"{fb:.0%}"
 
             # ── レース品質スコアによる選別 ──────────────────────
             race_quality, quality_skip_reason = _check_race_quality(
