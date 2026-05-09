@@ -1145,6 +1145,118 @@ def _generate_patterns(target_lanes: list[int], upset_score: float) -> dict[str,
     return {"all": all_combos}
 
 
+def _classify_race_type(
+    ml_probs: dict[int, float],
+    boats: list,
+    weather,
+    has_exhibition: bool,
+    monster_lane: int,
+    lane4_boost: float,
+) -> str:
+    """
+    レースタイプを分類する。
+    戻り値: "4カド型" / "イン逃げ型" / "1残り荒れ型" / "大荒れ型" / "モンスター型" / "混戦型"
+    """
+    p1 = ml_probs.get(1, 0.0)
+    p4 = ml_probs.get(4, 0.0)
+    sorted_p = sorted(ml_probs.values(), reverse=True)
+    top_p = sorted_p[0] if sorted_p else 0
+
+    # モンスター艇（展示で圧倒的）
+    if monster_lane > 0 and monster_lane != 1:
+        return "モンスター型"
+
+    # 4カド（4号艇が1号艇に迫る）
+    if lane4_boost > 0:
+        return "4カド型"
+
+    # イン逃げ（1号艇が圧倒的に強い）
+    if p1 > 0.55:
+        return "イン逃げ型"
+
+    # 1残り荒れ（1号艇がそこそこ強いが荒れ要素あり）
+    if p1 > 0.35:
+        return "1残り荒れ型"
+
+    # 大荒れ（全艇拮抗）
+    if top_p < 0.28:
+        return "大荒れ型"
+
+    return "混戦型"
+
+
+def _build_why_bet(
+    combo: str,
+    ml_probs: dict[int, float],
+    boats: list,
+    weather,
+    has_exhibition: bool,
+    monster_lane: int,
+    lane4_boost: float,
+    odds_dropped: list[str],
+    upset_score: float,
+) -> list[str]:
+    """
+    買い理由を言語化して返す。
+    例: ["4カド", "向かい風5m", "1号艇ST遅れ0.22", "展示1位"]
+    """
+    reasons = []
+    parts = combo.split("-")
+    first = int(parts[0]) if parts else 0
+
+    # 気象
+    if weather:
+        ws = weather.wind_speed or 0
+        wd = weather.wind_direction or ""
+        wh = weather.wave_height or 0
+        if wd == "向" and ws >= 3:
+            reasons.append(f"向かい風{ws:.0f}m")
+        elif wd == "追" and ws >= 3:
+            reasons.append(f"追い風{ws:.0f}m")
+        if wh >= 5:
+            reasons.append(f"波高{wh}cm")
+
+    # 1号艇弱さ
+    if boats:
+        boat1 = next((b for b in boats if b.lane == 1), None)
+        if boat1:
+            if boat1.ex_st and boat1.ex_st >= 0.18:
+                reasons.append(f"1号艇ST遅れ{boat1.ex_st:.2f}")
+            if boat1.win_rate and boat1.win_rate < 5.0:
+                reasons.append(f"1号艇勝率低({boat1.win_rate:.1f})")
+
+    # 特殊パターン
+    if monster_lane > 0 and first == monster_lane:
+        reasons.append(f"モンスター{monster_lane}号艇")
+    if lane4_boost > 0 and first == 4:
+        reasons.append("4カド優勢")
+
+    # 展示順位
+    if boats and has_exhibition:
+        ex_data = sorted(
+            [(b.lane, b.ex_time) for b in boats if b.ex_time and b.ex_time > 0],
+            key=lambda x: x[1]
+        )
+        ex_rank_map = {lane: rank+1 for rank, (lane,_) in enumerate(ex_data)}
+        rank = ex_rank_map.get(first, 0)
+        if rank == 1:
+            reasons.append(f"{first}号艇展示1位")
+        elif rank == 2:
+            reasons.append(f"{first}号艇展示2位")
+
+    # オッズ急落
+    if odds_dropped:
+        reasons.append(f"急落{odds_dropped[0]}")
+
+    # 荒れスコア
+    if upset_score >= 7.0:
+        reasons.append(f"超荒れ({upset_score:.1f})")
+    elif upset_score >= 5.0:
+        reasons.append(f"荒れ({upset_score:.1f})")
+
+    return reasons if reasons else ["EV高値"]
+
+
 def _evaluate_bets(
     patterns: dict[str, list],
     ml_probs: dict[int, float],
@@ -1154,6 +1266,8 @@ def _evaluate_bets(
     has_exhibition: bool = True,
     boats: list | None = None,
     upset_score: float = 0.0,
+    odds_dropped: list[str] | None = None,
+    weather=None,
 ) -> list[dict]:
     """
     全三連単120通りを複合スコア順でランキングして推奨買い目を返す。
@@ -1364,154 +1478,29 @@ def _evaluate_bets(
         if len(top) >= MAX_BETS:
             break
 
-    # ケリー基準で賭け金計算
+    # ケリー基準で賭け金計算 + why_bet / race_type / confidence 付与
+    race_type = _classify_race_type(
+        ml_probs, boats or [], weather, has_exhibition, monster_lane, lane4_boost
+    )
     for t in top:
         b_val = t["odds"] - 1
         if b_val <= 0:
             t["amount"] = 0
-            continue
-        kelly = (t["prob"] * t["odds"] - 1) / b_val
-        kelly = max(0.0, min(kelly, 0.15))
-        t["amount"] = int(bankroll * kelly / 100) * 100
+        else:
+            kelly = (t["prob"] * t["odds"] - 1) / b_val
+            kelly = max(0.0, min(kelly, 0.15))
+            t["amount"] = int(bankroll * kelly / 100) * 100
 
-    return top
-    # ── ベースパラメータ ──────────────────────────────────────
-    EV_LOW   = 1.28   # オッズ<40
-    EV_MID   = 1.38   # オッズ40〜80
-    EV_HIGH  = 1.48   # オッズ>80（万舟）※使わないがフォールバック用
-    MIN_PROB = 0.020
-    MAX_ODDS = 80     # これ以上は的中率崩壊 → 除外
-    MAX_BETS = 5      # 買い目数上限
+        # why_bet: 買い理由リスト
+        t["why_bet"] = _build_why_bet(
+            t["combo"], ml_probs, boats or [], weather,
+            has_exhibition, monster_lane, lane4_boost,
+            odds_dropped or [], upset_score,
+        )
+        t["race_type"] = race_type
 
-    # 展示なし → さらに厳しく（精度低下分を閾値に反映）
-    if not has_exhibition:
-        EV_LOW   += 0.20
-        EV_MID   += 0.20
-        MIN_PROB += 0.008
-
-    # ── 展示タイム順位ボーナス（STより安定）─────────────────
-    ex_rank_bonus = {1: 1.20, 2: 1.10, 3: 1.00, 4: 0.92, 5: 0.85, 6: 0.78}
-    ex_rank: dict[int, int] = {}
-    if boats and has_exhibition:
-        ex_data = [(b.lane, b.ex_time) for b in boats
-                   if b.ex_time and b.ex_time > 0]
-        ex_data.sort(key=lambda x: x[1])   # タイム昇順（速い=1位）
-        ex_rank = {lane: rank + 1 for rank, (lane, _) in enumerate(ex_data)}
-
-    # ── 4カド攻め補正（4コースが1号艇に迫る場合）────────────
-    lane4_boost = 0.0
-    if ml_probs:
-        p1 = ml_probs.get(1, 0.0)
-        p4 = ml_probs.get(4, 0.0)
-        if p4 > p1 * 0.9:
-            lane4_boost = 1.2   # 荒れスコア+1.2相当の買い意欲
-
-    # ── 三連単確率計算（Luce + 各種補正）────────────────────
-    def trifecta_prob(a: int, b: int, c: int) -> float:
-        pa = ml_probs.get(a, 0.001)
-        rem1 = {l: p for l, p in ml_probs.items() if l != a}
-        t1_  = sum(rem1.values()) or 1
-        pb   = rem1.get(b, 0.001) / t1_
-        rem2 = {l: p for l, p in rem1.items() if l != b}
-        t2_  = sum(rem2.values()) or 1
-        pc   = rem2.get(c, 0.001) / t2_
-
-        prob = pa * pb * pc
-
-        # 1号艇2着残り補正（荒れでも2着1号艇は多い）
-        if a != 1 and b == 1:
-            prob *= 1.15
-
-        # 1残り荒れ補正（1号艇1着でオッズ15以上 = 意外な荒れ）
-        if a == 1:
-            odds_val = odds_map.get(f"{a}-{b}-{c}", 0)
-            if odds_val >= 15:
-                prob *= 1.12
-
-        # 6号艇1着は現実的に少ない → 減点
-        if a == 6:
-            prob *= 0.70
-
-        # コース補正を2・3着にも適用（展開反映）
-        course_bonus = {1: 1.25, 2: 1.10, 3: 1.05, 4: 0.95, 5: 0.85, 6: 0.75}
-        prob *= course_bonus.get(b, 1.0)
-        prob *= course_bonus.get(c, 1.0)
-
-        # 4カド補正
-        if a == 4 and lane4_boost > 0:
-            prob *= (1.0 + lane4_boost * 0.05)
-
-        # 展示タイム順位ボーナス（1着艇に適用）
-        if a in ex_rank:
-            prob *= ex_rank_bonus.get(ex_rank[a], 1.0)
-
-        return prob
-
-    # パターンラベル付与
-    tgt = target_lanes or []
-    t1  = tgt[0] if tgt else None
-
-    def _label(a: int, b: int, c: int) -> str:
-        if a == 1:                            return "本命軸"
-        if a == 4 and lane4_boost > 0:        return "4カド"
-        if a in [5, 6]:                       return "万舟"
-        if t1 and a == t1 and b == 1:         return "差し"
-        if t1 and a == t1 and b != 1:         return "まくり"
-        return "本命崩れ"
-
-    # ── 全通り評価 ────────────────────────────────────────────
-    from itertools import permutations
-    candidates = []
-    for a, b, c in permutations(range(1, 7), 3):
-        combo = f"{a}-{b}-{c}"
-        odds  = odds_map.get(combo, 0)
-
-        # オッズ上限（超万舟は除外）
-        if odds <= 0 or odds > MAX_ODDS:
-            continue
-
-        prob = trifecta_prob(a, b, c)
-
-        # prob下限
-        if prob < MIN_PROB:
-            continue
-
-        # オッズ帯別EV閾値
-        ev_threshold = EV_MID if odds >= 40 else EV_LOW
-        ev = prob * odds
-        if ev < ev_threshold:
-            continue
-
-        candidates.append({
-            "combo":   combo,
-            "pattern": _label(a, b, c),
-            "prob":    round(prob, 5),
-            "odds":    odds,
-            "ev":      round(ev, 3),
-        })
-
-    # EV降順 → 同型制限（同じ1着艇は最大2点）→ 上位MAX_BETSのみ
-    candidates.sort(key=lambda x: x["ev"], reverse=True)
-    head_count: dict[int, int] = {}
-    top = []
-    for c in candidates:
-        head = int(c["combo"].split("-")[0])
-        if head_count.get(head, 0) >= 2:
-            continue
-        head_count[head] = head_count.get(head, 0) + 1
-        top.append(c)
-        if len(top) >= MAX_BETS:
-            break
-
-    # ケリー基準で賭け金計算
-    for t in top:
-        b_val = t["odds"] - 1
-        if b_val <= 0:
-            t["amount"] = 0
-            continue
-        kelly = (t["prob"] * t["odds"] - 1) / b_val
-        kelly = max(0.0, min(kelly, 0.15))
-        t["amount"] = int(bankroll * kelly / 100) * 100
+        # confidence: 複合スコアをそのままconfidenceとして使う
+        t["confidence"] = t.get("composite", 0)
 
     return top
 
@@ -1614,6 +1603,14 @@ def build_message(result: RaceResult) -> tuple[str, str]:
 
     # 推奨買い目（EV順ランキング）
     if result.recommended_bets:
+        best0 = result.recommended_bets[0]
+        # レースタイプ
+        if best0.get("race_type"):
+            lines.append(f"🏁 {best0['race_type']}")
+        # 買い理由
+        if best0.get("why_bet"):
+            lines.append("📌 " + " / ".join(best0["why_bet"][:4]))
+
         lines.append("💰 EV上位買い目（期待値順）")
         pattern_jp = {
             "本命軸": "本命軸", "本命崩れ": "本命崩れ",
@@ -1927,6 +1924,7 @@ def _run_main(race_date: str | None = None) -> None:
             # ═══════════════════════════════════════════════════════
             recommended = []
             odds_map: dict = {}
+            dropped: list[str] = []
 
             if ml_probs:
                 try:
@@ -1953,6 +1951,8 @@ def _run_main(race_date: str | None = None) -> None:
                         has_exhibition=has_exhibition,
                         boats=boats,
                         upset_score=score,
+                        odds_dropped=dropped if odds_map else [],
+                        weather=weather,
                     )
                     detail["EV上位"] = (
                         f"{recommended[0]['combo']} EV={recommended[0]['ev']:.2f}"
@@ -2052,19 +2052,24 @@ def _run_main(race_date: str | None = None) -> None:
                     pred_file = f"pred_{race_date}_{venue_num}_{race_number}.json"
                     NIGHT_VENUES = {4, 6, 12, 17, 20, 21, 22, 23, 24}
                     _pred_data = {
-                        # 買い目情報
-                        "race_id":   f"{race_date}_{venue_num}_{race_number}",
-                        "venue":     VENUE_NAMES.get(venue_num, f"場{venue_num}"),
-                        "venue_num": venue_num,
-                        "race":      race_number,
-                        "night":     int(venue_num in NIGHT_VENUES),
-                        # 推奨買い目
-                        "buy":       [b["combo"] for b in recommended],
-                        "combo":     best["combo"],
-                        "odds":      best["odds"],
-                        "prob":      best["prob"],
-                        "ev":        best["ev"],
-                        "composite": best.get("composite", 0),
+                        # レース識別
+                        "race_id":    f"{race_date}_{venue_num}_{race_number}",
+                        "venue":      VENUE_NAMES.get(venue_num, f"場{venue_num}"),
+                        "venue_num":  venue_num,
+                        "race":       race_number,
+                        "night":      int(venue_num in NIGHT_VENUES),
+                        # 推奨買い目（全点）
+                        "buy":        [b["combo"] for b in recommended],
+                        # ベスト買い目
+                        "combo":      best["combo"],
+                        "odds":       best["odds"],
+                        "prob":       best["prob"],
+                        "ev":         best["ev"],
+                        "composite":  best.get("composite", 0),
+                        "confidence": best.get("confidence", 0),
+                        # 買い理由 / レースタイプ
+                        "why_bet":    best.get("why_bet", []),
+                        "race_type":  best.get("race_type", ""),
                         # モデルスコア
                         "upset_score": round(score, 3),
                         # 気象情報
@@ -2072,10 +2077,12 @@ def _run_main(race_date: str | None = None) -> None:
                         "wind_dir":   weather.wind_direction if weather else None,
                         "wave":       weather.wave_height if weather else None,
                         "weather":    weather.weather if weather else None,
+                        # オッズ急落
+                        "odds_dropped": dropped[:3] if dropped else [],
                         # 結果（後で埋める）
-                        "result":    "",
-                        "hit":       -1,
-                        "profit":    0,
+                        "result":     "",
+                        "hit":        -1,
+                        "profit":     0,
                     }
                     with open(pred_file, "w", encoding="utf-8") as pf:
                         _json.dump(_pred_data, pf, ensure_ascii=False)
@@ -2243,6 +2250,121 @@ def send_preview_notification() -> None:
     return None
 
 
+def _run_stats_analysis(csv_file: str = "hit_record.csv") -> None:
+    """
+    hit_record.csv から統計分析を表示する。
+    - 月次回収率
+    - 最大連敗 / ドローダウン
+    - レースタイプ別成績
+    - 勝ちパターン（why_bet）
+    """
+    import csv as _csv
+    from collections import defaultdict, Counter
+
+    if not os.path.exists(csv_file):
+        print("hit_record.csv が見つかりません")
+        return
+
+    with open(csv_file, "r", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
+    if len(valid) < 5:
+        print(f"データ不足: {len(valid)}件")
+        return
+
+    print(f"\n{'='*55}")
+    print(f"  統計分析  ({len(valid)}件)")
+    print(f"{'='*55}")
+
+    # ── 月次回収率 ───────────────────────────────────────────
+    monthly: dict[str, dict] = defaultdict(lambda: {"bet":0,"ret":0,"n":0,"hit":0})
+    for r in valid:
+        m = str(r.get("date",""))[:6]
+        payout  = int(r.get("payout", 0) or 0)
+        hit     = int(r.get("hit", 0) or 0)
+        monthly[m]["bet"] += 100
+        monthly[m]["ret"] += payout if hit else 0
+        monthly[m]["n"]   += 1
+        monthly[m]["hit"] += hit
+
+    print("\n── 月次回収率 ──")
+    print(f"  {'月':<8} {'ROI':>6}  {'的中':>6}  {'件数':>5}")
+    for m in sorted(monthly):
+        v   = monthly[m]
+        roi = v["ret"] / v["bet"] if v["bet"] > 0 else 0
+        flag = "🟢" if roi >= 1.0 else ("🟡" if roi >= 0.7 else "🔴")
+        print(f"  {m}  {roi:>5.2f}  {v['hit']:>3}/{v['n']:<3}  {flag}")
+
+    # ── 最大連敗 / ドローダウン ──────────────────────────────
+    profits = [int(r.get("profit", -100) or -100) for r in valid]
+    max_streak = cur_streak = 0
+    peak = cum = 0
+    max_dd = 0
+    for p in profits:
+        if p < 0:
+            cur_streak += 1
+            max_streak = max(max_streak, cur_streak)
+        else:
+            cur_streak = 0
+        cum += p
+        peak = max(peak, cum)
+        max_dd = max(max_dd, peak - cum)
+
+    total_bet = len(valid) * 100
+    total_ret = sum(int(r.get("payout",0) or 0) for r in valid if int(r.get("hit",0) or 0))
+    roi_total = total_ret / total_bet if total_bet > 0 else 0
+    total_profit = total_ret - total_bet
+
+    print(f"\n── 総合成績 ──")
+    print(f"  総ROI:    {roi_total:.3f}")
+    print(f"  総利益:   {total_profit:+,}円")
+    print(f"  最大連敗: {max_streak}連敗")
+    print(f"  最大DD:   -{max_dd:,}円")
+
+    # ── レースタイプ別 ───────────────────────────────────────
+    type_stats: dict[str, dict] = defaultdict(lambda: {"n":0,"hit":0,"profit":0})
+    for r in valid:
+        rt = r.get("race_type", "不明") or "不明"
+        type_stats[rt]["n"]      += 1
+        type_stats[rt]["hit"]    += int(r.get("hit", 0) or 0)
+        type_stats[rt]["profit"] += int(r.get("profit", -100) or -100)
+
+    print(f"\n── レースタイプ別成績 ──")
+    for rt, v in sorted(type_stats.items(), key=lambda x: -x[1]["profit"]):
+        hr  = v["hit"] / v["n"] if v["n"] > 0 else 0
+        roi = (v["profit"] + v["n"]*100) / (v["n"]*100) if v["n"] > 0 else 0
+        print(f"  {rt:<12} n={v['n']:>3}  的中率={hr:.1%}  ROI={roi:.2f}  利益{v['profit']:+,}円")
+
+    # ── 勝ちパターン（why_bet） ──────────────────────────────
+    hits   = [r for r in valid if int(r.get("hit",0) or 0) == 1]
+    misses = [r for r in valid if int(r.get("hit",0) or 0) == 0]
+
+    if hits:
+        print(f"\n── 勝ちパターン ({len(hits)}件) ──")
+        why_counter: Counter = Counter()
+        for r in hits:
+            for w in (r.get("why_bet","") or "").split("|"):
+                if w.strip():
+                    why_counter[w.strip()] += 1
+        for reason, cnt in why_counter.most_common(8):
+            pct = cnt / len(hits)
+            print(f"  {reason:<20} {cnt}件 ({pct:.0%})")
+
+    if misses and len(misses) >= 3:
+        print(f"\n── 負けパターン ({len(misses)}件) ──")
+        why_miss: Counter = Counter()
+        for r in misses:
+            for w in (r.get("why_bet","") or "").split("|"):
+                if w.strip():
+                    why_miss[w.strip()] += 1
+        for reason, cnt in why_miss.most_common(5):
+            pct = cnt / len(misses)
+            print(f"  {reason:<20} {cnt}件 ({pct:.0%})")
+
+    print(f"\n{'='*55}")
+
+
 def _run_calibration_check(csv_file: str = "hit_record.csv") -> None:
     """
     hit_record.csv から予測確率のキャリブレーションを確認する。
@@ -2396,6 +2518,9 @@ def _check_yesterday_results(today_date: str) -> None:
                 "venue_num":   venue_num,
                 "race":        race_number,
                 "night":       pd_data.get("night", 0),
+                "race_type":   pd_data.get("race_type", ""),
+                "why_bet":     "|".join(pd_data.get("why_bet", [])),
+                "confidence":  pd_data.get("confidence", ""),
                 "pred_combo":  pred_combo,
                 "pred_prob":   pred_prob,
                 "pred_ev":     pred_ev,
@@ -2417,6 +2542,7 @@ def _check_yesterday_results(today_date: str) -> None:
         csv_file = "hit_record.csv"
         fieldnames = [
             "date","venue","venue_num","race","night",
+            "race_type","why_bet","confidence",
             "pred_combo","pred_prob","pred_ev","pred_odds","upset_score",
             "wind_speed","wind_dir","wave",
             "result_combo","payout","hit","profit",
@@ -2594,6 +2720,11 @@ if __name__ == "__main__":
         help=f"荒れスコア閾値（デフォルト: {UPSET_SCORE_THRESHOLD}）",
     )
     parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="hit_record.csv のドローダウン・月次回収率・勝ちパターン分析を表示",
+    )
+    parser.add_argument(
         "--calibration",
         action="store_true",
         help="hit_record.csv のキャリブレーション分析を表示して終了",
@@ -2606,6 +2737,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     UPSET_SCORE_THRESHOLD = args.threshold
+
+    if args.stats:
+        _run_stats_analysis("hit_record.csv")
+        import sys; sys.exit(0)
 
     if args.calibration:
         _run_calibration_check("hit_record.csv")
