@@ -1737,10 +1737,145 @@ def _evaluate_bets(
     # 最終確率計算: PL × MC × シナリオ × 市場 のブレンド
     # ════════════════════════════════════════════════════════
 
+    # ════════════════════════════════════════════════════════
+    # ① レジーム判定（今日の環境を4種類に分類）
+    # ════════════════════════════════════════════════════════
+
+    def _detect_regime(
+        weather,
+        upset_score: float,
+        is_night: bool,
+    ) -> str:
+        """
+        レースの「環境レジーム」を判定する。
+        戻り値:
+          "extreme_wind"  … 風速7m以上 or 波高10cm以上
+          "rough"         … 荒れスコア6以上 or 風5m以上
+          "night_stable"  … ナイター + 荒れスコア低い
+          "calm"          … それ以外（標準）
+        """
+        ws = weather.wind_speed  if weather else 0.0
+        wh = weather.wave_height if weather else 0
+        ws = ws or 0.0
+        wh = wh or 0
+
+        if ws >= 7.0 or wh >= 10:
+            return "extreme_wind"
+        if upset_score >= 6.0 or ws >= 5.0:
+            return "rough"
+        if is_night and upset_score < 4.0:
+            return "night_stable"
+        return "calm"
+
+    NIGHT_VENUES = {4, 6, 12, 17, 20, 21, 22, 23, 24}
+    is_night_local = (boats[0].lane if boats else 0) and False  # fallback
+    # upset_score はこのスコープでは _evaluate_bets 引数から取得
+    regime = _detect_regime(weather, upset_score, False)
+
+    # ════════════════════════════════════════════════════════
+    # ② 動的ウェイト（レジームに応じてブレンド比率を調整）
+    # ════════════════════════════════════════════════════════
+
+    REGIME_WEIGHTS = {
+        # (PL,  MC,   SC,   市場)
+        "extreme_wind":  (0.20, 0.35, 0.30, 0.15),
+        "rough":         (0.25, 0.30, 0.30, 0.15),
+        "night_stable":  (0.40, 0.15, 0.15, 0.30),
+        "calm":          (0.30, 0.25, 0.25, 0.20),
+    }
+    w_pl, w_mc, w_sc, w_mkt = REGIME_WEIGHTS.get(regime, (0.30, 0.25, 0.25, 0.20))
+
+    # 展示なし → PLと市場のみ
+    if not mc_probs or not scenario_probs:
+        w_pl, w_mc, w_sc, w_mkt = 0.55, 0.0, 0.0, 0.45
+    # 市場データなし → PLとMCとシナリオのみ
+    elif not market_implied:
+        w_pl, w_mc, w_sc, w_mkt = 0.40, 0.30, 0.30, 0.0
+
+    log.debug("レジーム: %s → PL=%.2f MC=%.2f SC=%.2f 市場=%.2f",
+              regime, w_pl, w_mc, w_sc, w_mkt)
+
+    # ════════════════════════════════════════════════════════
+    # ③ モデル間 disagreement（PL vs シナリオの意見の差）
+    # ════════════════════════════════════════════════════════
+
+    def _calc_disagreement(
+        pl_map: dict[str, float],
+        sc_map: dict[str, float],
+        top_n: int = 10,
+    ) -> float:
+        """
+        PLモデルとシナリオMCの上位TOP_N候補の重複率から
+        disagreementスコアを計算する（0.0〜1.0）。
+        1.0 = 完全不一致（危険） / 0.0 = 完全一致（安全）
+        """
+        if not pl_map or not sc_map:
+            return 0.0
+        pl_top  = set(k for k,_ in sorted(pl_map.items(),  key=lambda x:-x[1])[:top_n])
+        sc_top  = set(k for k,_ in sorted(sc_map.items(),  key=lambda x:-x[1])[:top_n])
+        overlap = len(pl_top & sc_top) / top_n
+        return round(1.0 - overlap, 3)
+
+    # PL確率マップ（全120通り）
+    def _pl_map_all(probs: dict[int, float]) -> dict[str, float]:
+        from itertools import permutations as _p
+        result = {}
+        for a, b, c in _p(probs.keys(), 3):
+            pa = probs[a]
+            rem1 = {l: p for l, p in probs.items() if l != a}
+            t1 = sum(rem1.values()) or 1
+            pb = rem1.get(b, 0.001) / t1
+            rem2 = {l: p for l, p in rem1.items() if l != b}
+            t2 = sum(rem2.values()) or 1
+            pc = rem2.get(c, 0.001) / t2
+            result[f"{a}-{b}-{c}"] = pa * pb * pc
+        return result
+
+    pl_all = _pl_map_all(ml_probs)
+    disagreement = _calc_disagreement(pl_all, scenario_probs)
+
+    # disagreementが高い = モデル間で意見が割れている = 不確実性高い
+    if disagreement >= 0.70:
+        log.debug("モデル間disagreement高: %.2f → bet縮小対象", disagreement)
+
+    # ════════════════════════════════════════════════════════
+    # uncertainty（エントロピーで確率分布の不確実性を測定）
+    # ════════════════════════════════════════════════════════
+
+    def _calc_entropy(probs: dict[str, float], top_n: int = 20) -> float:
+        """
+        三連単確率分布のエントロピーを計算する。
+        高エントロピー = 「どれが来るか分からない」 = 買いにくい
+        """
+        import math as _math
+        top = sorted(probs.values(), reverse=True)[:top_n]
+        total = sum(top) or 1.0
+        norm  = [p / total for p in top if p > 0]
+        return -sum(p * _math.log(p + 1e-9) for p in norm)
+
+    entropy = _calc_entropy(pl_all) if pl_all else 3.0
+    # entropy の上限は log(120) ≈ 4.79（完全一様分布）
+    # 正規化: 0.0（一点集中）〜 1.0（完全ランダム）
+    import math as _math
+    entropy_norm = min(entropy / _math.log(120), 1.0)
+
+    log.debug("uncertainty: entropy=%.3f (normalized=%.3f), disagreement=%.3f",
+              entropy, entropy_norm, disagreement)
+
+    # ════════════════════════════════════════════════════════
+    # レース品質スコア（disagreement + uncertainty を加味）
+    # ════════════════════════════════════════════════════════
+    # quality が低い or disagreement が高い → bet_score を下げる
+    quality_penalty = (
+        entropy_norm    * 0.20 +   # 高エントロピー = 不確か
+        disagreement    * 0.15     # 高disagreement = 意見割れ
+    )
+    log.debug("品質ペナルティ: %.3f (regime=%s)", quality_penalty, regime)
+
     def trifecta_prob(a: int, b: int, c: int) -> float:
         """
-        PL確率・MC確率・シナリオ確率・市場確率をブレンドした
-        キャリブレーション補正済み三連単確率
+        PL・MC・シナリオ・市場確率をレジーム対応の動的ウェイトでブレンドし
+        キャリブレーション補正を適用した最終三連単確率
         """
         # ── PL確率（Luce モデル）────────────────────────────
         pa = ml_probs.get(a, 0.001)
@@ -1754,27 +1889,15 @@ def _evaluate_bets(
 
         combo = f"{a}-{b}-{c}"
 
-        # ── MC確率（展開補正）────────────────────────────────
-        mc_prob = mc_probs.get(combo, pl_prob)
-
-        # ── シナリオ確率 ──────────────────────────────────────
-        sc_prob = scenario_probs.get(combo, pl_prob)
-
-        # ── 市場暗示確率（②市場融合）────────────────────────
+        mc_prob  = mc_probs.get(combo, pl_prob)
+        sc_prob  = scenario_probs.get(combo, pl_prob)
         mkt_prob = market_implied.get(combo, pl_prob)
 
-        # ── ブレンド ──────────────────────────────────────────
-        # 展示あり: PL×0.30 + MC×0.25 + シナリオ×0.25 + 市場×0.20
-        # 展示なし: PL×0.50 + 市場×0.50
-        if mc_probs and scenario_probs:
-            prob = (pl_prob  * 0.30 +
-                    mc_prob  * 0.25 +
-                    sc_prob  * 0.25 +
-                    mkt_prob * 0.20)
-        elif market_implied:
-            prob = pl_prob * 0.70 + mkt_prob * 0.30
-        else:
-            prob = pl_prob
+        # ── ②動的ウェイトでブレンド ──────────────────────────
+        prob = (pl_prob  * w_pl +
+                mc_prob  * w_mc +
+                sc_prob  * w_sc +
+                mkt_prob * w_mkt)
 
         # ── ①キャリブレーション補正 ──────────────────────────
         prob = _calibrate_prob(prob, calib_table)
@@ -1862,13 +1985,23 @@ def _evaluate_bets(
     if not candidates:
         return []
 
-    # ── 見送り条件①: 最高probが低すぎる（全体的に確率低い）──
+    # ── 見送り条件①: 最高probが低すぎる ──────────────────────
     max_prob_val = max(c["prob"] for c in candidates)
     if max_prob_val < 0.025:
-        log.debug("最高prob不足（全体的に確率低い）→ 見送り: max_prob=%.4f", max_prob_val)
+        log.debug("最高prob不足 → 見送り: max_prob=%.4f", max_prob_val)
         return []
 
-    # ── 見送り条件②（中途半端レースを消す）─────────────────
+    # ── 見送り条件②: disagreement高すぎる（モデル意見割れ）──
+    if disagreement >= 0.80:
+        log.debug("disagreement高 → 見送り: %.2f", disagreement)
+        return []
+
+    # ── 見送り条件③: entropy高すぎる（完全ランダム）──────────
+    if entropy_norm >= 0.85:
+        log.debug("uncertainty高 → 見送り: entropy_norm=%.2f", entropy_norm)
+        return []
+
+    # ── 見送り条件④（中途半端レースを消す）──────────────────
     candidates.sort(key=lambda x: x["composite"], reverse=True)
     if len(candidates) >= 2:
         top_ev    = candidates[0]["ev"]
@@ -1899,19 +2032,21 @@ def _evaluate_bets(
     dd_multiplier = _get_bet_multiplier()
 
     for t in top:
-        # ── bet_score = ev×0.35 + prob×0.35 + confidence×0.15 + market_gap×0.15 ──
+        # ── bet_score（quality_penaltyを減算）──────────────────
         ev_n      = min(t["ev"] / 3.0, 1.0)
         prob_n    = min(t["prob"] / 0.10, 1.0)
         conf_n    = t.get("composite", 0)
 
-        # 1着艇の市場逆張りスコア（モデルが高評価なのに市場が低評価）
+        # 市場逆張りスコア
         first_lane = int(t["combo"].split("-")[0])
         mgap = 0.0
         if first_lane in model_rank and first_lane in market_rank:
             raw_gap = market_rank[first_lane] - model_rank[first_lane]
-            mgap = min(max(raw_gap / 5.0, 0.0), 1.0)   # 0〜1に正規化
+            mgap = min(max(raw_gap / 5.0, 0.0), 1.0)
 
-        bet_score = ev_n * 0.35 + prob_n * 0.35 + conf_n * 0.15 + mgap * 0.15
+        bet_score = (ev_n * 0.35 + prob_n * 0.35 + conf_n * 0.15 + mgap * 0.15
+                     - quality_penalty)   # ③ uncertainty/disagreementで減点
+        bet_score = max(bet_score, 0.0)
 
         # ── 3段階ベット金額 ─────────────────────────────────────
         if bet_score >= 0.9:
@@ -1931,8 +2066,11 @@ def _evaluate_bets(
             has_exhibition, monster_lane, lane4_boost,
             odds_dropped or [], upset_score,
         )
-        t["race_type"]   = race_type
-        t["confidence"]  = t.get("composite", 0)
+        t["race_type"]    = race_type
+        t["confidence"]   = t.get("composite", 0)
+        t["regime"]       = regime
+        t["disagreement"] = disagreement
+        t["uncertainty"]  = round(entropy_norm, 3)
 
     return top
 
@@ -2154,9 +2292,17 @@ def build_message(result: RaceResult) -> tuple[str, str]:
     # 推奨買い目（EV順ランキング）
     if result.recommended_bets:
         best0 = result.recommended_bets[0]
-        # レースタイプ
-        if best0.get("race_type"):
-            lines.append(f"🏁 {best0['race_type']}")
+        # レースタイプ + レジーム
+        regime_label = {
+            "extreme_wind": "🌪️ 極端荒天",
+            "rough":        "🌊 荒れ環境",
+            "night_stable": "🌙 ナイター安定",
+            "calm":         "☀️ 標準",
+        }
+        type_str   = best0.get("race_type", "")
+        regime_str = regime_label.get(best0.get("regime",""), "")
+        if type_str or regime_str:
+            lines.append(f"🏁 {type_str}  {regime_str}".strip())
         # 買い理由
         if best0.get("why_bet"):
             lines.append("📌 " + " / ".join(best0["why_bet"][:4]))
@@ -3402,6 +3548,35 @@ def _run_stats_analysis(csv_file: str = "hit_record.csv") -> None:
     print(f"  総利益:   {total_profit:+,}円")
     print(f"  最大連敗: {max_streak}連敗")
     print(f"  最大DD:   -{max_dd:,}円")
+
+    # ── Sharpe的評価（利益の安定性）────────────────────────────
+    import statistics as _stat
+    if len(profits) >= 5:
+        avg_p  = _stat.mean(profits)
+        std_p  = _stat.stdev(profits) if len(profits) > 1 else 1
+        sharpe = avg_p / std_p if std_p > 0 else 0
+        # 月次ごとに集計して月次シャープも計算
+        monthly_p: dict[str, list] = {}
+        for r in valid:
+            m = str(r.get("date",""))[:6]
+            monthly_p.setdefault(m, []).append(int(r.get("profit",-100) or -100))
+        monthly_rois = []
+        for m, ps in monthly_p.items():
+            bet_ = len(ps) * 100
+            ret_ = sum(p + 100 for p in ps if p > 0)
+            monthly_rois.append(ret_ / bet_ if bet_ > 0 else 0)
+        monthly_sharpe = 0.0
+        if len(monthly_rois) >= 3:
+            mr_mean = _stat.mean(monthly_rois)
+            mr_std  = _stat.stdev(monthly_rois)
+            monthly_sharpe = (mr_mean - 1.0) / mr_std if mr_std > 0 else 0
+
+        sharpe_flag = "🟢 安定" if sharpe > 0.1 else ("🟡 不安定" if sharpe > -0.1 else "🔴 不安定")
+        print(f"\n── Sharpe的評価 ──")
+        print(f"  1ベット平均利益: {avg_p:+.0f}円  標準偏差: {std_p:.0f}円")
+        print(f"  Sharpeレシオ:   {sharpe:+.3f}  {sharpe_flag}")
+        if len(monthly_rois) >= 3:
+            print(f"  月次Sharpe:     {monthly_sharpe:+.3f}  (月次ROI平均={_stat.mean(monthly_rois):.3f})")
 
     # ── レースタイプ別 ───────────────────────────────────────
     type_stats: dict[str, dict] = defaultdict(lambda: {"n":0,"hit":0,"profit":0})
