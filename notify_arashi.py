@@ -926,6 +926,8 @@ def calculate_upset_score(
     boats: list,
     weather,
     race_grade: int = 0,
+    venue_num: int = 0,
+    is_night: bool = False,
 ) -> tuple:
     import math
 
@@ -937,8 +939,36 @@ def calculate_upset_score(
         return 1 / (1 + math.exp(-x))
 
     def add_effect(base_prob: float, effect: float) -> float:
-        """確率空間で効果を加算（確率が崩れない）"""
         return sigmoid(logit(base_prob) + effect)
+
+    # ── ④ 会場補正（イン強い場は荒れにくい）──────────────────
+    # 値が大きい = 荒れやすい(+) / 小さい = イン強い(-)
+    VENUE_UPSET_FACTOR: dict[int, float] = {
+        1:  0.10,  # 桐生   荒れやすい
+        2:  0.05,  # 戸田
+        3:  0.15,  # 江戸川 超荒れ
+        4:  0.10,  # 平和島 荒れやすい
+        5:  0.00,  # 多摩川 標準
+        6: -0.05,  # 浜名湖 やや安定
+        7:  0.00,  # 蒲郡
+        8: -0.05,  # 常滑
+        9: -0.10,  # 津     イン強い
+        10: 0.00,  # 三国
+        11: 0.00,  # びわこ
+        12:-0.05,  # 住之江 やや安定
+        13: 0.00,  # 尼崎
+        14: 0.00,  # 鳴門
+        15: 0.00,  # 丸亀
+        16:-0.10,  # 児島   イン強い
+        17: 0.10,  # 宮島   荒れやすい
+        18: 0.00,  # 徳山
+        19: 0.05,  # 下関
+        20: 0.05,  # 若松
+        21: 0.00,  # 芦屋
+        22: 0.00,  # 福岡
+        23: 0.05,  # 唐津
+        24:-0.15,  # 大村   超イン強い
+    }
 
     # ── 各艇のベース確率計算 ──────────────────────────────────
     raw_scores = []
@@ -946,79 +976,77 @@ def calculate_upset_score(
         s = calc_boat_score(b, boats, weather)
         raw_scores.append((b.lane, s))
 
-    # softmaxで確率に変換（合計1になる）
     max_s = max(s for _, s in raw_scores)
     exp_scores = [(lane, math.exp(s - max_s)) for lane, s in raw_scores]
     total = sum(e for _, e in exp_scores)
     lane_probs = {lane: e / total for lane, e in exp_scores}
 
+    # ── ③ 風向き補正（lane_probsに直接反映）──────────────────
+    if weather and weather.wind_direction and weather.wind_speed:
+        ws  = weather.wind_speed
+        wd  = weather.wind_direction
+        if wd == "向" and ws >= 3.0:
+            # 向かい風: 1号艇不利
+            factor = 1.0 - min(ws * 0.015, 0.15)
+            lane_probs[1] = lane_probs.get(1, 1/6) * factor
+        elif wd == "追" and ws >= 3.0:
+            # 追い風: 1号艇有利
+            factor = 1.0 + min(ws * 0.010, 0.10)
+            lane_probs[1] = lane_probs.get(1, 1/6) * factor
+        # 再正規化
+        total_lp = sum(lane_probs.values())
+        lane_probs = {l: p / total_lp for l, p in lane_probs.items()}
+
     boat1_prob = lane_probs.get(1, 1/6)
     boat1 = next((b for b in boats if b.lane == 1), None)
     boat2 = next((b for b in boats if b.lane == 2), None)
 
-    # 1号艇以外の最有力艇
     other_probs = {l: p for l, p in lane_probs.items() if l != 1}
     best_other_lane = max(other_probs, key=other_probs.get) if other_probs else 2
     best_other_prob = other_probs.get(best_other_lane, 0.0)
 
-    # 荒れ確率の初期値 = 1号艇以外が勝つ確率
     upset_prob = 1.0 - boat1_prob
 
-    # ── ①1号艇の弱さ（確率空間で加算）──────────────────────────
+    # ── ①1号艇の弱さ ─────────────────────────────────────────
     if boat1:
-        # ST系（1つにまとめる）
         st_risk = 0.0
-        if boat1.avg_st > 0.17:
-            st_risk += 0.3
-        if boat1.ex_st is not None and boat1.ex_st > 0.16:
-            st_risk += 0.3
+        if boat1.avg_st > 0.17:    st_risk += 0.3
+        if boat1.ex_st is not None and boat1.ex_st > 0.16: st_risk += 0.3
         if st_risk > 0:
             upset_prob = add_effect(upset_prob, st_risk)
 
-        # 勝率系（1つにまとめる）
         wr_risk = 0.0
-        if boat1.win_rate < 5.0:
-            wr_risk += 0.5
-        elif boat1.win_rate < 5.5:
-            wr_risk += 0.2
+        if boat1.win_rate < 5.0:   wr_risk += 0.5
+        elif boat1.win_rate < 5.5: wr_risk += 0.2
         if wr_risk > 0:
             upset_prob = add_effect(upset_prob, wr_risk)
 
-        # 装備系（1つにまとめる）
         eq_risk = 0.0
-        if boat1.motor < 35.0:
-            eq_risk += 0.2
-        if boat1.racer_class in ("B1", "B2"):
-            eq_risk += 0.3
+        if boat1.motor < 35.0:                         eq_risk += 0.2
+        if boat1.racer_class in ("B1", "B2"):          eq_risk += 0.3
         if eq_risk > 0:
             upset_prob = add_effect(upset_prob, eq_risk)
 
-    # ── ②2号艇の強さ（MLベース確率で比較）────────────────────
+    # ── ②2号艇の強さ ─────────────────────────────────────────
     boat2_prob = lane_probs.get(2, 0.0)
     if boat2 and boat2_prob > boat1_prob:
-        effect = (boat2_prob - boat1_prob) * 2.0
-        upset_prob = add_effect(upset_prob, effect)
+        upset_prob = add_effect(upset_prob, (boat2_prob - boat1_prob) * 2.0)
 
-    # ── ③展示系特徴量 ────────────────────────────────────────
+    # ── ③展示系特徴量 ─────────────────────────────────────────
     ex_all = [(b.lane, b.ex_time) for b in boats if b.ex_time and b.ex_time > 0]
-    st_all = [(b.lane, b.ex_st) for b in boats if b.ex_st is not None]
+    st_all = [(b.lane, b.ex_st)   for b in boats if b.ex_st is not None]
 
-    # 展示順位の分散（バラけ＝荒れ）
     if len(ex_all) >= 4:
         import statistics
-        ex_times_vals = [t for _, t in ex_all]
-        ex_std = statistics.stdev(ex_times_vals)
+        ex_std = statistics.stdev([t for _, t in ex_all])
         if ex_std > 0.05:
             upset_prob = add_effect(upset_prob, ex_std * 3.0)
 
-    # STの分散（バラけ＝事故）
     if len(st_all) >= 4:
-        st_vals = [s for _, s in st_all]
-        st_std = statistics.stdev(st_vals)
+        st_std = statistics.stdev([s for _, s in st_all])
         if st_std > 0.04:
             upset_prob = add_effect(upset_prob, st_std * 2.0)
 
-    # 展示隊形（外が速い＝まくり）
     inner_times = [t for l, t in ex_all if l in [1,2,3]]
     outer_times = [t for l, t in ex_all if l in [4,5,6]]
     inner_avg = outer_avg = None
@@ -1026,53 +1054,70 @@ def calculate_upset_score(
         inner_avg = sum(inner_times) / len(inner_times)
         outer_avg = sum(outer_times) / len(outer_times)
         if outer_avg < inner_avg:
-            effect = (inner_avg - outer_avg) * 20.0
-            upset_prob = add_effect(upset_prob, min(effect, 0.5))
+            upset_prob = add_effect(upset_prob, min((inner_avg - outer_avg) * 20.0, 0.5))
 
-    # ── ④トリガー（足すのではなく倍率）─────────────────────
+    # ── ⑤ 複合条件（条件が重なると急に荒れる）───────────────
+    # 4カド展示1位 + 1号艇ST遅い + 風向かい → ×1.5
+    boat4 = next((b for b in boats if b.lane == 4), None)
+    ex_rank1 = None
+    if ex_all:
+        sorted_ex = sorted(ex_all, key=lambda x: x[1])
+        ex_rank_map = {lane: rank+1 for rank, (lane,_) in enumerate(sorted_ex)}
+        ex_rank1 = ex_rank_map.get(4)  # 4号艇の展示順位
+
+    complex_trigger = 0
+    if boat1 and boat1.ex_st and boat1.ex_st >= 0.18:        complex_trigger += 1
+    if ex_rank1 == 1:                                         complex_trigger += 1
+    if weather and weather.wind_direction == "向" and \
+       weather.wind_speed and weather.wind_speed >= 5.0:      complex_trigger += 1
+    if weather and weather.wave_height and weather.wave_height >= 5: complex_trigger += 1
+
+    if complex_trigger >= 2:
+        upset_prob = min(upset_prob * 1.5, 0.95)  # 複合条件→×1.5
+
+    # 通常トリガー
     trigger = 0
-    if boat1 and boat1.ex_st and boat1.ex_st > 0.18:
-        trigger += 1
-    if boat2 and boat2.ex_st and boat2.ex_st < 0.13:
-        trigger += 1
-    if inner_avg and outer_avg and outer_avg < inner_avg:
-        trigger += 1
+    if boat1 and boat1.ex_st and boat1.ex_st > 0.18:        trigger += 1
+    if boat2 and boat2.ex_st and boat2.ex_st < 0.13:        trigger += 1
+    if inner_avg and outer_avg and outer_avg < inner_avg:   trigger += 1
     if trigger >= 2:
-        upset_prob = min(upset_prob * 1.2, 0.95)  # 倍率で
+        upset_prob = min(upset_prob * 1.2, 0.95)
 
-    # ── ⑤天候補正（倍率）────────────────────────────────────
+    # ── ⑤天候補正 ────────────────────────────────────────────
     if weather:
         if weather.wind_speed and weather.wind_speed >= 5.0:
-            wind_mult = 1.0 + min((weather.wind_speed - 5.0) * 0.02, 0.08)
-            upset_prob = min(upset_prob * wind_mult, 0.95)
+            upset_prob = min(upset_prob * (1.0 + min((weather.wind_speed-5.0)*0.02, 0.08)), 0.95)
         if weather.weather and '雨' in weather.weather:
             upset_prob = min(upset_prob * 1.03, 0.95)
         if weather.wave_height and weather.wave_height >= 15:
-            wave_mult = 1.0 + min((weather.wave_height - 15) * 0.003, 0.06)
-            upset_prob = min(upset_prob * wave_mult, 0.95)
+            upset_prob = min(upset_prob * (1.0 + min((weather.wave_height-15)*0.003, 0.06)), 0.95)
 
-    # ── ⑥等級差（1号艇B級×他にA1）────────────────────────────
+    # ── ⑥等級差 ──────────────────────────────────────────────
     if boat1 and boat1.racer_class in ("B1", "B2"):
-        a1_others = [b for b in boats if b.lane != 1 and b.racer_class == "A1"]
-        if a1_others:
+        if any(b.lane != 1 and b.racer_class == "A1" for b in boats):
             upset_prob = add_effect(upset_prob, 0.4)
 
     # ── ⑦レース種別補正 ──────────────────────────────────────
     grade_effects = {0: 0.0, 1: -0.1, 2: -0.2, 3: -0.3, 4: -0.5}
     upset_prob = add_effect(upset_prob, grade_effects.get(race_grade, 0.0))
-    upset_prob = max(0.0, min(upset_prob, 0.95))
 
-    # スコアは確率×10（0〜9.5の範囲）
+    # ── ④ 会場補正を適用 ─────────────────────────────────────
+    venue_factor = VENUE_UPSET_FACTOR.get(venue_num, 0.0)
+    if venue_factor != 0.0:
+        upset_prob = add_effect(upset_prob, venue_factor)
+
+    # ── ⑥ ナイター補正（ナイターはイン強化傾向）─────────────
+    if is_night:
+        upset_prob = add_effect(upset_prob, -0.08)  # ×0.92相当
+
+    upset_prob = max(0.0, min(upset_prob, 0.95))
     upset_score = upset_prob * 10.0
 
-    # 通知条件：1号艇が65%超で最有力ならスコア0
     if boat1_prob > 0.65 and best_other_prob < boat1_prob:
         upset_score = 0.0
 
-    # 狙い目（確率上位3艇、1号艇除く）
-    target = sorted(other_probs, key=other_probs.get, reverse=True)[:3]
+    target = sorted(other_probs, key=other_probs.get, reverse=True)[:2]
 
-    # boat1_rankをprobs形式で計算
     sorted_lanes = sorted(lane_probs, key=lane_probs.get, reverse=True)
     boat1_rank = sorted_lanes.index(1) + 1 if 1 in sorted_lanes else 6
 
@@ -1083,6 +1128,7 @@ def calculate_upset_score(
         "最有力":     f"{best_other_lane}号艇({best_other_prob:.1%})",
         "展示":       f"{next((b.ex_time for b in boats if b.lane==1), None)}秒",
         "レース種別": grade_names.get(race_grade, f'grade{race_grade}'),
+        "複合条件":   f"{complex_trigger}個",
     }
 
     return upset_score, detail, target
@@ -1232,9 +1278,18 @@ def _evaluate_bets(
             "ev":      round(ev, 3),
         })
 
-    # EV降順 → 上位MAX_BETSのみ
+    # EV降順 → 同型制限（同じ1着艇は最大2点）→ 上位MAX_BETSのみ
     candidates.sort(key=lambda x: x["ev"], reverse=True)
-    top = candidates[:MAX_BETS]
+    head_count: dict[int, int] = {}
+    top = []
+    for c in candidates:
+        head = int(c["combo"].split("-")[0])
+        if head_count.get(head, 0) >= 2:
+            continue
+        head_count[head] = head_count.get(head, 0) + 1
+        top.append(c)
+        if len(top) >= MAX_BETS:
+            break
 
     # ケリー基準で賭け金計算
     for t in top:
@@ -1615,7 +1670,15 @@ def _run_main(race_date: str | None = None) -> None:
             except Exception:
                 pass
         try:
-            score, detail, target = calculate_upset_score(boats, weather, race_grade)
+            # ナイター場判定（場コード: 4平和島 6浜名湖 12住之江 17宮島 20若松 21芦屋 22福岡 23唐津 24大村）
+            NIGHT_VENUES = {4, 6, 12, 17, 20, 21, 22, 23, 24}
+            is_night = venue_num in NIGHT_VENUES
+
+            score, detail, target = calculate_upset_score(
+                boats, weather, race_grade,
+                venue_num=venue_num,
+                is_night=is_night,
+            )
 
             # ── MLモデルスコアを加算 ──────────────────────────────
             ml_probs = _predict_win_prob(boats)
