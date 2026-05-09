@@ -2056,8 +2056,19 @@ def _evaluate_bets(
         else:
             base_bet = 500
 
-        # ドローダウン時は縮小
-        t["amount"] = int(base_bet * dd_multiplier / 100) * 100
+        # ③ uncertainty連動ベットサイジング: bet *= (1 - uncertainty * 0.5)
+        # uncertainty=0.0 → 等倍 / uncertainty=0.8 → ×0.6
+        uncertainty_factor = max(1.0 - entropy_norm * 0.5, 0.40)
+
+        # disagreement連動: 意見割れが多いほど縮小
+        disagreement_factor = max(1.0 - disagreement * 0.30, 0.50)
+
+        # ドローダウン時縮小
+        final_amount = int(
+            base_bet * dd_multiplier * uncertainty_factor * disagreement_factor
+            / 100
+        ) * 100
+        t["amount"]   = final_amount
         t["bet_score"] = round(bet_score, 3)
 
         # why_bet / race_type / confidence
@@ -2327,6 +2338,14 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         odds_val = result.odds_map.get(result.best_combo, 0)
         lines.append(f"💰 推奨: {result.best_combo} ({odds_val:.0f}倍 EV:{result.best_ev:.2f})")
 
+    # フッター（不確実性・disagreeが高い場合のみ表示）
+    if result.recommended_bets:
+        b0 = result.recommended_bets[0]
+        unc  = b0.get("uncertainty", 0)
+        disc = b0.get("disagreement", 0)
+        if unc >= 0.60 or disc >= 0.50:
+            lines.append(f"⚡ 不確実性:{unc:.2f} 意見割れ:{disc:.2f} → 少額推奨")
+
     return subject, "\n".join(lines)
 
 
@@ -2560,6 +2579,51 @@ def _run_main(race_date: str | None = None) -> None:
     if _skip_conds:
         log.info("捨て条件: %d件 (%s)", len(_skip_conds),
                  " / ".join(f"{c['key']}={c['val']}" for c in _skip_conds[:3]))
+
+    # ── ④ 異常日検知 ──────────────────────────────────────────
+    # 今日の環境が過去平均から著しくズレていないかチェック
+    all_wind_speeds = [item[3].wind_speed for item in race_list
+                       if len(item) > 3 and item[3] and item[3].wind_speed]
+    all_waves       = [item[3].wave_height for item in race_list
+                       if len(item) > 3 and item[3] and item[3].wave_height]
+    anomaly_flags: list[str] = []
+    if all_wind_speeds:
+        avg_ws = sum(all_wind_speeds) / len(all_wind_speeds)
+        if avg_ws >= 7.0:
+            anomaly_flags.append(f"全場平均風速{avg_ws:.1f}m（異常強風）")
+    if all_waves:
+        avg_wh = sum(all_waves) / len(all_waves)
+        if avg_wh >= 8:
+            anomaly_flags.append(f"全場平均波高{avg_wh:.0f}cm（高波）")
+    # 展示なしレース率
+    no_ex_rate = sum(1 for item in race_list
+                     if not any(b.ex_time for b in item[2])) / max(len(race_list), 1)
+    if no_ex_rate >= 0.6:
+        anomaly_flags.append(f"展示なし率{no_ex_rate:.0%}（APIデータ不足？）")
+
+    if anomaly_flags:
+        log.warning("⚠️ 異常日検知: %s", " / ".join(anomaly_flags))
+
+    # ── ⑤ system_confidence ───────────────────────────────────
+    # システム全体の今日の自信度（0.0〜1.0）
+    system_conf = 1.0
+    if anomaly_flags:
+        system_conf -= 0.15 * len(anomaly_flags)
+    if no_ex_rate >= 0.5:
+        system_conf -= 0.20
+    system_conf = max(system_conf, 0.20)
+    if system_conf < 0.60:
+        log.warning("⚠️ system_confidence低: %.2f → 全体的にベット縮小", system_conf)
+
+    # ── exposure管理（型・レジーム別の偏り制限）────────────────
+    # MAX_STYLE_EXPOSURE: 同じ race_type の通知は全体の35%まで
+    # MAX_CLUSTER_EXPOSURE: 同じ cluster（レジーム×venue）の通知は3件まで
+    MAX_STYLE_EXPOSURE  = 0.35
+    MAX_CLUSTER_BETS    = 3
+    style_count:   dict[str, int] = {}   # race_type → count
+    cluster_count: dict[str, int] = {}   # "regime_venue" → count
+    total_notified  = 0
+    MAX_DAILY_BETS  = 12   # 1日の最大通知数（絶対上限）
 
     sent_file = f"sent_{race_date}.txt"
     try:
@@ -2798,9 +2862,14 @@ def _run_main(race_date: str | None = None) -> None:
                         "ev":         best["ev"],
                         "composite":  best.get("composite", 0),
                         "confidence": best.get("confidence", 0),
-                        # 買い理由 / レースタイプ
-                        "why_bet":    best.get("why_bet", []),
-                        "race_type":  best.get("race_type", ""),
+                        # 買い理由 / レースタイプ / レジーム
+                        "why_bet":      best.get("why_bet", []),
+                        "race_type":    best.get("race_type", ""),
+                        "regime":       best.get("regime", ""),
+                        "disagreement": best.get("disagreement", 0),
+                        "uncertainty":  best.get("uncertainty", 0),
+                        # システム自信度
+                        "system_conf":  round(system_conf, 3),
                         # モデルスコア
                         "upset_score": round(score, 3),
                         # 気象情報
@@ -2827,8 +2896,37 @@ def _run_main(race_date: str | None = None) -> None:
             )
 
             subject, body = build_message(result)
+
+            # ── ① exposure チェック（型・クラスター偏り制限）──────
+            race_type_str = recommended[0].get("race_type", "不明") if recommended else "不明"
+            regime_str    = recommended[0].get("regime", "calm")     if recommended else "calm"
+            cluster_key   = f"{regime_str}_{venue_num}"
+
+            # 同じraceTypeが多すぎる
+            if total_notified > 0:
+                style_ratio = style_count.get(race_type_str, 0) / total_notified
+                if style_ratio >= MAX_STYLE_EXPOSURE:
+                    log.info("exposure制限(型): %s %dR 型=%s (%.0f%%超)",
+                             result.venue_name, race_number, race_type_str, MAX_STYLE_EXPOSURE*100)
+                    continue
+
+            # 同じクラスターが多すぎる
+            if cluster_count.get(cluster_key, 0) >= MAX_CLUSTER_BETS:
+                log.info("exposure制限(cluster): %s %dR cluster=%s (%d件超)",
+                         result.venue_name, race_number, cluster_key, MAX_CLUSTER_BETS)
+                continue
+
+            # 1日の上限
+            if total_notified >= MAX_DAILY_BETS:
+                log.info("1日上限到達: %d件", MAX_DAILY_BETS)
+                break
+
             if send_notification(subject, body):
                 notified += 1
+                total_notified += 1
+                # exposure更新
+                style_count[race_type_str]  = style_count.get(race_type_str, 0) + 1
+                cluster_count[cluster_key]  = cluster_count.get(cluster_key, 0) + 1
                 # 送信済みに記録
                 sent_set.add(notify_key)
                 try:
@@ -3473,6 +3571,19 @@ def _monte_carlo_simulation(
     flag = "🔴 要注意" if bankrupt_rate > 0.1 else ("🟡 注意" if bankrupt_rate > 0.05 else "🟢 安全")
     print(f"\n── 破産率（資金-50%以上） ──")
     print(f"  {bankrupt_rate:.1%}  {flag}")
+
+    # ── ⑤ tail risk（CVaR / Expected Shortfall）────────────────
+    # 最悪の10%シナリオの平均損失
+    fp_sorted = sorted(results["final_profit"])
+    n_tail    = max(1, int(n_sim * 0.10))
+    cvar_10   = sum(fp_sorted[:n_tail]) / n_tail
+    n_tail5   = max(1, int(n_sim * 0.05))
+    cvar_5    = sum(fp_sorted[:n_tail5]) / n_tail5
+    cvar_flag = "🔴 危険" if cvar_10 < -30000 else ("🟡 注意" if cvar_10 < -15000 else "🟢 許容")
+    print(f"\n── Tail Risk（CVaR）──")
+    print(f"  CVaR(10%):  {cvar_10:>+,}円  ← 最悪10%の平均損益 {cvar_flag}")
+    print(f"  CVaR( 5%):  {cvar_5:>+,}円  ← 最悪5%の平均損益")
+    print(f"  ※ これが許容できる損失か確認してください")
 
     print(f"\n{'='*55}")
 
