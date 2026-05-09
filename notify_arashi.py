@@ -2137,7 +2137,24 @@ if __name__ == "__main__":
         default=UPSET_SCORE_THRESHOLD,
         help=f"荒れスコア閾値（デフォルト: {UPSET_SCORE_THRESHOLD}）",
     )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="15分ごとに繰り返し実行（ローカル常駐モード）",
+    )
     args = parser.parse_args()
 
     UPSET_SCORE_THRESHOLD = args.threshold
-    run(race_date=args.date)
+
+    if args.loop:
+        # ── ローカル常駐モード ────────────────────────────────
+        import time as _time
+        log.info("常駐モード起動（15分ごとに実行・Ctrl+Cで停止）")
+        while True:
+            try:
+                run(race_date=args.date)
+            except Exception as e:
+                log.error("実行エラー: %s", e)
+            _time.sleep(15 * 60)   # 15分待機
+    else:
+        run(race_date=args.date)
