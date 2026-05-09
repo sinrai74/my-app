@@ -1987,7 +1987,12 @@ def _run_main(race_date: str | None = None) -> None:
 
     # ── 荒れ判定 & 通知 ──────────────────────────────────────
     notified = 0
-    # 送信済みレースを記録（日付_場コード_レース番号）
+    # 捨て条件を事前ロード（ログから自動抽出）
+    _skip_conds = _load_skip_conditions("hit_record.csv")
+    if _skip_conds:
+        log.info("捨て条件: %d件 (%s)", len(_skip_conds),
+                 " / ".join(f"{c['key']}={c['val']}" for c in _skip_conds[:3]))
+
     sent_file = f"sent_{race_date}.txt"
     try:
         with open(sent_file, "r") as sf:
@@ -2044,6 +2049,18 @@ def _run_main(race_date: str | None = None) -> None:
 
             log.debug("スコア: %s %dR score=%.2f", VENUE_NAMES.get(venue_num,f"場{venue_num}"), race_number, score)
 
+            # ── 捨て条件チェック（ログから自動抽出した負け条件）──
+            venue_name_str = VENUE_NAMES.get(venue_num, f"場{venue_num}")
+            wd_str = weather.wind_direction if weather else ""
+            rt_str = detail.get("race_type", "")   # calculate_upset_scoreから取得できれば
+            should_skip, skip_reason = _should_skip_by_condition(
+                venue_name_str, wd_str, rt_str, _skip_conds
+            )
+            if should_skip:
+                log.debug("捨て条件スキップ: %s %dR %s",
+                          venue_name_str, race_number, skip_reason)
+                continue
+
             # ── 展示タイムなし → EV閾値・prob下限を厳しくする（_evaluate_bets内で対処）
             if not has_exhibition:
                 detail["展示補正"] = "展示タイムなし（EV閾値+0.20・prob下限+0.008）"
@@ -2064,6 +2081,12 @@ def _run_main(race_date: str | None = None) -> None:
                     log.debug("オッズ取得失敗: %s", oe)
 
                 if odds_map:
+                    # ── 多要素 confidence 計算 ──────────────────────
+                    multi_conf = _calc_multi_confidence(
+                        ml_probs, score, has_exhibition, weather, boats, odds_map
+                    )
+                    detail["confidence"] = f"{multi_conf:.3f}"
+
                     # ── オッズ急落チェック ─────────────────────────
                     dropped = _check_odds_drop(venue_num, race_number, odds_map)
                     if dropped:
@@ -2388,6 +2411,227 @@ def send_preview_notification() -> None:
     except Exception as e:
         log.debug("結果取得失敗: %s", e)
     return None
+
+
+def _load_skip_conditions(csv_file: str = "hit_record.csv") -> list[dict]:
+    """
+    hit_record.csv から ROI < 0.5 かつ n >= 5 の条件を捨て条件として返す。
+    """
+    import csv as _csv
+    if not os.path.exists(csv_file):
+        return []
+    try:
+        with open(csv_file, "r", encoding="utf-8") as f:
+            rows = list(_csv.DictReader(f))
+        valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
+        if len(valid) < 20:
+            return []
+        SKIP_KEYS = ["venue", "wind_dir", "race_type"]
+        skip_conds = []
+        for key in SKIP_KEYS:
+            for val in set(str(r.get(key,"") or "") for r in valid):
+                if not val:
+                    continue
+                subset = [r for r in valid if str(r.get(key,"") or "") == val]
+                if len(subset) < 5:
+                    continue
+                pay = sum(int(r.get("payout",0) or 0) for r in subset
+                          if int(r.get("hit",0) or 0))
+                roi = pay / (len(subset)*100) if subset else 0
+                if roi < 0.50:
+                    skip_conds.append({"key":key,"val":val,"roi":round(roi,3),"n":len(subset)})
+                    log.info("捨て条件登録: %s=%s (ROI=%.2f n=%d)", key, val, roi, len(subset))
+        return skip_conds
+    except Exception as e:
+        log.debug("捨て条件読み込み失敗: %s", e)
+        return []
+
+
+def _should_skip_by_condition(
+    venue: str, wind_dir: str, race_type: str,
+    skip_conds: list[dict],
+) -> tuple[bool, str]:
+    """捨て条件に該当するかチェック。戻り値: (skip, reason)"""
+    checks = {"venue": venue, "wind_dir": wind_dir, "race_type": race_type}
+    for cond in skip_conds:
+        if checks.get(cond["key"]) == cond["val"]:
+            return True, f"{cond['key']}={cond['val']}(ROI={cond['roi']:.2f})"
+    return False, ""
+
+
+def _analyze_loss_reason(pred_combo: str, result_combo: str) -> str:
+    """外れたレースの敗因を自動分類する。"""
+    if not result_combo or result_combo == "不明":
+        return "結果不明"
+    rf = result_combo.split("-")[0] if "-" in result_combo else "?"
+    pf = pred_combo.split("-")[0]   if pred_combo and "-" in pred_combo else "?"
+    if rf in ["5","6"]:    return "万舟"
+    if rf == "1" and pf != "1": return "1残り"
+    if rf != pf:           return "展開違い"
+    return "着順違い（頭当たり）"
+
+
+def _calc_real_ev(csv_file: str = "hit_record.csv") -> dict:
+    """理論EVと実測ROIのギャップを条件別に返す。"""
+    import csv as _csv
+    if not os.path.exists(csv_file):
+        return {}
+    try:
+        with open(csv_file, "r", encoding="utf-8") as f:
+            rows = list(_csv.DictReader(f))
+        valid = [r for r in rows if r.get("hit") not in ("","",None,"-1") and r.get("pred_ev")]
+        if not valid:
+            return {}
+        result = {}
+        def _ev_stats(subset, label):
+            if len(subset) < 3: return
+            theory = sum(float(r.get("pred_ev",0) or 0) for r in subset)/len(subset)
+            pay    = sum(int(r.get("payout",0) or 0) for r in subset if int(r.get("hit",0) or 0))
+            real   = pay/(len(subset)*100) if subset else 0
+            result[label] = {"n":len(subset),"理論EV":round(theory,3),
+                             "実測ROI":round(real,3),"ギャップ":round(real-theory,3)}
+        _ev_stats(valid, "全体")
+        for lo,hi,lb in [(1.0,1.5,"EV1.0-1.5"),(1.5,2.0,"EV1.5-2.0"),(2.0,9.9,"EV2.0+")]:
+            _ev_stats([r for r in valid if lo <= float(r.get("pred_ev",0) or 0) < hi], lb)
+        for rt in set(r.get("race_type","") for r in valid if r.get("race_type")):
+            _ev_stats([r for r in valid if r.get("race_type")==rt], f"型:{rt}")
+        return result
+    except Exception as e:
+        log.debug("実測EV失敗: %s", e); return {}
+
+
+def _calc_multi_confidence(
+    ml_probs: dict[int, float],
+    upset_score: float,
+    has_exhibition: bool,
+    weather,
+    boats: list,
+    odds_map: dict,
+) -> float:
+    """
+    多要素 confidence スコア（0.0〜1.0）
+    A. モデル合意度（軸の明確さ）× 0.50
+    B. データ品質（展示・STの充実度）× 0.25
+    C. 市場ギャップ（過小評価されてる艇あり）× 0.25
+    """
+    # A. モデル合意度
+    a = 0.0
+    if ml_probs:
+        sp = sorted(ml_probs.values(), reverse=True)
+        if len(sp) >= 2:
+            a = min((sp[0]-sp[1]) / 0.30, 1.0) * 0.40
+        a += min(upset_score / 10.0, 1.0) * 0.10
+
+    # B. データ品質
+    b = 0.0
+    if has_exhibition:
+        ex = sum(1 for boat in boats if boat.ex_time and boat.ex_time > 0)
+        st = sum(1 for boat in boats if boat.ex_st is not None)
+        b = min(ex/6.0, 1.0)*0.15 + min(st/6.0, 1.0)*0.10
+    else:
+        b = 0.05
+
+    # C. 市場ギャップ
+    c = 0.0
+    if ml_probs and odds_map:
+        sorted_ml = sorted(ml_probs.items(), key=lambda x: -x[1])
+        mr = {lane: rank+1 for rank,(lane,_) in enumerate(sorted_ml)}
+        la = {}
+        for lane in range(1,7):
+            lo_ = [v for k,v in odds_map.items() if k.startswith(f"{lane}-") and v>0]
+            if lo_: la[lane] = sum(lo_)/len(lo_)
+        if la:
+            sm = sorted(la.items(), key=lambda x: x[1])
+            mkt = {lane: rank+1 for rank,(lane,_) in enumerate(sm)}
+            mg  = max((mkt.get(l,3)-mr.get(l,3)) for l in ml_probs)
+            c   = min(max(mg,0)/5.0, 1.0) * 0.25
+
+    return round(min(a+b+c, 1.0), 3)
+
+
+def _print_dashboard(csv_file: str = "hit_record.csv") -> None:
+    """
+    ① 回収率ダッシュボード
+    場別・風向き別・レースタイプ別ROI、実測EV、捨て条件、外れ分析を一括表示。
+    """
+    import csv as _csv
+    from collections import defaultdict, Counter
+
+    print(f"\n{'█'*55}")
+    print(f"  📊 回収率ダッシュボード")
+    print(f"{'█'*55}")
+
+    if not os.path.exists(csv_file):
+        print("  hit_record.csv が見つかりません")
+        return
+
+    with open(csv_file, "r", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
+    if len(valid) < 5:
+        print(f"  データ不足: {len(valid)}件"); return
+
+    total_bet  = len(valid) * 100
+    total_pay  = sum(int(r.get("payout",0) or 0) for r in valid if int(r.get("hit",0) or 0))
+    total_roi  = total_pay / total_bet if total_bet > 0 else 0
+    total_hit  = sum(int(r.get("hit",0) or 0) for r in valid)
+    total_prof = total_pay - total_bet
+    flag = "🟢 黒字" if total_roi>=1.0 else ("🟡 接戦" if total_roi>=0.8 else "🔴 赤字")
+
+    print(f"\n  総合: ROI={total_roi:.3f} {flag}")
+    print(f"  {len(valid)}件 / 的中{total_hit}件({total_hit/len(valid):.1%}) / {total_prof:+,}円")
+
+    def _show_breakdown(key: str, title: str) -> None:
+        stats: dict = defaultdict(lambda: {"n":0,"pay":0,"hit":0})
+        for r in valid:
+            v = str(r.get(key,"") or "不明")
+            stats[v]["n"]   += 1
+            stats[v]["hit"] += int(r.get("hit",0) or 0)
+            if int(r.get("hit",0) or 0):
+                stats[v]["pay"] += int(r.get("payout",0) or 0)
+        rows_ = [(v,s["n"],s["hit"],s["pay"]/(s["n"]*100),s["pay"]-s["n"]*100)
+                 for v,s in stats.items() if s["n"]>=3]
+        rows_.sort(key=lambda x:-x[3])
+        print(f"\n  ── {title} ──")
+        print(f"  {'':12} {'n':>4}  {'的中':>6}  {'ROI':>6}  {'損益':>9}")
+        for v,n,h,roi,prof in rows_[:6]:
+            f_ = "🟢" if roi>=1.0 else ("🟡" if roi>=0.7 else "🔴")
+            print(f"  {str(v):<12} {n:>4}  {h:>2}({h/n:.0%})  {roi:>5.2f}  {prof:>+,}円 {f_}")
+
+    _show_breakdown("venue",     "場別")
+    _show_breakdown("wind_dir",  "風向き別")
+    _show_breakdown("race_type", "レースタイプ別")
+    _show_breakdown("night",     "ナイター別")
+
+    # 実測EV
+    real_ev = _calc_real_ev(csv_file)
+    if real_ev:
+        print(f"\n  ── 理論EV vs 実測ROI ──")
+        print(f"  {'条件':<12} {'n':>4}  {'理論EV':>7}  {'実測':>7}  {'ギャップ':>9}")
+        for label,v in real_ev.items():
+            gf = "⚠️ " if v["ギャップ"]<-0.2 else ("✅" if v["ギャップ"]>-0.05 else "  ")
+            print(f"  {label:<12} {v['n']:>4}  {v['理論EV']:>7.3f}  {v['実測ROI']:>7.3f}  {v['ギャップ']:>+.3f} {gf}")
+
+    # 捨て条件
+    skip_conds = _load_skip_conditions(csv_file)
+    if skip_conds:
+        print(f"\n  ── 捨て条件（自動スキップ対象） ──")
+        for c in skip_conds:
+            print(f"  ⚠️  {c['key']}={c['val']}  ROI={c['roi']:.2f}  n={c['n']}")
+
+    # 外れ分析
+    misses = [r for r in valid if int(r.get("hit",0) or 0)==0
+              and r.get("result_combo") and r.get("result_combo")!="不明"]
+    if misses:
+        reasons = Counter(_analyze_loss_reason(r.get("pred_combo",""), r.get("result_combo",""))
+                          for r in misses)
+        print(f"\n  ── 外れ分析（{len(misses)}件） ──")
+        for reason,cnt in reasons.most_common():
+            pct = cnt/len(misses)
+            bar = "█" * int(pct*20)
+            print(f"  {reason:<20} {cnt:>3}件({pct:.0%}) {bar}")
+
+    print(f"\n{'█'*55}")
 
 
 def _auto_extract_patterns(csv_file: str = "hit_record.csv") -> None:
@@ -3171,6 +3415,11 @@ if __name__ == "__main__":
         help=f"荒れスコア閾値（デフォルト: {UPSET_SCORE_THRESHOLD}）",
     )
     parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="回収率ダッシュボード（場別・風向別・実測EV・捨て条件・外れ分析）",
+    )
+    parser.add_argument(
         "--patterns",
         action="store_true",
         help="勝ちパターン自動抽出（ログから条件×ROIを分析）",
@@ -3198,6 +3447,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     UPSET_SCORE_THRESHOLD = args.threshold
+
+    if args.dashboard:
+        _print_dashboard("hit_record.csv")
+        import sys; sys.exit(0)
 
     if args.patterns:
         _auto_extract_patterns("hit_record.csv")
