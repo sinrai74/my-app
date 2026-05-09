@@ -1478,31 +1478,151 @@ def _evaluate_bets(
         if len(top) >= MAX_BETS:
             break
 
-    # ケリー基準で賭け金計算 + why_bet / race_type / confidence 付与
+    # ── ベット制御（信頼度連動3段階）+ why_bet / race_type / confidence 付与 ──
     race_type = _classify_race_type(
         ml_probs, boats or [], weather, has_exhibition, monster_lane, lane4_boost
     )
-    for t in top:
-        b_val = t["odds"] - 1
-        if b_val <= 0:
-            t["amount"] = 0
-        else:
-            kelly = (t["prob"] * t["odds"] - 1) / b_val
-            kelly = max(0.0, min(kelly, 0.15))
-            t["amount"] = int(bankroll * kelly / 100) * 100
 
-        # why_bet: 買い理由リスト
+    # ドローダウン状態を読んでベット倍率を決める
+    dd_multiplier = _get_bet_multiplier()
+
+    for t in top:
+        # ── bet_score = ev×0.4 + prob×0.4 + confidence×0.2 ────────
+        ev_n    = min(t["ev"] / 3.0, 1.0)
+        prob_n  = min(t["prob"] / 0.10, 1.0)
+        conf_n  = t.get("composite", 0)
+        bet_score = ev_n * 0.4 + prob_n * 0.4 + conf_n * 0.2
+
+        # ── 3段階ベット金額 ─────────────────────────────────────
+        if bet_score >= 0.9:
+            base_bet = 3000
+        elif bet_score >= 0.75:
+            base_bet = 1500
+        else:
+            base_bet = 500
+
+        # ドローダウン時は縮小
+        t["amount"] = int(base_bet * dd_multiplier / 100) * 100
+        t["bet_score"] = round(bet_score, 3)
+
+        # why_bet / race_type / confidence
         t["why_bet"] = _build_why_bet(
             t["combo"], ml_probs, boats or [], weather,
             has_exhibition, monster_lane, lane4_boost,
             odds_dropped or [], upset_score,
         )
-        t["race_type"] = race_type
-
-        # confidence: 複合スコアをそのままconfidenceとして使う
-        t["confidence"] = t.get("composite", 0)
+        t["race_type"]   = race_type
+        t["confidence"]  = t.get("composite", 0)
 
     return top
+
+
+def _get_bet_multiplier() -> float:
+    """
+    hit_record.csv の直近成績に基づいてベット倍率を返す。
+    通常: 1.0  /  連敗5〜9: 0.5  /  連敗10+: 0.0（停止）
+    日次損失-10000円超: 0.0（停止）
+    """
+    try:
+        import csv as _csv
+        csv_file = "hit_record.csv"
+        if not os.path.exists(csv_file):
+            return 1.0
+        with open(csv_file, "r", encoding="utf-8") as f:
+            rows = list(_csv.DictReader(f))
+        if not rows:
+            return 1.0
+
+        # 連敗チェック
+        streak = 0
+        for r in reversed(rows):
+            if r.get("hit") in ("", None):
+                continue
+            if int(r.get("hit", 0) or 0) == 0:
+                streak += 1
+            else:
+                break
+        if streak >= 10:
+            log.warning("連敗10回超 → ベット停止 (streak=%d)", streak)
+            return 0.0
+        if streak >= 5:
+            log.info("連敗%d回 → ベット50%%縮小", streak)
+            return 0.5
+
+        # 日次損失チェック
+        from datetime import datetime, timezone, timedelta
+        today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+        today_rows = [r for r in rows if str(r.get("date","")).replace("-","") == today]
+        daily_profit = sum(int(r.get("profit", -100) or -100) for r in today_rows)
+        if daily_profit <= -10000:
+            log.warning("日次損失%d円 → ベット停止", daily_profit)
+            return 0.0
+        return 1.0
+    except Exception:
+        return 1.0
+
+
+def _check_race_quality(
+    boats: list,
+    weather,
+    ml_probs: dict[int, float],
+    upset_score: float,
+    has_exhibition: bool,
+) -> tuple[float, str]:
+    """
+    レース品質スコアを計算する（0.0〜1.0）。
+    低品質レース（0.3未満）はスキップ推奨。
+
+    品質の要素:
+      - 展示データの充実度
+      - 荒れスコアの高さ
+      - 軸候補の明確さ（最有力と2番手の差）
+      - 気象条件の荒れ適性
+
+    戻り値: (quality_score, skip_reason)
+    """
+    quality = 0.0
+    reasons = []
+
+    # 展示データの充実度（0〜0.25）
+    if has_exhibition:
+        ex_count = sum(1 for b in boats if b.ex_time and b.ex_time > 0)
+        quality += min(ex_count / 6.0, 1.0) * 0.25
+    else:
+        reasons.append("展示なし")
+
+    # 荒れスコア（0〜0.30）
+    if upset_score >= 6.0:
+        quality += 0.30
+    elif upset_score >= 4.0:
+        quality += 0.15
+    else:
+        reasons.append(f"荒れ低({upset_score:.1f})")
+
+    # 軸候補の明確さ（0〜0.25）
+    if ml_probs:
+        sorted_p = sorted(ml_probs.values(), reverse=True)
+        if len(sorted_p) >= 2:
+            gap = sorted_p[0] - sorted_p[1]
+            if gap >= 0.15:
+                quality += 0.25
+            elif gap >= 0.08:
+                quality += 0.12
+            else:
+                reasons.append("軸不明")
+
+    # 気象適性（0〜0.20）
+    if weather:
+        ws = weather.wind_speed or 0
+        wh = weather.wave_height or 0
+        wd = weather.wind_direction or ""
+        if (ws >= 5 and wd == "向") or wh >= 5:
+            quality += 0.20
+        elif ws >= 3 or wh >= 3:
+            quality += 0.10
+
+    quality = min(quality, 1.0)
+    return quality, (" / ".join(reasons) if reasons else "")
 
 
 def _danger_label(score: float) -> str:
@@ -1619,12 +1739,13 @@ def build_message(result: RaceResult) -> tuple[str, str]:
             "nami":"本命崩れ","makuri":"まくり","sashi":"差し","ana":"万舟","safe":"保険",
         }
         for bet in result.recommended_bets[:8]:
-            pname = pattern_jp.get(bet["pattern"], bet["pattern"])
-            amt   = f" ¥{bet['amount']:,}" if bet.get("amount", 0) > 0 else ""
-            ev_bar = "★" * min(int(bet["ev"] * 2), 5)
+            pname    = pattern_jp.get(bet["pattern"], bet["pattern"])
+            amt      = f" ¥{bet['amount']:,}" if bet.get("amount", 0) > 0 else " (停止中)"
+            ev_bar   = "★" * min(int(bet["ev"] * 2), 5)
+            bs       = f" 信頼{bet.get('bet_score',0):.2f}" if bet.get("bet_score") else ""
             lines.append(
                 f"  {bet['combo']}  {bet['odds']:.0f}倍 "
-                f"EV:{bet['ev']:.2f}{ev_bar}  [{pname}]{amt}"
+                f"EV:{bet['ev']:.2f}{ev_bar}  [{pname}]{bs}{amt}"
             )
     elif result.best_combo:
         odds_val = result.odds_map.get(result.best_combo, 0)
@@ -1958,6 +2079,17 @@ def _run_main(race_date: str | None = None) -> None:
                         f"{recommended[0]['combo']} EV={recommended[0]['ev']:.2f}"
                         if recommended else "なし"
                     )
+
+            # ── レース品質スコアによる選別 ──────────────────────
+            race_quality, quality_skip_reason = _check_race_quality(
+                boats, weather, ml_probs or {}, score, has_exhibition
+            )
+            detail["品質スコア"] = f"{race_quality:.2f}"
+            if race_quality < 0.30:
+                log.debug("品質不足: %s %dR quality=%.2f (%s)",
+                          VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number,
+                          race_quality, quality_skip_reason)
+                continue
 
             # ── 気象条件フィルタ（複合条件で荒れやすさを判定）──────
             ws = weather.wind_speed      if weather else None
@@ -2361,6 +2493,42 @@ def _run_stats_analysis(csv_file: str = "hit_record.csv") -> None:
         for reason, cnt in why_miss.most_common(5):
             pct = cnt / len(misses)
             print(f"  {reason:<20} {cnt}件 ({pct:.0%})")
+
+    # ── 条件別回収率（場 / 風向き / ナイター / レースタイプ）──────
+    print(f"\n── 条件別回収率 ──")
+
+    def _cond_roi(rows_: list, key: str, label: str) -> None:
+        vals = sorted(set(str(r.get(key,"") or "不明") for r in rows_))
+        results_ = []
+        for v in vals:
+            seg = [r for r in rows_ if str(r.get(key,"") or "不明") == v]
+            if len(seg) < 3:
+                continue
+            h_   = sum(int(r.get("hit",0) or 0) for r in seg)
+            pay_ = sum(int(r.get("payout",0) or 0) for r in seg if int(r.get("hit",0) or 0))
+            roi_ = pay_ / (len(seg)*100) if seg else 0
+            results_.append((v, len(seg), h_, roi_, pay_ - len(seg)*100))
+        results_.sort(key=lambda x: -x[3])
+        if not results_:
+            return
+        print(f"  [{label}]")
+        for v, n, h, roi_, prof_ in results_[:6]:
+            flag = "🟢" if roi_ >= 1.0 else ("🟡" if roi_ >= 0.7 else "🔴")
+            print(f"    {str(v):<12} n={n:>3} 的中{h:>2}  ROI={roi_:.2f}  {prof_:+,}円 {flag}")
+
+    _cond_roi(valid, "venue",     "場別")
+    _cond_roi(valid, "wind_dir",  "風向き別")
+    _cond_roi(valid, "night",     "ナイター")
+    _cond_roi(valid, "race_type", "レースタイプ別")
+
+    # 1着予測艇別
+    first_rows = []
+    for r in valid:
+        combo = r.get("pred_combo","")
+        if combo and "-" in combo:
+            first_rows.append({**r, "_first": combo.split("-")[0]})
+    if first_rows:
+        _cond_roi(first_rows, "_first", "1着予測艇別")
 
     print(f"\n{'='*55}")
 
