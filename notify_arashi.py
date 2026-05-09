@@ -1113,6 +1113,58 @@ def calculate_upset_score(
     upset_prob = max(0.0, min(upset_prob, 0.95))
     upset_score = upset_prob * 10.0
 
+    # ── ③ 1号艇危険度AI（独立スコア）──────────────────────────
+    # ST・展示・風・モーター・等級を統合した「1号艇が飛ぶ確率」専用スコア
+    danger_score = 0.0
+    if boat1:
+        # ST危険度（平均・展示）
+        if boat1.avg_st and boat1.avg_st >= 0.18:  danger_score += 1.5
+        elif boat1.avg_st and boat1.avg_st >= 0.16: danger_score += 0.8
+        if boat1.ex_st is not None:
+            if boat1.ex_st >= 0.20:   danger_score += 2.0
+            elif boat1.ex_st >= 0.17: danger_score += 1.0
+
+        # 展示タイム危険度
+        ex_list = sorted([b.ex_time for b in boats if b.ex_time and b.ex_time > 0])
+        if ex_list and boat1.ex_time:
+            rank1 = ex_list.index(boat1.ex_time) + 1 if boat1.ex_time in ex_list else len(ex_list)
+            if rank1 >= 5:   danger_score += 2.0
+            elif rank1 == 4: danger_score += 1.0
+            elif rank1 == 3: danger_score += 0.5
+
+        # モーター危険度
+        motors = sorted([b.motor for b in boats if b.motor], reverse=True)
+        if motors and boat1.motor:
+            motor_rank = motors.index(boat1.motor) + 1
+            if motor_rank >= 5:   danger_score += 1.5
+            elif motor_rank == 4: danger_score += 0.8
+
+        # 等級危険度
+        if boat1.racer_class in ("B1", "B2"):
+            danger_score += 1.5
+            if any(b.lane != 1 and b.racer_class == "A1" for b in boats):
+                danger_score += 1.0
+
+        # 勝率危険度
+        if boat1.win_rate and boat1.win_rate < 4.5: danger_score += 1.5
+        elif boat1.win_rate and boat1.win_rate < 5.0: danger_score += 0.8
+
+    # 風危険度
+    if weather:
+        if weather.wind_direction == "向" and weather.wind_speed:
+            ws = weather.wind_speed
+            if ws >= 7:   danger_score += 2.0
+            elif ws >= 5: danger_score += 1.2
+            elif ws >= 3: danger_score += 0.5
+        if weather.wave_height and weather.wave_height >= 10:
+            danger_score += 1.0
+
+    # danger_score が高い場合は upset_score を強化
+    if danger_score >= 6.0:
+        upset_score = min(upset_score * 1.30, 9.5)
+    elif danger_score >= 4.0:
+        upset_score = min(upset_score * 1.15, 9.5)
+
     if boat1_prob > 0.65 and best_other_prob < boat1_prob:
         upset_score = 0.0
 
@@ -1123,12 +1175,13 @@ def calculate_upset_score(
 
     grade_names = {0: '一般', 1: 'G3', 2: 'G2', 3: 'G1', 4: 'SG'}
     detail = {
-        "荒れ確率":   f"{upset_prob:.1%}",
-        "1号艇確率":  f"{boat1_prob:.1%}(rank{boat1_rank})",
-        "最有力":     f"{best_other_lane}号艇({best_other_prob:.1%})",
-        "展示":       f"{next((b.ex_time for b in boats if b.lane==1), None)}秒",
-        "レース種別": grade_names.get(race_grade, f'grade{race_grade}'),
-        "複合条件":   f"{complex_trigger}個",
+        "荒れ確率":    f"{upset_prob:.1%}",
+        "1号艇確率":   f"{boat1_prob:.1%}(rank{boat1_rank})",
+        "1号艇危険度": f"{danger_score:.1f}",
+        "最有力":      f"{best_other_lane}号艇({best_other_prob:.1%})",
+        "展示":        f"{next((b.ex_time for b in boats if b.lane==1), None)}秒",
+        "レース種別":  grade_names.get(race_grade, f'grade{race_grade}'),
+        "複合条件":    f"{complex_trigger}個",
     }
 
     return upset_score, detail, target
@@ -1342,7 +1395,140 @@ def _evaluate_bets(
     market_rank = {lane: rank+1 for rank, (lane,_) in enumerate(sorted_market)}
 
     # ── 三連単確率計算 ────────────────────────────────────────
+    # ════════════════════════════════════════════════════════
+    # 展開シミュレーションエンジン
+    # ════════════════════════════════════════════════════════
+
+    def _detect_attack_lane(probs: dict[int, float]) -> int:
+        """
+        攻め艇を検出する。
+        2〜4号艇の中でPL確率が最も高く、かつ1号艇より高い艇を攻め艇とする。
+        攻め艇なしの場合は0を返す。
+        """
+        candidates = {l: p for l, p in probs.items()
+                      if l in [2, 3, 4] and p > probs.get(1, 0)}
+        if not candidates:
+            return 0
+        return max(candidates, key=candidates.get)
+
+    def _calc_lane1_survive_prob(probs: dict[int, float], attack_lane: int) -> float:
+        """
+        1号艇の「逃げ切り確率」を計算する。
+        攻め艇が強いほど下がり、1号艇STが遅いほど下がる。
+        """
+        p1     = probs.get(1, 1/6)
+        p_att  = probs.get(attack_lane, 0) if attack_lane > 0 else 0
+        # 基本逃げ確率は PL 確率から
+        survive = p1
+
+        # 攻め艇補正（攻め艇が強いほど逃げ確率が落ちる）
+        if p_att > 0:
+            attack_pressure = p_att / (p1 + p_att + 1e-6)
+            survive *= (1.0 - attack_pressure * 0.4)
+
+        # 1号艇ST補正
+        if boats:
+            boat1 = next((b for b in boats if b.lane == 1), None)
+            if boat1 and boat1.ex_st:
+                if boat1.ex_st >= 0.20:   survive *= 0.75
+                elif boat1.ex_st >= 0.17: survive *= 0.88
+            if boat1 and boat1.ex_time:
+                ex_list = [b.ex_time for b in boats if b.ex_time and b.ex_time > 0]
+                if ex_list:
+                    rank1 = sorted(ex_list).index(boat1.ex_time) + 1
+                    if rank1 >= 5: survive *= 0.80
+                    elif rank1 >= 3: survive *= 0.92
+
+        return min(max(survive, 0.01), 0.99)
+
+    def _expansion_second_probs(
+        probs: dict[int, float],
+        first: int,
+        attack_lane: int,
+        survive_prob: float,
+    ) -> dict[int, float]:
+        """
+        展開補正済みの2着確率を返す。
+        - 攻め艇が1着の場合: 内艇差し残りが多い
+        - 1号艇が1着の場合: 差し艇の2着が多い
+        """
+        remaining = {l: p for l, p in probs.items() if l != first}
+        total = sum(remaining.values()) or 1.0
+        second = {l: p / total for l, p in remaining.items()}
+
+        if first != 1:
+            # 外艇1着 → 内側差し残りが多い
+            for lane in list(second.keys()):
+                if lane < first:              # 内艇は差し残り
+                    second[lane] *= 1.25
+                elif lane == 1:               # 1号艇は半残り
+                    second[lane] *= (0.6 + survive_prob * 0.4)
+        else:
+            # 1号艇1着 → 外目のまくり差しが多い
+            if attack_lane > 0 and attack_lane in second:
+                second[attack_lane] *= 1.20
+            for lane in list(second.keys()):
+                if 3 <= lane <= 4:
+                    second[lane] *= 1.10
+
+        # 再正規化
+        total2 = sum(second.values()) or 1.0
+        return {l: p / total2 for l, p in second.items()}
+
+    def _mc_trifecta_probs(
+        probs: dict[int, float],
+        n_sim: int = 5000,
+    ) -> dict[str, float]:
+        """
+        ② Monte Carlo 三連単確率
+        n_sim 回レース仮想再生して三連単確率を推定する。
+        展開補正（attack_lane / survive_prob）を組み込んでいる。
+        """
+        import random as _rand
+        _rand.seed(None)   # ランダムシード
+
+        attack_lane  = _detect_attack_lane(probs)
+        survive_prob = _calc_lane1_survive_prob(probs, attack_lane)
+
+        lanes  = list(probs.keys())
+        result_count: dict[str, int] = {}
+
+        for _ in range(n_sim):
+            # 1着
+            first = _rand.choices(lanes, weights=[probs[l] for l in lanes])[0]
+
+            # 展開補正済み2着確率
+            sec_probs = _expansion_second_probs(probs, first, attack_lane, survive_prob)
+            sec_lanes = [l for l in lanes if l != first]
+            sec_w     = [sec_probs.get(l, 0.001) for l in sec_lanes]
+
+            if sum(sec_w) <= 0:
+                continue
+            second = _rand.choices(sec_lanes, weights=sec_w)[0]
+
+            # 3着（残りから均等）
+            thi_lanes = [l for l in lanes if l != first and l != second]
+            thi_w     = [probs.get(l, 0.001) for l in thi_lanes]
+            if not thi_lanes or sum(thi_w) <= 0:
+                continue
+            third = _rand.choices(thi_lanes, weights=thi_w)[0]
+
+            key = f"{first}-{second}-{third}"
+            result_count[key] = result_count.get(key, 0) + 1
+
+        # 確率に変換
+        total = sum(result_count.values()) or 1
+        return {k: v / total for k, v in result_count.items()}
+
+    # ── MC確率とPL確率を統合 ──────────────────────────────
+    # MC確率は展開を反映しているが分散が大きい → PL確率と50:50でブレンド
+    mc_probs: dict[str, float] = {}
+    if has_exhibition and boats:
+        mc_probs = _mc_trifecta_probs(ml_probs, n_sim=3000)
+
     def trifecta_prob(a: int, b: int, c: int) -> float:
+        """PL確率とMC確率をブレンドした三連単確率"""
+        # PL確率（Luce モデル）
         pa = ml_probs.get(a, 0.001)
         rem1 = {l: p for l, p in ml_probs.items() if l != a}
         t1_  = sum(rem1.values()) or 1
@@ -1350,42 +1536,42 @@ def _evaluate_bets(
         rem2 = {l: p for l, p in rem1.items() if l != b}
         t2_  = sum(rem2.values()) or 1
         pc   = rem2.get(c, 0.001) / t2_
+        pl_prob = pa * pb * pc
 
-        prob = pa * pb * pc
+        # MC確率（展開補正あり）
+        combo   = f"{a}-{b}-{c}"
+        mc_prob = mc_probs.get(combo, pl_prob)
 
+        # ブレンド（展示あり:50:50 / 展示なし:PL100%）
+        prob = (pl_prob * 0.5 + mc_prob * 0.5) if mc_probs else pl_prob
+
+        # ── 個別補正 ────────────────────────────────────────
         # 1号艇2着残り補正
         if a != 1 and b == 1:
             prob *= 1.15
-
         # 1残り荒れ補正
         if a == 1 and odds_map.get(f"{a}-{b}-{c}", 0) >= 15:
             prob *= 1.12
-
         # 6号艇1着減点
         if a == 6:
             prob *= 0.70
-
         # コース補正（2・3着）
         course_bonus = {1: 1.25, 2: 1.10, 3: 1.05, 4: 0.95, 5: 0.85, 6: 0.75}
         prob *= course_bonus.get(b, 1.0)
         prob *= course_bonus.get(c, 1.0)
-
         # 4カド補正
         if a == 4 and lane4_boost > 0:
             prob *= (1.0 + lane4_boost * 0.05)
-
-        # モンスター艇補正（1着に来た場合）
+        # モンスター艇補正
         if a == monster_lane and monster_boost > 1.0:
             prob *= monster_boost
-
         # 展示タイム順位ボーナス
         if a in ex_rank:
             prob *= ex_rank_bonus.get(ex_rank[a], 1.0)
-
-        # オッズ歪み補正（モデル上位なのに市場で過小評価）
+        # オッズ歪み補正
         if a in model_rank and a in market_rank:
             value_gap = market_rank[a] - model_rank[a]
-            if value_gap >= 2:   # 市場が2ランク以上低く見ている
+            if value_gap >= 2:
                 prob *= (1.0 + value_gap * 0.04)
 
         return prob
@@ -1680,6 +1866,16 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         f"危険度: {label}  スコア: {result.upset_score:.1f}",
         "",
     ]
+
+    # 1号艇危険度AI
+    danger = result.score_detail.get("1号艇危険度", "")
+    if danger:
+        try:
+            d_val  = float(danger)
+            d_bar  = "🔴" * min(int(d_val / 2), 4)
+            lines.append(f"⚠️ 1号艇危険度: {d_val:.0f}点 {d_bar}")
+        except ValueError:
+            pass
 
     # 気象情報
     weather_parts: list[str] = []
