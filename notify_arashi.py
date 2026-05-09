@@ -1105,67 +1105,99 @@ def _evaluate_bets(
     odds_map: dict[str, float],
     bankroll: int = 10000,
     target_lanes: list[int] | None = None,
+    has_exhibition: bool = True,
 ) -> list[dict]:
     """
-    全三連単120通りをEV順でランキングし、EV>=1.0の買い目を返す。
-    パターンラベルはEV計算後に付与（荒れスコアによる事前絞り込みなし）。
+    全三連単120通りをEV順でランキングして推奨買い目を返す。
+
+    改善点:
+      ① オッズ帯別EV閾値（万舟ほど厳しく）
+      ② prob下限（低確率すぎる万舟を除外）
+      ③ 1号艇2着残り補正（荒れでも2着1号艇は多い）
+      ④ コース補正を2・3着にも適用
+      ⑤ 展示なし時はEV閾値・prob下限を厳しく
     """
     # ── Luce選択モデルで三連単確率を計算 ──────────────────────
     def trifecta_prob(a: int, b: int, c: int, probs: dict) -> float:
-        """P(1位=a, 2位=b, 3位=c) = P(a) * P(b|残り) * P(c|残り2)"""
-        pa = probs.get(a, 0.01)
+        pa = probs.get(a, 0.001)
         remaining1 = {l: p for l, p in probs.items() if l != a}
         total1 = sum(remaining1.values()) or 1
-        pb = remaining1.get(b, 0.01) / total1
+        pb = remaining1.get(b, 0.001) / total1
         remaining2 = {l: p for l, p in remaining1.items() if l != b}
         total2 = sum(remaining2.values()) or 1
-        pc = remaining2.get(c, 0.01) / total2
-        return pa * pb * pc
+        pc = remaining2.get(c, 0.001) / total2
 
-    # パターンラベル付与用（後付け）
+        prob = pa * pb * pc
+
+        # ③ 1号艇2着残り補正（荒れでも2着1号艇は多い）
+        if a != 1 and b == 1:
+            prob *= 1.15
+
+        # ④ コース補正を2・3着にも適用（展開を反映）
+        course_bonus = {1: 1.25, 2: 1.10, 3: 1.05, 4: 0.95, 5: 0.85, 6: 0.75}
+        prob *= course_bonus.get(b, 1.0)
+        prob *= course_bonus.get(c, 1.0)
+
+        return prob
+
+    # パターンラベル付与
     tgt = target_lanes or []
-    t1 = tgt[0] if len(tgt) > 0 else None
-    t2 = tgt[1] if len(tgt) > 1 else None
+    t1  = tgt[0] if len(tgt) > 0 else None
 
     def _label(a: int, b: int, c: int) -> str:
-        if a == 1:
-            return "本命軸"
-        if a in [4, 5, 6]:
-            return "万舟"
-        if t1 and a == t1 and b == 1:
-            return "差し"
-        if t1 and a == t1 and b != 1:
-            return "まくり"
+        if a == 1:           return "本命軸"
+        if a in [4, 5, 6]:  return "万舟"
+        if t1 and a == t1 and b == 1: return "差し"
+        if t1 and a == t1 and b != 1: return "まくり"
         return "本命崩れ"
 
+    # ⑤ 展示なし時はパラメータを厳しく
+    ev_base_low  = 1.15  # 低オッズ帯
+    ev_base_mid  = 1.30  # 中オッズ帯
+    ev_base_high = 1.45  # 高オッズ帯（万舟）
+    prob_min     = 0.018
+    if not has_exhibition:
+        ev_base_low  += 0.15
+        ev_base_mid  += 0.15
+        ev_base_high += 0.15
+        prob_min     += 0.005
+
     from itertools import permutations
-    all_combos = [f"{a}-{b}-{c}" for a, b, c in permutations(range(1, 7), 3)]
-
     candidates = []
-    for combo in all_combos:
-        parts = combo.split("-")
-        a, b, c = int(parts[0]), int(parts[1]), int(parts[2])
-
-        prob = trifecta_prob(a, b, c, ml_probs)
-        odds = odds_map.get(combo, 0)
+    for a, b, c in permutations(range(1, 7), 3):
+        combo = f"{a}-{b}-{c}"
+        prob  = trifecta_prob(a, b, c, ml_probs)
+        odds  = odds_map.get(combo, 0)
         if odds <= 0 or odds > 500:
             continue
 
+        # ① オッズ帯別EV閾値
+        if odds >= 80:
+            ev_threshold = ev_base_high
+        elif odds >= 40:
+            ev_threshold = ev_base_mid
+        else:
+            ev_threshold = ev_base_low
+
         ev = prob * odds
+
+        # ② prob下限
+        if prob < prob_min:
+            continue
+        if ev < ev_threshold:
+            continue
+
         candidates.append({
             "combo":   combo,
             "pattern": _label(a, b, c),
             "prob":    round(prob, 5),
             "odds":    odds,
             "ev":      round(ev, 3),
-            "score":   round(ev, 3),
         })
 
-    # EVで降順ソート → EV>=1.0のみ
     candidates.sort(key=lambda x: x["ev"], reverse=True)
-    filtered = [t for t in candidates if t["ev"] >= 1.0]
 
-    top = filtered[:8]
+    top = candidates[:8]
     for t in top:
         b_val = t["odds"] - 1
         if b_val <= 0:
@@ -1570,7 +1602,7 @@ def _run_main(race_date: str | None = None) -> None:
                         [b.lane for b in boats if b.lane != 1],
                         key=lambda l: ml_probs.get(l, 0), reverse=True
                     )
-                    target = sorted_lanes[:3]
+                    target = sorted_lanes[:2]   # 本当に来る艇は2艇まで
             else:
                 log.warning("ML予測失敗: %s %dR → MLスコアなし",
                             VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
@@ -1579,8 +1611,8 @@ def _run_main(race_date: str | None = None) -> None:
 
             # ── 展示タイムなしはスコアを補正（精度が低いため）────────
             if not has_exhibition:
-                score *= 0.5  # 50%減点（改善⑧）
-                detail["展示補正"] = "展示タイムなし（スコア×0.5）"
+                score *= 0.75  # 展示なし → 弱気モード（0.5は切りすぎ）
+                detail["展示補正"] = "展示タイムなし（スコア×0.75）"
 
             # ═══════════════════════════════════════════════════════
             # ▼ EV計算を先に行う（EVフィルタが主軸）
@@ -1599,22 +1631,30 @@ def _run_main(race_date: str | None = None) -> None:
                 if odds_map:
                     # 全120通りのEVランキング（荒れスコアによる事前絞り込みなし）
                     patterns = _generate_patterns(target, score)
-                    recommended = _evaluate_bets(patterns, ml_probs, odds_map, target_lanes=target)
+                    recommended = _evaluate_bets(
+                        patterns, ml_probs, odds_map,
+                        target_lanes=target,
+                        has_exhibition=has_exhibition,
+                    )
                     detail["EV上位"] = (
                         f"{recommended[0]['combo']} EV={recommended[0]['ev']:.2f}"
                         if recommended else "なし"
                     )
 
-            # ── 気象条件フィルタ（風速2以上 or 波高2cm以上）────────
-            # 凪・静水のレースは通知しない
-            ws = weather.wind_speed  if weather else None
-            wh = weather.wave_height if weather else None
-            weather_ok = (ws is not None and ws >= 2.0) or \
-                         (wh is not None and wh >= 2)
-            if not weather_ok:
-                log.debug("気象条件不足: %s %dR 風%.1f波%s",
+            # ── 気象条件フィルタ（複合条件で荒れやすさを判定）──────
+            ws = weather.wind_speed      if weather else None
+            wh = weather.wave_height     if weather else None
+            wd = weather.wind_direction  if weather else None
+
+            weather_bonus = 0
+            if ws is not None and ws >= 5.0:   weather_bonus += 1
+            if wh is not None and wh >= 5:     weather_bonus += 1
+            if wd == "向":                     weather_bonus += 1
+
+            if weather_bonus < 2:
+                log.debug("気象条件不足: %s %dR 風%.1f%s 波%s bonus=%d",
                           VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number,
-                          ws or 0, wh or 0)
+                          ws or 0, wd or "-", wh or 0, weather_bonus)
                 continue
 
             # ── ①EVがある → 通知（荒れスコアはサブフィルタ）────────
