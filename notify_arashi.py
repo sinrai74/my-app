@@ -1487,11 +1487,19 @@ def _evaluate_bets(
     dd_multiplier = _get_bet_multiplier()
 
     for t in top:
-        # ── bet_score = ev×0.4 + prob×0.4 + confidence×0.2 ────────
-        ev_n    = min(t["ev"] / 3.0, 1.0)
-        prob_n  = min(t["prob"] / 0.10, 1.0)
-        conf_n  = t.get("composite", 0)
-        bet_score = ev_n * 0.4 + prob_n * 0.4 + conf_n * 0.2
+        # ── bet_score = ev×0.35 + prob×0.35 + confidence×0.15 + market_gap×0.15 ──
+        ev_n      = min(t["ev"] / 3.0, 1.0)
+        prob_n    = min(t["prob"] / 0.10, 1.0)
+        conf_n    = t.get("composite", 0)
+
+        # 1着艇の市場逆張りスコア（モデルが高評価なのに市場が低評価）
+        first_lane = int(t["combo"].split("-")[0])
+        mgap = 0.0
+        if first_lane in model_rank and first_lane in market_rank:
+            raw_gap = market_rank[first_lane] - model_rank[first_lane]
+            mgap = min(max(raw_gap / 5.0, 0.0), 1.0)   # 0〜1に正規化
+
+        bet_score = ev_n * 0.35 + prob_n * 0.35 + conf_n * 0.15 + mgap * 0.15
 
         # ── 3段階ベット金額 ─────────────────────────────────────
         if bet_score >= 0.9:
@@ -2382,6 +2390,281 @@ def send_preview_notification() -> None:
     return None
 
 
+def _auto_extract_patterns(csv_file: str = "hit_record.csv") -> None:
+    """
+    ① 勝ちパターン自動抽出エンジン
+    hit_record.csv のログから条件の組み合わせごとにROIを集計し、
+    「人間が気づかない勝ちパターン」を自動発見する。
+
+    分析軸:
+      - 単一条件（場, 風向き, ナイター, レースタイプ, 1着艇）
+      - 2条件の組み合わせ（場×風向き, レースタイプ×ナイター など）
+    """
+    import csv as _csv
+    from itertools import combinations
+    from collections import defaultdict
+
+    if not os.path.exists(csv_file):
+        print("hit_record.csv が見つかりません")
+        return
+
+    with open(csv_file, "r", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
+    if len(valid) < 10:
+        print(f"データ不足: {len(valid)}件（10件以上必要）")
+        return
+
+    # ── 各レコードに特徴量を付与 ────────────────────────────
+    def _features(r: dict) -> dict:
+        combo = r.get("pred_combo","")
+        first = combo.split("-")[0] if "-" in combo else "?"
+        ws    = float(r.get("wind_speed",0) or 0)
+        return {
+            "場":          r.get("venue","不明"),
+            "風向き":       r.get("wind_dir","不明") or "不明",
+            "ナイター":     "ナイター" if str(r.get("night","0")) == "1" else "昼間",
+            "レースタイプ": r.get("race_type","不明") or "不明",
+            "1着予測艇":    f"{first}号艇",
+            "風速帯":       "強風5m+" if ws >= 5 else ("中風3-5m" if ws >= 3 else "弱風"),
+            "波高帯":       "高波5cm+" if int(r.get("wave",0) or 0) >= 5 else "低波",
+        }
+
+    feat_rows = [(_features(r), r) for r in valid]
+
+    def _roi_stats(subset: list) -> tuple:
+        if not subset:
+            return 0, 0, 0, 0
+        n     = len(subset)
+        hits  = sum(int(r.get("hit",0) or 0) for r in subset)
+        pay   = sum(int(r.get("payout",0) or 0) for r in subset if int(r.get("hit",0) or 0))
+        roi   = pay / (n * 100) if n > 0 else 0
+        return n, hits, roi, pay - n * 100
+
+    feat_keys = list(list(_features(valid[0]).keys()))
+
+    print(f"\n{'='*60}")
+    print(f"  勝ちパターン自動抽出  ({len(valid)}件)")
+    print(f"{'='*60}")
+
+    all_patterns = []
+
+    # ── 単一条件 ────────────────────────────────────────────
+    for key in feat_keys:
+        vals = set(f[key] for f, _ in feat_rows)
+        for val in vals:
+            subset = [r for f, r in feat_rows if f[key] == val]
+            n, hits, roi, profit = _roi_stats(subset)
+            if n < 3:
+                continue
+            all_patterns.append({
+                "条件":   f"{key}={val}",
+                "n":      n,
+                "hit":    hits,
+                "roi":    roi,
+                "profit": profit,
+            })
+
+    # ── 2条件の組み合わせ ────────────────────────────────────
+    for k1, k2 in combinations(feat_keys, 2):
+        vals1 = set(f[k1] for f, _ in feat_rows)
+        vals2 = set(f[k2] for f, _ in feat_rows)
+        for v1 in vals1:
+            for v2 in vals2:
+                subset = [r for f, r in feat_rows if f[k1] == v1 and f[k2] == v2]
+                n, hits, roi, profit = _roi_stats(subset)
+                if n < 3:
+                    continue
+                all_patterns.append({
+                    "条件":   f"{k1}={v1} & {k2}={v2}",
+                    "n":      n,
+                    "hit":    hits,
+                    "roi":    roi,
+                    "profit": profit,
+                })
+
+    # ── ROI上位（勝ちパターン）と下位（負けパターン）を表示 ──
+    all_patterns.sort(key=lambda x: -x["roi"])
+
+    print(f"\n🟢 勝ちパターン TOP10（ROI高順）")
+    print(f"  {'条件':<35} {'n':>4} {'的中':>4} {'ROI':>6} {'利益':>8}")
+    print(f"  {'-'*60}")
+    for p in all_patterns[:10]:
+        hr = p["hit"] / p["n"] if p["n"] > 0 else 0
+        print(f"  {p['条件']:<35} {p['n']:>4} {p['hit']:>3}({hr:.0%}) {p['roi']:>5.2f} {p['profit']:>+,}円")
+
+    print(f"\n🔴 負けパターン TOP5（ROI低順）")
+    print(f"  {'条件':<35} {'n':>4} {'的中':>4} {'ROI':>6} {'利益':>8}")
+    print(f"  {'-'*60}")
+    worst = [p for p in reversed(all_patterns) if p["n"] >= 5][:5]
+    for p in worst:
+        hr = p["hit"] / p["n"] if p["n"] > 0 else 0
+        print(f"  {p['条件']:<35} {p['n']:>4} {p['hit']:>3}({hr:.0%}) {p['roi']:>5.2f} {p['profit']:>+,}円")
+
+    # ── 発見した「高ROI条件」をスキップ推奨として表示 ──────
+    skip_conds = [p for p in all_patterns if p["roi"] < 0.5 and p["n"] >= 5]
+    if skip_conds:
+        print(f"\n⚠️  スキップ推奨条件（ROI<0.5 かつ n≥5）")
+        for p in skip_conds[:3]:
+            print(f"  → {p['条件']} (n={p['n']}, ROI={p['roi']:.2f})")
+
+    print(f"\n{'='*60}")
+
+
+def _monte_carlo_simulation(
+    csv_file: str = "hit_record.csv",
+    n_days: int = 1000,
+    n_sim: int = 2000,
+    bets_per_day: float | None = None,
+) -> None:
+    """
+    ④ Monte Carlo シミュレーション
+    hit_record.csv の実績から1日あたりのベット分布を推定し、
+    n_days日間 × n_sim回シミュレーションして長期資金リスクを評価する。
+
+    表示:
+      - 最大連敗の分布
+      - 最大ドローダウンの分布
+      - 月次回収率の分布（中央値・10%ile・90%ile）
+      - 破産率（資金-50%以上）
+    """
+    import csv as _csv
+    import random
+    import statistics
+
+    if not os.path.exists(csv_file):
+        print("hit_record.csv が見つかりません")
+        return
+
+    with open(csv_file, "r", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
+    if len(valid) < 10:
+        print(f"データ不足: {len(valid)}件")
+        return
+
+    # 実績から P(hit) と平均払戻を推定
+    hits   = [r for r in valid if int(r.get("hit",0) or 0) == 1]
+    payouts = [int(r.get("payout",0) or 0) for r in hits]
+    n_bets = len(valid)
+    hit_rate = len(hits) / n_bets if n_bets > 0 else 0.05
+    avg_payout = statistics.mean(payouts) if payouts else 3000
+    bet_unit = 500   # 1ベット単位（円）
+
+    # 1日あたりのベット数（実績から推定 or 引数）
+    if bets_per_day is None:
+        # sent_*.txt から日数を推定
+        import glob
+        sent_files = glob.glob("sent_*.txt")
+        bets_per_day = max(1.0, n_bets / max(len(sent_files), 1))
+
+    print(f"\n{'='*55}")
+    print(f"  Monte Carlo シミュレーション")
+    print(f"  実績: {n_bets}件 / 的中率{hit_rate:.1%} / 平均払戻¥{avg_payout:,.0f}")
+    print(f"  1日{bets_per_day:.1f}ベット × {n_days}日 × {n_sim}回シミュレーション")
+    print(f"{'='*55}")
+
+    random.seed(42)
+    results = {
+        "final_profit": [],
+        "max_dd":       [],
+        "max_streak":   [],
+        "monthly_rois": [],
+        "bankrupt":     0,
+    }
+
+    INITIAL_CAPITAL = 100000   # 初期資金10万円
+
+    for _ in range(n_sim):
+        capital    = INITIAL_CAPITAL
+        peak       = INITIAL_CAPITAL
+        max_dd     = 0
+        streak     = 0
+        max_streak = 0
+        monthly    = []
+        month_start = capital
+
+        for day in range(n_days):
+            # 月末処理
+            if day > 0 and day % 30 == 0:
+                roi = capital / month_start if month_start > 0 else 0
+                monthly.append(roi)
+                month_start = capital
+
+            # 1日のベット数（ポアソン分布でランダム化）
+            n_today = max(0, int(random.gauss(bets_per_day, bets_per_day ** 0.5)))
+
+            for _ in range(n_today):
+                # ベット
+                capital -= bet_unit
+
+                # 的中判定
+                if random.random() < hit_rate:
+                    pay = max(100, int(random.gauss(avg_payout, avg_payout * 0.3)))
+                    capital += pay
+                    streak  = 0
+                else:
+                    streak     += 1
+                    max_streak  = max(max_streak, streak)
+
+                # ドローダウン更新
+                peak   = max(peak, capital)
+                max_dd = max(max_dd, peak - capital)
+
+                # 破産判定（初期資金の50%以下）
+                if capital <= INITIAL_CAPITAL * 0.5:
+                    results["bankrupt"] += 1
+                    capital = INITIAL_CAPITAL * 0.5  # リセット
+                    peak    = capital
+                    break
+
+        results["final_profit"].append(capital - INITIAL_CAPITAL)
+        results["max_dd"].append(max_dd)
+        results["max_streak"].append(max_streak)
+        if monthly:
+            results["monthly_rois"].extend(monthly)
+
+    # ── 結果表示 ─────────────────────────────────────────────
+    def pct(lst, p):
+        lst_s = sorted(lst)
+        return lst_s[int(len(lst_s) * p / 100)]
+
+    fp = results["final_profit"]
+    dd = results["max_dd"]
+    ms = results["max_streak"]
+
+    print(f"\n── {n_days}日後の損益（{n_sim}回） ──")
+    print(f"  中央値:  {pct(fp,50):>+,}円")
+    print(f"  10%ile:  {pct(fp,10):>+,}円  （悪いケース）")
+    print(f"  90%ile:  {pct(fp,90):>+,}円  （良いケース）")
+    print(f"  プラス:  {sum(1 for x in fp if x>0)/n_sim:.0%}")
+
+    print(f"\n── 最大ドローダウン ──")
+    print(f"  中央値:  -{pct(dd,50):,}円")
+    print(f"  90%ile:  -{pct(dd,90):,}円  （最悪ケースの10%）")
+
+    print(f"\n── 最大連敗 ──")
+    print(f"  中央値:  {pct(ms,50):.0f}連敗")
+    print(f"  90%ile:  {pct(ms,90):.0f}連敗")
+
+    if results["monthly_rois"]:
+        mr = results["monthly_rois"]
+        print(f"\n── 月次ROI分布 ──")
+        print(f"  中央値:  {pct(mr,50):.3f}")
+        print(f"  10%ile:  {pct(mr,10):.3f}  （悪い月の10%）")
+        print(f"  90%ile:  {pct(mr,90):.3f}  （良い月の10%）")
+        print(f"  ROI>1.0の月: {sum(1 for x in mr if x>1.0)/len(mr):.0%}")
+
+    bankrupt_rate = results["bankrupt"] / n_sim
+    flag = "🔴 要注意" if bankrupt_rate > 0.1 else ("🟡 注意" if bankrupt_rate > 0.05 else "🟢 安全")
+    print(f"\n── 破産率（資金-50%以上） ──")
+    print(f"  {bankrupt_rate:.1%}  {flag}")
+
+    print(f"\n{'='*55}")
+
+
 def _run_stats_analysis(csv_file: str = "hit_record.csv") -> None:
     """
     hit_record.csv から統計分析を表示する。
@@ -2888,6 +3171,16 @@ if __name__ == "__main__":
         help=f"荒れスコア閾値（デフォルト: {UPSET_SCORE_THRESHOLD}）",
     )
     parser.add_argument(
+        "--patterns",
+        action="store_true",
+        help="勝ちパターン自動抽出（ログから条件×ROIを分析）",
+    )
+    parser.add_argument(
+        "--monte-carlo",
+        action="store_true",
+        help="Monte Carloシミュレーション（長期資金リスク評価）",
+    )
+    parser.add_argument(
         "--stats",
         action="store_true",
         help="hit_record.csv のドローダウン・月次回収率・勝ちパターン分析を表示",
@@ -2905,6 +3198,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     UPSET_SCORE_THRESHOLD = args.threshold
+
+    if args.patterns:
+        _auto_extract_patterns("hit_record.csv")
+        import sys; sys.exit(0)
+
+    if getattr(args, "monte_carlo", False):
+        _monte_carlo_simulation("hit_record.csv")
+        import sys; sys.exit(0)
 
     if args.stats:
         _run_stats_analysis("hit_record.csv")
