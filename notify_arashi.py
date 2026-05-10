@@ -1927,7 +1927,7 @@ def _evaluate_bets(
         sorted_probs = sorted(ml_probs.values(), reverse=True)
         if len(sorted_probs) >= 2:
             top_p, second_p = sorted_probs[0], sorted_probs[1]
-            if top_p < second_p * 1.08:
+            if top_p < second_p * 1.03:   # 旧: 1.08（厳しすぎた）
                 # 軸なし = 運ゲー → スキップ
                 log.debug("軸候補なし（実力差不足）→ 見送り: top=%.3f 2nd=%.3f",
                           top_p, second_p)
@@ -1989,12 +1989,12 @@ def _evaluate_bets(
         return []
 
     # ── 見送り条件②: disagreement高すぎる（モデル意見割れ）──
-    if disagreement >= 0.80:
+    if disagreement >= 0.90:   # 旧: 0.80
         log.debug("disagreement高 → 見送り: %.2f", disagreement)
         return []
 
     # ── 見送り条件③: entropy高すぎる（完全ランダム）──────────
-    if entropy_norm >= 0.85:
+    if entropy_norm >= 0.92:   # 旧: 0.85
         log.debug("uncertainty高 → 見送り: entropy_norm=%.2f", entropy_norm)
         return []
 
@@ -2003,7 +2003,7 @@ def _evaluate_bets(
     if len(candidates) >= 2:
         top_ev    = candidates[0]["ev"]
         second_ev = candidates[1]["ev"]
-        if top_ev - second_ev < 0.08:
+        if top_ev - second_ev < 0.03:   # 旧: 0.08
             log.debug("EV差不足（中途半端）→ 見送り: top=%.3f 2nd=%.3f",
                       top_ev, second_ev)
             return []
@@ -2783,23 +2783,24 @@ def _run_main(race_date: str | None = None) -> None:
                 boats, weather, ml_probs or {}, score, has_exhibition
             )
             detail["品質スコア"] = f"{race_quality:.2f}"
-            if race_quality < 0.30:
+            if race_quality < 0.15:   # 旧: 0.30（厳しすぎた）
                 log.debug("品質不足: %s %dR quality=%.2f (%s)",
                           VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number,
                           race_quality, quality_skip_reason)
                 continue
 
-            # ── 気象条件フィルタ（複合条件で荒れやすさを判定）──────
+            # ── 気象条件フィルタ（緩和版）────────────────────────
             ws = weather.wind_speed      if weather else None
             wh = weather.wave_height     if weather else None
             wd = weather.wind_direction  if weather else None
 
             weather_bonus = 0
-            if ws is not None and ws >= 5.0:   weather_bonus += 1
-            if wh is not None and wh >= 5:     weather_bonus += 1
+            if ws is not None and ws >= 3.0:   weather_bonus += 1  # 3m以上（旧:5m）
+            if wh is not None and wh >= 3:     weather_bonus += 1  # 3cm以上（旧:5cm）
             if wd == "向":                     weather_bonus += 1
 
-            if weather_bonus < 2:
+            # 1つ以上でOK（旧:2つ以上）
+            if weather_bonus < 1:
                 log.debug("気象条件不足: %s %dR 風%.1f%s 波%s bonus=%d",
                           VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number,
                           ws or 0, wd or "-", wh or 0, weather_bonus)
