@@ -3,7 +3,3 @@ flask-cors
 gunicorn
 requests
 beautifulsoup4
-numpy
-pandas
-scikit-learn
-lightgbm
