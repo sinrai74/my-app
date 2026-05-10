@@ -2629,6 +2629,33 @@ def _run_main(race_date: str | None = None) -> None:
             sent_set = set(sf.read().splitlines())
     except Exception:
         sent_set = set()
+
+    # ── オッズ並列一括取得（逐次取得の遅さを解消）────────────
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    try:
+        from odds_fetch import fetch_odds as _fetch_odds
+        _race_date_str = str(race_date).replace("-", "")
+        _targets = [(item[0], item[1]) for item in race_list]
+
+        def _fetch_one(args):
+            vn, rno = args
+            try:
+                return (vn, rno), (_fetch_odds(rno, str(vn).zfill(2), _race_date_str) or {})
+            except Exception:
+                return (vn, rno), {}
+
+        log.info("オッズ並列取得: %d レース (8スレッド)", len(_targets))
+        _prefetched_odds: dict[tuple, dict] = {}
+        with ThreadPoolExecutor(max_workers=8) as _ex:
+            for future in as_completed(_ex.submit(_fetch_one, t) for t in _targets):
+                key, res = future.result()
+                _prefetched_odds[key] = res
+        hit = sum(1 for v in _prefetched_odds.values() if v)
+        log.info("オッズ取得完了: %d/%d レース取得成功", hit, len(_targets))
+    except Exception as _oe:
+        log.warning("オッズ並列取得失敗: %s → 逐次取得にフォールバック", _oe)
+        _prefetched_odds = {}
+
     for venue_num, race_number, boats, weather, *rest in race_list:
         race_grade = rest[1] if len(rest) > 1 else 0
         closed_at  = rest[0] if len(rest) > 0 else ""
@@ -2704,9 +2731,12 @@ def _run_main(race_date: str | None = None) -> None:
 
             if ml_probs:
                 try:
-                    from odds_fetch import fetch_odds
-                    race_date_str = str(race_date).replace("-", "")
-                    odds_map = fetch_odds(race_number, str(venue_num).zfill(2), race_date_str) or {}
+                    # 並列取得済みキャッシュから取得（なければ逐次フォールバック）
+                    odds_map = _prefetched_odds.get((venue_num, race_number), {})
+                    if not odds_map:
+                        from odds_fetch import fetch_odds
+                        _rds = str(race_date).replace("-", "")
+                        odds_map = fetch_odds(race_number, str(venue_num).zfill(2), _rds) or {}
                 except Exception as oe:
                     log.debug("オッズ取得失敗: %s", oe)
 
