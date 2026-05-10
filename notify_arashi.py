@@ -2616,8 +2616,8 @@ def _run_main(race_date: str | None = None) -> None:
     # ── exposure管理（型・レジーム別の偏り制限）────────────────
     # MAX_STYLE_EXPOSURE: 同じ race_type の通知は全体の35%まで
     # MAX_CLUSTER_EXPOSURE: 同じ cluster（レジーム×venue）の通知は3件まで
-    MAX_STYLE_EXPOSURE  = 0.35
-    MAX_CLUSTER_BETS    = 3
+    MAX_STYLE_EXPOSURE  = 0.60
+    MAX_CLUSTER_BETS    = 5
     style_count:   dict[str, int] = {}   # race_type → count
     cluster_count: dict[str, int] = {}   # "regime_venue" → count
     total_notified  = 0
