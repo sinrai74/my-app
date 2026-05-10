@@ -910,7 +910,7 @@ def calc_boat_score(
     # 波（強化）
     if weather and weather.wave_height is not None:
         wh = weather.wave_height
-        if wh >= 5:
+        if wh >= 3:
             score += (-2.0 if boat.lane == 1 else 1.0)
         elif wh >= 3:
             score += (-0.8 if boat.lane == 1 else 0.3)
@@ -1266,7 +1266,7 @@ def _build_why_bet(
             reasons.append(f"向かい風{ws:.0f}m")
         elif wd == "追" and ws >= 3:
             reasons.append(f"追い風{ws:.0f}m")
-        if wh >= 5:
+        if wh >= 3:
             reasons.append(f"波高{wh}cm")
 
     # 1号艇弱さ（詳細理由）
@@ -1758,7 +1758,7 @@ def _evaluate_bets(
 
         if ws >= 7.0 or wh >= 10:
             return "extreme_wind"
-        if upset_score >= 6.0 or ws >= 5.0:
+        if upset_score >= 6.0 or ws >= 3.0:
             return "rough"
         if is_night and upset_score < 4.0:
             return "night_stable"
@@ -2183,7 +2183,7 @@ def _check_race_quality(
         ws = weather.wind_speed or 0
         wh = weather.wave_height or 0
         wd = weather.wind_direction or ""
-        if (ws >= 5 and wd == "向") or wh >= 5:
+        if (ws >= 5 and wd == "向") or wh >= 3:
             quality += 0.20
         elif ws >= 3 or wh >= 3:
             quality += 0.10
