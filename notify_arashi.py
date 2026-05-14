@@ -76,7 +76,7 @@ VENUE_NAMES: dict[int, str] = {
 
 # ── 荒れスコアリング閾値 ────────────────────────────────────
 # スコアがこの値以上のレースのみ通知する
-UPSET_SCORE_THRESHOLD = 6.0   # デフォルト閾値
+UPSET_SCORE_THRESHOLD = 5.0   # デフォルト閾値
 
 # ── 場ごとの荒れスコア閾値 ────────────────────────────────────
 # 🔥超荒れ(4.8): 江戸川・平和島・戸田
@@ -910,7 +910,7 @@ def calc_boat_score(
     # 波（強化）
     if weather and weather.wave_height is not None:
         wh = weather.wave_height
-        if wh >= 3:
+        if wh >= 5:
             score += (-2.0 if boat.lane == 1 else 1.0)
         elif wh >= 3:
             score += (-0.8 if boat.lane == 1 else 0.3)
@@ -1266,7 +1266,7 @@ def _build_why_bet(
             reasons.append(f"向かい風{ws:.0f}m")
         elif wd == "追" and ws >= 3:
             reasons.append(f"追い風{ws:.0f}m")
-        if wh >= 3:
+        if wh >= 5:
             reasons.append(f"波高{wh}cm")
 
     # 1号艇弱さ（詳細理由）
@@ -1758,7 +1758,7 @@ def _evaluate_bets(
 
         if ws >= 7.0 or wh >= 10:
             return "extreme_wind"
-        if upset_score >= 6.0 or ws >= 3.0:
+        if upset_score >= 6.0 or ws >= 5.0:
             return "rough"
         if is_night and upset_score < 4.0:
             return "night_stable"
@@ -2183,7 +2183,7 @@ def _check_race_quality(
         ws = weather.wind_speed or 0
         wh = weather.wave_height or 0
         wd = weather.wind_direction or ""
-        if (ws >= 5 and wd == "向") or wh >= 3:
+        if (ws >= 5 and wd == "向") or wh >= 5:
             quality += 0.20
         elif ws >= 3 or wh >= 3:
             quality += 0.10
@@ -2616,8 +2616,8 @@ def _run_main(race_date: str | None = None) -> None:
     # ── exposure管理（型・レジーム別の偏り制限）────────────────
     # MAX_STYLE_EXPOSURE: 同じ race_type の通知は全体の35%まで
     # MAX_CLUSTER_EXPOSURE: 同じ cluster（レジーム×venue）の通知は3件まで
-    MAX_STYLE_EXPOSURE  = 0.60
-    MAX_CLUSTER_BETS    = 5
+    MAX_STYLE_EXPOSURE  = 0.35
+    MAX_CLUSTER_BETS    = 3
     style_count:   dict[str, int] = {}   # race_type → count
     cluster_count: dict[str, int] = {}   # "regime_venue" → count
     total_notified  = 0
