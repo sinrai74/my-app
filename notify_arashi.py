@@ -76,7 +76,7 @@ VENUE_NAMES: dict[int, str] = {
 
 # ── 荒れスコアリング閾値 ────────────────────────────────────
 # スコアがこの値以上のレースのみ通知する
-VERSION = "v1.0"
+VERSION = "v1.1"
 UPSET_SCORE_THRESHOLD = 6.0   # デフォルト閾値
 
 # ── 場ごとの荒れスコア閾値 ────────────────────────────────────
@@ -3136,7 +3136,7 @@ def _load_skip_conditions(csv_file: str = "hit_record.csv") -> list[dict]:
     try:
         with open(csv_file, "r", encoding="utf-8") as f:
             rows = list(_csv.DictReader(f))
-        valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明")]
+        valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明") and r.get("result_combo","") not in ("", "不明")]
         if len(valid) < 20 or not any(int(r.get(chr(104)+chr(105)+chr(116),0) or 0)==1 for r in valid):
             return []
         SKIP_KEYS = ["venue", "wind_dir", "race_type"]
@@ -3280,7 +3280,7 @@ def _print_dashboard(csv_file: str = "hit_record.csv") -> None:
 
     with open(csv_file, "r", encoding="utf-8") as f:
         rows = list(_csv.DictReader(f))
-    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明")]
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明") and r.get("result_combo","") not in ("", "不明")]
     if len(valid) < 5:
         print(f"  データ不足: {len(valid)}件"); return
 
@@ -3368,7 +3368,7 @@ def _auto_extract_patterns(csv_file: str = "hit_record.csv") -> None:
     with open(csv_file, "r", encoding="utf-8") as f:
         rows = list(_csv.DictReader(f))
 
-    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明")]
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明") and r.get("result_combo","") not in ("", "不明")]
     if len(valid) < 10:
         print(f"データ不足: {len(valid)}件（10件以上必要）")
         return
@@ -3497,7 +3497,7 @@ def _monte_carlo_simulation(
     with open(csv_file, "r", encoding="utf-8") as f:
         rows = list(_csv.DictReader(f))
 
-    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明")]
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明") and r.get("result_combo","") not in ("", "不明")]
     if len(valid) < 10:
         print(f"データ不足: {len(valid)}件")
         return
@@ -3653,7 +3653,7 @@ def _run_stats_analysis(csv_file: str = "hit_record.csv") -> None:
     with open(csv_file, "r", encoding="utf-8") as f:
         rows = list(_csv.DictReader(f))
 
-    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明")]
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明") and r.get("result_combo","") not in ("", "不明")]
     if len(valid) < 5:
         print(f"データ不足: {len(valid)}件")
         return
