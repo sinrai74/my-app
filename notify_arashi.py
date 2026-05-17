@@ -76,6 +76,7 @@ VENUE_NAMES: dict[int, str] = {
 
 # ── 荒れスコアリング閾値 ────────────────────────────────────
 # スコアがこの値以上のレースのみ通知する
+VERSION = "v1.0"
 UPSET_SCORE_THRESHOLD = 6.0   # デフォルト閾値
 
 # ── 場ごとの荒れスコア閾値 ────────────────────────────────────
@@ -2226,7 +2227,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         top_ev_str = f" EV:{result.recommended_bets[0]['ev']:.2f}"
 
     subject = (
-        f"【荒れ検知】{result.venue_name} {result.race_number}R "
+        f"[{VERSION}]【荒れ検知】{result.venue_name} {result.race_number}R "
         f"{label} (score:{result.upset_score:.1f}{top_ev_str})"
     )
 
@@ -2245,7 +2246,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
             pass
 
     lines = [
-        f"【荒れ検知】{result.venue_name} {result.race_number}R {grade_label}{closed_str}".strip(),
+        f"[{VERSION}]【荒れ検知】{result.venue_name} {result.race_number}R {grade_label}{closed_str}".strip(),
         f"危険度: {label}  スコア: {result.upset_score:.1f}",
         "",
     ]
