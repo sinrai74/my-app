@@ -2631,7 +2631,7 @@ def _run_main(race_date: str | None = None) -> None:
     style_count:   dict[str, int] = {}   # race_type → count
     cluster_count: dict[str, int] = {}   # "regime_venue" → count
     total_notified  = 0
-    MAX_DAILY_BETS  = 12   # 1日の最大通知数（絶対上限）
+    MAX_DAILY_BETS  = 9999   # 1日の最大通知数（絶対上限）
 
     sent_file = f"sent_{race_date}.txt"
     try:
