@@ -76,7 +76,6 @@ VENUE_NAMES: dict[int, str] = {
 
 # ── 荒れスコアリング閾値 ────────────────────────────────────
 # スコアがこの値以上のレースのみ通知する
-VERSION = "v1.1"
 UPSET_SCORE_THRESHOLD = 6.0   # デフォルト閾値
 
 # ── 場ごとの荒れスコア閾値 ────────────────────────────────────
@@ -1569,7 +1568,7 @@ def _evaluate_bets(
                 rows = list(_csv.DictReader(f))
             valid = [r for r in rows
                      if r.get("pred_prob") and r.get("hit") not in ("",None,"-1")]
-            if len(valid) < 20 or not any(int(r.get(chr(104)+chr(105)+chr(116),0) or 0)==1 for r in valid):
+            if len(valid) < 20:
                 return []
             bands = [(0,0.02),(0.02,0.03),(0.03,0.05),(0.05,0.08),(0.08,1.0)]
             table = []
@@ -2227,7 +2226,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         top_ev_str = f" EV:{result.recommended_bets[0]['ev']:.2f}"
 
     subject = (
-        f"[{VERSION}]【荒れ検知】{result.venue_name} {result.race_number}R "
+        f"【荒れ検知】{result.venue_name} {result.race_number}R "
         f"{label} (score:{result.upset_score:.1f}{top_ev_str})"
     )
 
@@ -2246,7 +2245,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
             pass
 
     lines = [
-        f"[{VERSION}]【荒れ検知】{result.venue_name} {result.race_number}R {grade_label}{closed_str}".strip(),
+        f"【荒れ検知】{result.venue_name} {result.race_number}R {grade_label}{closed_str}".strip(),
         f"危険度: {label}  スコア: {result.upset_score:.1f}",
         "",
     ]
@@ -2531,7 +2530,7 @@ def _run_main(race_date: str | None = None) -> None:
     log.info("処理対象: %d レース（締切前: %d / 全体: %d）", len(filtered), len(filtered), len(race_list))
     race_list = filtered
 
-    # ── 直前情報一括取得（展示タイムなし・締切15分以内のみ）──────
+    # ── 直前情報一括取得（展示タイムなし・締切22分以内のみ）──────
     # API優先 → 失敗時のみ BS4 fallback（Playwright不使用）
     pw_targets = []
     for item in race_list:
@@ -2543,14 +2542,14 @@ def _run_main(race_date: str | None = None) -> None:
             try:
                 closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
                 minutes_to_close = (closed_dt - now).total_seconds() / 60
-                if 0 < minutes_to_close <= 15:
+                if 0 < minutes_to_close <= 22:
                     pw_targets.append((vn, rno))
             except Exception:
                 pass
 
     pw_cache = {}
     if pw_targets:
-        log.info("直前情報取得: %d レース（締切15分以内）", len(pw_targets))
+        log.info("直前情報取得: %d レース（締切22分以内）", len(pw_targets))
         race_date_str = str(race_date).replace("-", "")
         pw_cache = _get_beforeinfo_bulk(pw_targets, race_date_str)
         log.info("直前情報取得完了: %d レース", len(pw_cache))
@@ -2632,7 +2631,7 @@ def _run_main(race_date: str | None = None) -> None:
     style_count:   dict[str, int] = {}   # race_type → count
     cluster_count: dict[str, int] = {}   # "regime_venue" → count
     total_notified  = 0
-    MAX_DAILY_BETS  = 9999   # 1日の最大通知数（絶対上限）
+    MAX_DAILY_BETS  = 12   # 1日の最大通知数（絶対上限）
 
     sent_file = f"sent_{race_date}.txt"
     try:
@@ -2675,7 +2674,7 @@ def _run_main(race_date: str | None = None) -> None:
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
         has_exhibition = len(ex_times) > 0
 
-        # 展示タイムなしの場合は締切15分以内のレースのみ通知
+        # 展示タイムなしの場合は締切22分以内のレースのみ通知
         if not has_exhibition and closed_at:
             try:
                 closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
@@ -3136,8 +3135,8 @@ def _load_skip_conditions(csv_file: str = "hit_record.csv") -> list[dict]:
     try:
         with open(csv_file, "r", encoding="utf-8") as f:
             rows = list(_csv.DictReader(f))
-        valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明") and r.get("result_combo","") not in ("", "不明")]
-        if len(valid) < 20 or not any(int(r.get(chr(104)+chr(105)+chr(116),0) or 0)==1 for r in valid):
+        valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
+        if len(valid) < 20:
             return []
         SKIP_KEYS = ["venue", "wind_dir", "race_type"]
         skip_conds = []
@@ -3280,7 +3279,7 @@ def _print_dashboard(csv_file: str = "hit_record.csv") -> None:
 
     with open(csv_file, "r", encoding="utf-8") as f:
         rows = list(_csv.DictReader(f))
-    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明") and r.get("result_combo","") not in ("", "不明")]
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
     if len(valid) < 5:
         print(f"  データ不足: {len(valid)}件"); return
 
@@ -3368,7 +3367,7 @@ def _auto_extract_patterns(csv_file: str = "hit_record.csv") -> None:
     with open(csv_file, "r", encoding="utf-8") as f:
         rows = list(_csv.DictReader(f))
 
-    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明") and r.get("result_combo","") not in ("", "不明")]
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
     if len(valid) < 10:
         print(f"データ不足: {len(valid)}件（10件以上必要）")
         return
@@ -3497,7 +3496,7 @@ def _monte_carlo_simulation(
     with open(csv_file, "r", encoding="utf-8") as f:
         rows = list(_csv.DictReader(f))
 
-    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明") and r.get("result_combo","") not in ("", "不明")]
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
     if len(valid) < 10:
         print(f"データ不足: {len(valid)}件")
         return
@@ -3653,7 +3652,7 @@ def _run_stats_analysis(csv_file: str = "hit_record.csv") -> None:
     with open(csv_file, "r", encoding="utf-8") as f:
         rows = list(_csv.DictReader(f))
 
-    valid = [r for r in rows if r.get("hit") not in ("", None, "-1") and r.get("result_combo","") not in ("", "不明") and r.get("result_combo","") not in ("", "不明")]
+    valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
     if len(valid) < 5:
         print(f"データ不足: {len(valid)}件")
         return
