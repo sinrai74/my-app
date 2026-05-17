@@ -2226,7 +2226,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         top_ev_str = f" EV:{result.recommended_bets[0]['ev']:.2f}"
 
     subject = (
-        f"【荒れ検知】{result.venue_name} {result.race_number}R "
+        f"[{VERSION}]【荒れ検知】{result.venue_name} {result.race_number}R "
         f"{label} (score:{result.upset_score:.1f}{top_ev_str})"
     )
 
@@ -2530,7 +2530,7 @@ def _run_main(race_date: str | None = None) -> None:
     log.info("処理対象: %d レース（締切前: %d / 全体: %d）", len(filtered), len(filtered), len(race_list))
     race_list = filtered
 
-    # ── 直前情報一括取得（展示タイムなし・締切22分以内のみ）──────
+    # ── 直前情報一括取得（展示タイムなし・締切15分以内のみ）──────
     # API優先 → 失敗時のみ BS4 fallback（Playwright不使用）
     pw_targets = []
     for item in race_list:
@@ -2542,14 +2542,14 @@ def _run_main(race_date: str | None = None) -> None:
             try:
                 closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
                 minutes_to_close = (closed_dt - now).total_seconds() / 60
-                if 0 < minutes_to_close <= 22:
+                if 0 < minutes_to_close <= 15:
                     pw_targets.append((vn, rno))
             except Exception:
                 pass
 
     pw_cache = {}
     if pw_targets:
-        log.info("直前情報取得: %d レース（締切22分以内）", len(pw_targets))
+        log.info("直前情報取得: %d レース（締切15分以内）", len(pw_targets))
         race_date_str = str(race_date).replace("-", "")
         pw_cache = _get_beforeinfo_bulk(pw_targets, race_date_str)
         log.info("直前情報取得完了: %d レース", len(pw_cache))
@@ -2640,12 +2640,30 @@ def _run_main(race_date: str | None = None) -> None:
     except Exception:
         sent_set = set()
 
-    # ── オッズ並列一括取得（逐次取得の遅さを解消）────────────
+    # ── オッズ並列取得（締切前・捨て条件除外済みの候補のみ）────
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    _race_date_str = str(race_date).replace("-", "")
+
+    # 締切前かつ捨て条件外のレースだけ絞る
+    _pre_targets = []
+    for item in race_list:
+        vn, rno = item[0], item[1]
+        closed_at_pre = item[4] if len(item) > 4 else ""
+        if closed_at_pre:
+            try:
+                _cdt = datetime.strptime(closed_at_pre, "%Y-%m-%d %H:%M:%S")
+                if (_cdt - now).total_seconds() < 0:
+                    continue   # 締切済み
+            except Exception:
+                pass
+        _vname = VENUE_NAMES.get(vn, f"場{vn}")
+        _skip_pre, _ = _should_skip_by_condition(_vname, "", "", _skip_conds)
+        if _skip_pre:
+            continue
+        _pre_targets.append((vn, rno))
+
     try:
         from odds_fetch import fetch_odds as _fetch_odds
-        _race_date_str = str(race_date).replace("-", "")
-        _targets = [(item[0], item[1]) for item in race_list]
 
         def _fetch_one(args):
             vn, rno = args
@@ -2654,14 +2672,15 @@ def _run_main(race_date: str | None = None) -> None:
             except Exception:
                 return (vn, rno), {}
 
-        log.info("オッズ並列取得: %d レース (8スレッド)", len(_targets))
+        log.info("オッズ並列取得: %d レース (8スレッド) ← 事前フィルタ済み %d→%d件",
+                 len(_pre_targets), len(race_list), len(_pre_targets))
         _prefetched_odds: dict[tuple, dict] = {}
         with ThreadPoolExecutor(max_workers=8) as _ex:
-            for future in as_completed(_ex.submit(_fetch_one, t) for t in _targets):
+            for future in as_completed(_ex.submit(_fetch_one, t) for t in _pre_targets):
                 key, res = future.result()
                 _prefetched_odds[key] = res
         hit = sum(1 for v in _prefetched_odds.values() if v)
-        log.info("オッズ取得完了: %d/%d レース取得成功", hit, len(_targets))
+        log.info("オッズ取得完了: %d/%d レース取得成功", hit, len(_pre_targets))
     except Exception as _oe:
         log.warning("オッズ並列取得失敗: %s → 逐次取得にフォールバック", _oe)
         _prefetched_odds = {}
@@ -2674,7 +2693,7 @@ def _run_main(race_date: str | None = None) -> None:
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
         has_exhibition = len(ex_times) > 0
 
-        # 展示タイムなしの場合は締切22分以内のレースのみ通知
+        # 展示タイムなしの場合は締切15分以内のレースのみ通知
         if not has_exhibition and closed_at:
             try:
                 closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
