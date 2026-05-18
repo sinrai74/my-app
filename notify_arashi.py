@@ -1568,7 +1568,7 @@ def _evaluate_bets(
                 rows = list(_csv.DictReader(f))
             valid = [r for r in rows
                      if r.get("pred_prob") and r.get("hit") not in ("",None,"-1")]
-            if len(valid) < 20:
+            if len(valid) < 50 or not any(int(r.get("hit",-1) or -1)==1 for r in valid):
                 return []
             bands = [(0,0.02),(0.02,0.03),(0.03,0.05),(0.05,0.08),(0.08,1.0)]
             table = []
@@ -3155,7 +3155,7 @@ def _load_skip_conditions(csv_file: str = "hit_record.csv") -> list[dict]:
         with open(csv_file, "r", encoding="utf-8") as f:
             rows = list(_csv.DictReader(f))
         valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
-        if len(valid) < 20:
+        if len(valid) < 50 or not any(int(r.get("hit",-1) or -1)==1 for r in valid):
             return []
         SKIP_KEYS = ["venue", "wind_dir", "race_type"]
         skip_conds = []
