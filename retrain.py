@@ -74,7 +74,7 @@ def download_race_data(target_date: date) -> tuple[Path | None, Path | None]:
         for lzh, txt in [(b_lzh, b_txt), (k_lzh, k_txt)]:
             if lzh.exists():
                 result = subprocess.run(
-                    ["7z", "x", str(lzh), f"-o{DATA_DIR}", "-y"],
+                    ["C:/Program Files/7-Zip/7z.exe", "x", str(lzh), f"-o{DATA_DIR}", "-y"],
                     capture_output=True, timeout=30
                 )
                 lzh.unlink(missing_ok=True)
