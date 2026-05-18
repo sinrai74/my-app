@@ -60,8 +60,8 @@ def download_race_data(target_date: date) -> tuple[Path | None, Path | None]:
         return b_txt, k_txt
 
     # ダウンロード
-    b_url = f"{BASE_URL}/b{date_str}.lzh"
-    k_url = f"{BASE_URL}/k{date_str}.lzh"
+    b_url = f"http://www1.mbrace.or.jp/od2/B/{year}{month}/b{date_str}.lzh"
+    k_url = f"http://www1.mbrace.or.jp/od2/K/{year}{month}/k{date_str}.lzh"
 
     b_ok = download_file(b_url, b_lzh)
     k_ok = download_file(k_url, k_lzh)
