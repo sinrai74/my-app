@@ -2737,6 +2737,8 @@ def _run_main(race_date: str | None = None) -> None:
 
             # ── 捨て条件チェック（ログから自動抽出した負け条件）──
             venue_name_str = VENUE_NAMES.get(venue_num, f"場{venue_num}")
+            if venue_name_str in VENUE_FORCE_SKIP:
+                continue
             wd_str = weather.wind_direction if weather else ""
             rt_str = detail.get("race_type", "")   # calculate_upset_scoreから取得できれば
             should_skip, skip_reason = _should_skip_by_condition(
