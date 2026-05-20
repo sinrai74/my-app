@@ -1568,7 +1568,7 @@ def _evaluate_bets(
                 rows = list(_csv.DictReader(f))
             valid = [r for r in rows
                      if r.get("pred_prob") and r.get("hit") not in ("",None,"-1")]
-            if len(valid) < 50 or not any(int(r.get("hit",-1) or -1)==1 for r in valid):
+            if len(valid) < 20:
                 return []
             bands = [(0,0.02),(0.02,0.03),(0.03,0.05),(0.05,0.08),(0.08,1.0)]
             table = []
@@ -2226,7 +2226,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         top_ev_str = f" EV:{result.recommended_bets[0]['ev']:.2f}"
 
     subject = (
-        f"[v1.3]【荒れ検知】{result.venue_name} {result.race_number}R "
+        f"[{VERSION}]【荒れ検知】{result.venue_name} {result.race_number}R "
         f"{label} (score:{result.upset_score:.1f}{top_ev_str})"
     )
 
@@ -2631,7 +2631,7 @@ def _run_main(race_date: str | None = None) -> None:
     style_count:   dict[str, int] = {}   # race_type → count
     cluster_count: dict[str, int] = {}   # "regime_venue" → count
     total_notified  = 0
-    MAX_DAILY_BETS  = 9999   # 1日の最大通知数（絶対上限）
+    MAX_DAILY_BETS  = 12   # 1日の最大通知数（絶対上限）
 
     sent_file = f"sent_{race_date}.txt"
     try:
@@ -2737,8 +2737,6 @@ def _run_main(race_date: str | None = None) -> None:
 
             # ── 捨て条件チェック（ログから自動抽出した負け条件）──
             venue_name_str = VENUE_NAMES.get(venue_num, f"場{venue_num}")
-            if venue_name_str in VENUE_FORCE_SKIP:
-                continue
             wd_str = weather.wind_direction if weather else ""
             rt_str = detail.get("race_type", "")   # calculate_upset_scoreから取得できれば
             should_skip, skip_reason = _should_skip_by_condition(
@@ -3157,7 +3155,7 @@ def _load_skip_conditions(csv_file: str = "hit_record.csv") -> list[dict]:
         with open(csv_file, "r", encoding="utf-8") as f:
             rows = list(_csv.DictReader(f))
         valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
-        if len(valid) < 50 or not any(int(r.get("hit",-1) or -1)==1 for r in valid):
+        if len(valid) < 20:
             return []
         SKIP_KEYS = ["venue", "wind_dir", "race_type"]
         skip_conds = []
