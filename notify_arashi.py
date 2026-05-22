@@ -78,6 +78,10 @@ VENUE_NAMES: dict[int, str] = {
 # スコアがこの値以上のレースのみ通知する
 UPSET_SCORE_THRESHOLD = 6.0   # デフォルト閾値
 
+# ── 強制スキップ場 ────────────────────────────────────────────
+# この場コードのレースは理由に関わらず通知しない
+VENUE_FORCE_SKIP: set[int] = {18}   # 18=徳山
+
 # ── 場ごとの荒れスコア閾値 ────────────────────────────────────
 # 🔥超荒れ(4.8): 江戸川・平和島・戸田
 # 🌪️荒れやすい(4.8): 宮島・若松・下関・唐津
@@ -1171,12 +1175,13 @@ def calculate_upset_score(
     # ── 1号艇等級フィルタ ─────────────────────────────────────
     # A1: 逃げ率が高いため通知しない（スコアを0にする）
     # A2: やや強いため-1.5のペナルティ
+    grade_filter_note = ""
     if boat1 and boat1.racer_class == "A1":
         upset_score = 0.0
-        detail["等級フィルタ"] = "1号艇A1 → スキップ"
+        grade_filter_note = "1号艇A1 → スキップ"
     elif boat1 and boat1.racer_class == "A2":
         upset_score = max(upset_score - 1.5, 0.0)
-        detail["等級フィルタ"] = f"1号艇A2 → -1.5"
+        grade_filter_note = "1号艇A2 → -1.5"
 
     target = sorted(other_probs, key=other_probs.get, reverse=True)[:2]
 
@@ -1193,6 +1198,8 @@ def calculate_upset_score(
         "レース種別":  grade_names.get(race_grade, f'grade{race_grade}'),
         "複合条件":    f"{complex_trigger}個",
     }
+    if grade_filter_note:
+        detail["等級フィルタ"] = grade_filter_note
 
     return upset_score, detail, target
 
@@ -2705,6 +2712,12 @@ def _run_main(race_date: str | None = None) -> None:
                     continue
             except Exception:
                 pass
+        # ── 強制スキップ場 ────────────────────────────────────────
+        if venue_num in VENUE_FORCE_SKIP:
+            log.debug("強制スキップ: %s %dR",
+                      VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number)
+            continue
+
         try:
             # ナイター場判定（場コード: 4平和島 6浜名湖 12住之江 17宮島 20若松 21芦屋 22福岡 23唐津 24大村）
             NIGHT_VENUES = {4, 6, 12, 17, 20, 21, 22, 23, 24}
