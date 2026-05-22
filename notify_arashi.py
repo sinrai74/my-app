@@ -2532,8 +2532,11 @@ def _run_main(race_date: str | None = None) -> None:
 
     # ── 直前情報一括取得（展示タイムなし・締切15分以内のみ）──────
     # API優先 → 失敗時のみ BS4 fallback（Playwright不使用）
-    pw_targets = []
-    for item in race_list:
+    pw_cache = {}
+    log.info("直前情報取得: スキップ")
+    if False:
+     pw_targets = []
+     for item in race_list:
         vn, rno, boats = item[0], item[1], item[2]
         closed_at = item[4] if len(item) > 4 else ""
         if any(b.ex_time and b.ex_time > 0 for b in boats):
