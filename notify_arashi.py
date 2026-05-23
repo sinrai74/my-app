@@ -562,6 +562,9 @@ def fetch_programs(race_date: str) -> list[dict]:
     url = f"{PROGRAMS_URL}/{race_date[:4]}/{race_date}.json"
     data = _safe_get(url)
     if data is None:
+        log.info("日付URL 404 → today.json にフォールバック (date=%s)", race_date)
+        data = _safe_get(f"{PROGRAMS_URL}/today.json")
+    if data is None:
         return []
     programs = data.get("programs", [])
     log.info("出走表取得: %d レース (date=%s)", len(programs), race_date)
