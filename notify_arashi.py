@@ -2560,6 +2560,7 @@ def _run_main(race_date: str | None = None) -> None:
             except Exception:
                 pass
 
+    pw_targets = []
     pw_cache = {}
     if pw_targets:
         log.info("直前情報取得: %d レース（締切15分以内）", len(pw_targets))
