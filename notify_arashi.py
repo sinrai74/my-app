@@ -2663,7 +2663,7 @@ def _run_main(race_date: str | None = None) -> None:
     for item in race_list:
         vn, rno = item[0], item[1]
         closed_at_pre = item[4] if len(item) > 4 else ""
-        if closed_at_pre:
+        if closed_at_pre and not skip_filter:
             try:
                 _cdt = datetime.strptime(closed_at_pre, "%Y-%m-%d %H:%M:%S")
                 if (_cdt - now).total_seconds() < 0:
@@ -2707,8 +2707,8 @@ def _run_main(race_date: str | None = None) -> None:
         ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
         has_exhibition = len(ex_times) > 0
 
-        # 展示タイムなしの場合は締切15分以内のレースのみ通知
-        if not has_exhibition and closed_at:
+        # 展示タイムなしの場合は締切15分以内のレースのみ通知（SKIP_TIME_FILTER=1で無効化）
+        if not has_exhibition and closed_at and not skip_filter:
             try:
                 closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
                 minutes_to_close = (closed_dt - now).total_seconds() / 60
