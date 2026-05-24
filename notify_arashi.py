@@ -1372,6 +1372,7 @@ def _evaluate_bets(
     MIN_PROB = 0.020
     MAX_ODDS = 80
     MAX_BETS = 5
+    MAX_FULL_FADE = 2   # 1号艇完全飛び（1を含まない買い目）の上限点数
 
     if not has_exhibition:
         EV_LOW   += 0.20
@@ -1981,6 +1982,34 @@ def _evaluate_bets(
 
         ev_threshold = EV_MID if odds >= 40 else EV_LOW
         ev = prob * odds
+
+        # ─────────────────────────────────────────────────────────
+        # 1号艇2・3着残り補正（実戦向け）
+        # ─────────────────────────────────────────────────────────
+        parts = combo.split("-")
+        first, second, third = map(int, parts)
+        boat1 = next((b for b in boats if b.lane == 1), None) if boats else None
+        if boat1 and first != 1 and 1 in (second, third):
+            remain_bonus = 1.0
+            if boat1.win_rate and boat1.win_rate >= 5.0:
+                remain_bonus += 0.10
+            if boat1.racer_class == "A1":
+                remain_bonus += 0.20
+            elif boat1.racer_class == "A2":
+                remain_bonus += 0.10
+            if boat1.ex_st is not None and boat1.ex_st <= 0.18:
+                remain_bonus += 0.10
+            if has_exhibition and boat1.ex_time:
+                ex_sorted = sorted(
+                    [b.ex_time for b in boats if b.ex_time and b.ex_time > 0]
+                )
+                if boat1.ex_time in ex_sorted:
+                    rank1 = ex_sorted.index(boat1.ex_time) + 1
+                    if rank1 <= 3:
+                        remain_bonus += 0.10
+            ev   *= remain_bonus
+            prob *= remain_bonus
+
         if ev < ev_threshold:
             continue
 
@@ -2039,6 +2068,19 @@ def _evaluate_bets(
         top.append(c)
         if len(top) >= MAX_BETS:
             break
+
+    # ── 1号艇完全飛び上限制御（MAX_FULL_FADE）─────────────────
+    fade_count = 0
+    filtered_top = []
+    for c in top:
+        parts = c["combo"].split("-")
+        has_boat1 = "1" in parts
+        if not has_boat1:
+            if fade_count >= MAX_FULL_FADE:
+                continue
+            fade_count += 1
+        filtered_top.append(c)
+    top = filtered_top
 
     # ── ベット制御（信頼度連動3段階）+ why_bet / race_type / confidence 付与 ──
     race_type = _classify_race_type(
