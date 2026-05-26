@@ -3217,7 +3217,8 @@ def _load_skip_conditions(csv_file: str = "hit_record.csv") -> list[dict]:
         with open(csv_file, "r", encoding="utf-8") as f:
             rows = list(_csv.DictReader(f))
         valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
-        if len(valid) < 20:
+        valid_hit = [r for r in valid if int(r.get("hit", 0) or 0) == 1]
+        if len(valid_hit) < 20:
             return []
         SKIP_KEYS = ["venue", "wind_dir", "race_type"]
         skip_conds = []
