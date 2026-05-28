@@ -2010,7 +2010,12 @@ def _evaluate_bets(
             ev   *= remain_bonus
             prob *= remain_bonus
 
-        if ev < ev_threshold:
+        # 1号艇絡み（2・3着）はEV閾値を緩和
+        effective_threshold = ev_threshold
+        parts_check = combo.split("-")
+        if parts_check[0] != "1" and "1" in parts_check[1:]:
+            effective_threshold *= 0.85
+        if ev < effective_threshold:
             continue
 
         # ── 複合スコア（EVを単独使用しない）────────────────
