@@ -3061,9 +3061,46 @@ def _run_main(race_date: str | None = None) -> None:
                 cluster_count[cluster_key]  = cluster_count.get(cluster_key, 0) + 1
                 # 送信済みに記録
                 sent_set.add(notify_key)
+                # 予測データをJSON Lines形式でsent_fileに保存
+                import json as _json
+                _pred_entry = {
+                    "key":        notify_key,
+                    "combo":      best["combo"]          if recommended else "",
+                    "odds":       best["odds"]           if recommended else 0,
+                    "prob":       best["prob"]           if recommended else 0,
+                    "ev":         best["ev"]             if recommended else 0,
+                    "confidence": best.get("confidence", 0) if recommended else 0,
+                    "why_bet":    best.get("why_bet", [])   if recommended else [],
+                    "race_type":  best.get("race_type", "") if recommended else "",
+                    "upset_score": round(score, 3),
+                    "venue":      VENUE_NAMES.get(venue_num, f"場{venue_num}"),
+                    "venue_num":  venue_num,
+                    "race":       race_number,
+                    "night":      int(venue_num in {4,6,12,17,20,21,22,23,24}),
+                    "wind_speed": weather.wind_speed      if weather else None,
+                    "wind_dir":   weather.wind_direction  if weather else None,
+                    "wave":       weather.wave_height     if weather else None,
+                }
                 try:
-                    with open(sent_file, "w") as sf:
-                        sf.write("\n".join(sent_set))
+                    _sent_lines = []
+                    _keys_seen = set()
+                    if os.path.exists(sent_file):
+                        with open(sent_file, "r", encoding="utf-8") as sf:
+                            for _line in sf:
+                                _line = _line.strip()
+                                if not _line:
+                                    continue
+                                try:
+                                    _obj = _json.loads(_line)
+                                    _keys_seen.add(_obj.get("key",""))
+                                    _sent_lines.append(_line)
+                                except Exception:
+                                    _keys_seen.add(_line)
+                                    _sent_lines.append(_line)
+                    if notify_key not in _keys_seen:
+                        _sent_lines.append(_json.dumps(_pred_entry, ensure_ascii=False))
+                    with open(sent_file, "w", encoding="utf-8") as sf:
+                        sf.write("\n".join(_sent_lines))
                     # GitHub Actions上のみgit操作（ローカル実行時はスキップ）
                     gh_token = os.getenv("GITHUB_TOKEN", "")
                     gh_repo  = os.getenv("GITHUB_REPO", "sinrai74/my-app")
@@ -4017,31 +4054,35 @@ def _check_yesterday_results(today_date: str) -> None:
         if not os.path.exists(sent_file):
             return
 
-        with open(sent_file, "r") as f:
-            sent_keys = [l.strip() for l in f if l.strip()]
+        import json as _json
+        sent_entries = []
+        with open(sent_file, "r", encoding="utf-8") as f:
+            for _line in f:
+                _line = _line.strip()
+                if not _line:
+                    continue
+                try:
+                    _obj = _json.loads(_line)
+                    sent_entries.append(_obj)
+                except Exception:
+                    # 旧形式（キーのみ）
+                    sent_entries.append({"key": _line})
 
-        if not sent_keys:
+        if not sent_entries:
             return
 
-        log.info("前日結果照合: %d レース", len(sent_keys))
+        log.info("前日結果照合: %d レース", len(sent_entries))
         records = []
-        for key in sent_keys:
+        for entry in sent_entries:
+            key = entry.get("key", "")
             parts = key.replace("_ex", "").split("_")
             if len(parts) != 3:
                 continue
             _, venue_num, race_number = parts
             result = _fetch_race_result(int(venue_num), int(race_number), yesterday)
 
-            # pred_file から全フィールド読み込み
-            pred_file = f"pred_{yesterday}_{venue_num}_{race_number}.json"
-            pd_data: dict = {}
-            if os.path.exists(pred_file):
-                try:
-                    import json as _json
-                    with open(pred_file) as pf:
-                        pd_data = _json.load(pf)
-                except Exception:
-                    pass
+            # sent_fileのJSONから直接読み込み（pred_*.jsonは不要）
+            pd_data: dict = entry
 
             pred_combo = pd_data.get("combo", "")
             pred_prob  = pd_data.get("prob", "")
