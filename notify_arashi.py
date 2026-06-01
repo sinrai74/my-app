@@ -4100,16 +4100,21 @@ def _check_yesterday_results(today_date: str) -> None:
             # sent_fileのJSONから直接読み込み（pred_*.jsonは不要）
             pd_data: dict = entry
 
-            pred_combo = pd_data.get("combo", "")
+            pred_combo = pd_data.get("combo", "")       # ベスト1点
+            buy_list   = pd_data.get("buy", [])           # 全買い目リスト
             pred_prob  = pd_data.get("prob", "")
             pred_ev    = pd_data.get("ev", "")
             pred_odds  = pd_data.get("odds", 0)
+            n_bets     = max(1, len(buy_list)) if buy_list else 1
 
             result_combo = result["combo"] if result else "不明"
             payout       = result["payout"] if result else 0
-            hit          = 1 if pred_combo and result_combo == pred_combo else 0
-            # 利益 = 的中時: 払戻 - 100円 / 外れ: -100円
-            profit = (payout - 100) if hit else -100
+            # 全買い目のどれかが当たれば的中
+            all_combos = buy_list if buy_list else ([pred_combo] if pred_combo else [])
+            hit        = 1 if result_combo != "不明" and result_combo in all_combos else 0
+            # 利益 = 的中時: 払戻 - (買い目数×100円) / 外れ: -(買い目数×100円)
+            cost   = n_bets * 100
+            profit = (payout - cost) if hit else -cost
 
             # pred_fileに結果を書き戻す（ファイルが存在する場合のみ）
             pred_file = f"pred_{yesterday}_{venue_num}_{race_number}.json"
