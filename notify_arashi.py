@@ -3086,6 +3086,7 @@ def _run_main(race_date: str | None = None) -> None:
                     "key":        notify_key,
                     "combo":      best["combo"]          if recommended else "",
                     "buy":        [b["combo"] for b in recommended] if recommended else [],
+                    "buy_amounts": [b.get("amount", 100) for b in recommended] if recommended else [],
                     "odds":       best["odds"]           if recommended else 0,
                     "prob":       best["prob"]           if recommended else 0,
                     "ev":         best["ev"]             if recommended else 0,
@@ -3293,9 +3294,22 @@ def _load_skip_conditions(csv_file: str = "hit_record.csv") -> list[dict]:
                 subset = [r for r in valid if str(r.get(key,"") or "") == val]
                 if len(subset) < 5:
                     continue
-                pay = sum(int(r.get("payout",0) or 0) for r in subset
-                          if int(r.get("hit",0) or 0))
-                roi = pay / (len(subset)*100) if subset else 0
+                def _c(r):
+                    try:
+                        c = r.get("cost")
+                        if c not in (None, ""): return int(c)
+                        return max(1, int(r.get("n_bets", 1) or 1)) * 100
+                    except: return 100
+                def _p(r):
+                    try:
+                        p = r.get("profit")
+                        if p not in (None, ""): return int(p)
+                    except: pass
+                    pay = int(r.get("payout",0) or 0) if int(r.get("hit",0) or 0) else 0
+                    return pay - _c(r)
+                _cost = sum(_c(r) for r in subset)
+                _prof = sum(_p(r) for r in subset)
+                roi = (_cost + _prof) / _cost if _cost > 0 else 0
                 if roi < 0.50:
                     skip_conds.append({"key":key,"val":val,"roi":round(roi,3),"n":len(subset)})
                     log.info("捨て条件登録: %s=%s (ROI=%.2f n=%d)", key, val, roi, len(subset))
@@ -3432,28 +3446,40 @@ def _print_dashboard(csv_file: str = "hit_record.csv") -> None:
         print(f"  データ不足: {len(valid)}件"); return
 
     def _cost(r):
-        try: return max(1, int(r.get("n_bets", 1) or 1)) * 100
+        # costカラム優先、なければn_bets*100、それもなければ100
+        try:
+            c = r.get("cost")
+            if c not in (None, ""): return int(c)
+            return max(1, int(r.get("n_bets", 1) or 1)) * 100
         except: return 100
+    def _profit(r):
+        # profitカラム優先（実額計算済み）
+        try:
+            p = r.get("profit")
+            if p not in (None, ""): return int(p)
+        except: pass
+        # フォールバック: payout - cost
+        pay = int(r.get("payout",0) or 0) if int(r.get("hit",0) or 0) else 0
+        return pay - _cost(r)
     total_bet  = sum(_cost(r) for r in valid)
-    total_pay  = sum(int(r.get("payout",0) or 0) for r in valid if int(r.get("hit",0) or 0))
+    total_prof = sum(_profit(r) for r in valid)
+    total_pay  = total_bet + total_prof
     total_roi  = total_pay / total_bet if total_bet > 0 else 0
     total_hit  = sum(int(r.get("hit",0) or 0) for r in valid)
-    total_prof = total_pay - total_bet
     flag = "🟢 黒字" if total_roi>=1.0 else ("🟡 接戦" if total_roi>=0.8 else "🔴 赤字")
 
     print(f"\n  総合: ROI={total_roi:.3f} {flag}")
     print(f"  {len(valid)}件 / 的中{total_hit}件({total_hit/len(valid):.1%}) / {total_prof:+,}円")
 
     def _show_breakdown(key: str, title: str) -> None:
-        stats: dict = defaultdict(lambda: {"n":0,"pay":0,"hit":0,"cost":0})
+        stats: dict = defaultdict(lambda: {"n":0,"prof":0,"hit":0,"cost":0})
         for r in valid:
             v = str(r.get(key,"") or "不明")
             stats[v]["n"]    += 1
             stats[v]["hit"]  += int(r.get("hit",0) or 0)
-            stats[v]["cost"] += max(1, int(r.get("n_bets", 1) or 1)) * 100
-            if int(r.get("hit",0) or 0):
-                stats[v]["pay"] += int(r.get("payout",0) or 0)
-        rows_ = [(v,s["n"],s["hit"],s["pay"]/max(s["cost"],1),s["pay"]-s["cost"])
+            stats[v]["cost"] += _cost(r)
+            stats[v]["prof"] += _profit(r)
+        rows_ = [(v,s["n"],s["hit"],(s["cost"]+s["prof"])/max(s["cost"],1),s["prof"])
                  for v,s in stats.items() if s["n"]>=3]
         rows_.sort(key=lambda x:-x[3])
         print(f"\n  ── {title} ──")
@@ -3543,14 +3569,28 @@ def _auto_extract_patterns(csv_file: str = "hit_record.csv") -> None:
 
     feat_rows = [(_features(r), r) for r in valid]
 
+    def _c(r):
+        try:
+            c = r.get("cost")
+            if c not in (None, ""): return int(c)
+            return max(1, int(r.get("n_bets", 1) or 1)) * 100
+        except: return 100
+    def _p(r):
+        try:
+            p = r.get("profit")
+            if p not in (None, ""): return int(p)
+        except: pass
+        pay = int(r.get("payout",0) or 0) if int(r.get("hit",0) or 0) else 0
+        return pay - _c(r)
     def _roi_stats(subset: list) -> tuple:
         if not subset:
             return 0, 0, 0, 0
         n     = len(subset)
         hits  = sum(int(r.get("hit",0) or 0) for r in subset)
-        pay   = sum(int(r.get("payout",0) or 0) for r in subset if int(r.get("hit",0) or 0))
-        roi   = pay / (n * 100) if n > 0 else 0
-        return n, hits, roi, pay - n * 100
+        cost  = sum(_c(r) for r in subset)
+        prof  = sum(_p(r) for r in subset)
+        roi   = (cost + prof) / cost if cost > 0 else 0
+        return n, hits, roi, prof
 
     feat_keys = list(list(_features(valid[0]).keys()))
 
@@ -4116,21 +4156,39 @@ def _check_yesterday_results(today_date: str) -> None:
             # sent_fileのJSONから直接読み込み（pred_*.jsonは不要）
             pd_data: dict = entry
 
-            pred_combo = pd_data.get("combo", "")       # ベスト1点
-            buy_list   = pd_data.get("buy", [])           # 全買い目リスト
-            pred_prob  = pd_data.get("prob", "")
-            pred_ev    = pd_data.get("ev", "")
-            pred_odds  = pd_data.get("odds", 0)
-            n_bets     = max(1, len(buy_list)) if buy_list else 1
+            pred_combo  = pd_data.get("combo", "")        # ベスト1点
+            buy_list    = pd_data.get("buy", [])          # 全買い目リスト
+            buy_amounts = pd_data.get("buy_amounts", [])  # 各買い目の実ベット額
+            pred_prob   = pd_data.get("prob", "")
+            pred_ev     = pd_data.get("ev", "")
+            pred_odds   = pd_data.get("odds", 0)
+            n_bets      = max(1, len(buy_list)) if buy_list else 1
 
             result_combo = result["combo"] if result else "不明"
-            payout       = result["payout"] if result else 0
+            payout       = result["payout"] if result else 0  # 100円あたりの払戻
+
             # 全買い目のどれかが当たれば的中
             all_combos = buy_list if buy_list else ([pred_combo] if pred_combo else [])
             hit        = 1 if result_combo != "不明" and result_combo in all_combos else 0
-            # 利益 = 的中時: 払戻 - (買い目数×100円) / 外れ: -(買い目数×100円)
-            cost   = n_bets * 100
-            profit = (payout - cost) if hit else -cost
+
+            # 実ベット額ベースの損益計算
+            # buy_amountsがあれば実額、なければ100円固定（旧データ互換）
+            if buy_amounts and len(buy_amounts) == len(buy_list):
+                total_cost = sum(int(a) for a in buy_amounts)
+                # 当たった買い目の金額を特定
+                hit_amount = 0
+                if hit:
+                    for _c, _a in zip(buy_list, buy_amounts):
+                        if _c == result_combo:
+                            hit_amount = int(_a)
+                            break
+                # 払戻 = (払戻倍率/100) × 当たり金額
+                hit_return = int(payout * hit_amount / 100) if hit else 0
+            else:
+                total_cost = n_bets * 100
+                hit_return = payout if hit else 0
+            cost   = total_cost
+            profit = (hit_return - total_cost) if hit else -total_cost
 
             # pred_fileに結果を書き戻す（ファイルが存在する場合のみ）
             pred_file = f"pred_{yesterday}_{venue_num}_{race_number}.json"
@@ -4169,6 +4227,7 @@ def _check_yesterday_results(today_date: str) -> None:
                 "hit":         hit,
                 "profit":      profit,
                 "n_bets":      n_bets,
+                "cost":        cost,
             })
 
         if not records:
@@ -4181,7 +4240,7 @@ def _check_yesterday_results(today_date: str) -> None:
             "race_type","why_bet","confidence",
             "pred_combo","pred_prob","pred_ev","pred_odds","upset_score",
             "wind_speed","wind_dir","wave",
-            "result_combo","payout","hit","profit","n_bets",
+            "result_combo","payout","hit","profit","n_bets","cost",
         ]
         write_header = not os.path.exists(csv_file)
         with open(csv_file, "a", newline="", encoding="utf-8") as f:
