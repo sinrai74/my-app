@@ -4111,10 +4111,10 @@ def _check_yesterday_results(today_date: str) -> None:
             # 利益 = 的中時: 払戻 - 100円 / 外れ: -100円
             profit = (payout - 100) if hit else -100
 
-            # pred_fileに結果を書き戻す
+            # pred_fileに結果を書き戻す（ファイルが存在する場合のみ）
+            pred_file = f"pred_{yesterday}_{venue_num}_{race_number}.json"
             if pd_data and os.path.exists(pred_file):
                 try:
-                    import json as _json
                     pd_data.update({
                         "result":  result_combo,
                         "hit":     hit,
