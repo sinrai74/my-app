@@ -3085,6 +3085,7 @@ def _run_main(race_date: str | None = None) -> None:
                 _pred_entry = {
                     "key":        notify_key,
                     "combo":      best["combo"]          if recommended else "",
+                    "buy":        [b["combo"] for b in recommended] if recommended else [],
                     "odds":       best["odds"]           if recommended else 0,
                     "prob":       best["prob"]           if recommended else 0,
                     "ev":         best["ev"]             if recommended else 0,
@@ -3431,7 +3432,7 @@ def _print_dashboard(csv_file: str = "hit_record.csv") -> None:
         print(f"  データ不足: {len(valid)}件"); return
 
     def _cost(r):
-        try: return max(1, len(r.get("buy_list","").split("|"))) * 100
+        try: return max(1, int(r.get("n_bets", 1) or 1)) * 100
         except: return 100
     total_bet  = sum(_cost(r) for r in valid)
     total_pay  = sum(int(r.get("payout",0) or 0) for r in valid if int(r.get("hit",0) or 0))
@@ -3449,7 +3450,7 @@ def _print_dashboard(csv_file: str = "hit_record.csv") -> None:
             v = str(r.get(key,"") or "不明")
             stats[v]["n"]    += 1
             stats[v]["hit"]  += int(r.get("hit",0) or 0)
-            stats[v]["cost"] += max(1, len((r.get("buy_list") or "").split("|"))) * 100
+            stats[v]["cost"] += max(1, int(r.get("n_bets", 1) or 1)) * 100
             if int(r.get("hit",0) or 0):
                 stats[v]["pay"] += int(r.get("payout",0) or 0)
         rows_ = [(v,s["n"],s["hit"],s["pay"]/max(s["cost"],1),s["pay"]-s["cost"])
@@ -4167,6 +4168,7 @@ def _check_yesterday_results(today_date: str) -> None:
                 "payout":      payout,
                 "hit":         hit,
                 "profit":      profit,
+                "n_bets":      n_bets,
             })
 
         if not records:
@@ -4179,7 +4181,7 @@ def _check_yesterday_results(today_date: str) -> None:
             "race_type","why_bet","confidence",
             "pred_combo","pred_prob","pred_ev","pred_odds","upset_score",
             "wind_speed","wind_dir","wave",
-            "result_combo","payout","hit","profit",
+            "result_combo","payout","hit","profit","n_bets",
         ]
         write_header = not os.path.exists(csv_file)
         with open(csv_file, "a", newline="", encoding="utf-8") as f:
