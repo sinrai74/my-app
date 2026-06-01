@@ -1584,7 +1584,8 @@ def _evaluate_bets(
             with open(csv_file, "r", encoding="utf-8") as f:
                 rows = list(_csv.DictReader(f))
             valid = [r for r in rows
-                     if r.get("pred_prob") and r.get("hit") not in ("",None,"-1")]
+                     if r.get("pred_prob") and r.get("hit") not in ("",None,"-1")
+                     and r.get("pred_combo")]  # 通知済みレースのみ
             if len(valid) < 20:
                 return []
             bands = [(0,0.02),(0.02,0.03),(0.03,0.05),(0.05,0.08),(0.08,1.0)]
@@ -3423,11 +3424,16 @@ def _print_dashboard(csv_file: str = "hit_record.csv") -> None:
 
     with open(csv_file, "r", encoding="utf-8") as f:
         rows = list(_csv.DictReader(f))
-    valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
+    valid = [r for r in rows
+             if r.get("hit") not in ("", None, "-1")
+             and r.get("pred_combo")]  # 通知済みレースのみ
     if len(valid) < 5:
         print(f"  データ不足: {len(valid)}件"); return
 
-    total_bet  = len(valid) * 100
+    def _cost(r):
+        try: return max(1, len(r.get("buy_list","").split("|"))) * 100
+        except: return 100
+    total_bet  = sum(_cost(r) for r in valid)
     total_pay  = sum(int(r.get("payout",0) or 0) for r in valid if int(r.get("hit",0) or 0))
     total_roi  = total_pay / total_bet if total_bet > 0 else 0
     total_hit  = sum(int(r.get("hit",0) or 0) for r in valid)
@@ -3438,14 +3444,15 @@ def _print_dashboard(csv_file: str = "hit_record.csv") -> None:
     print(f"  {len(valid)}件 / 的中{total_hit}件({total_hit/len(valid):.1%}) / {total_prof:+,}円")
 
     def _show_breakdown(key: str, title: str) -> None:
-        stats: dict = defaultdict(lambda: {"n":0,"pay":0,"hit":0})
+        stats: dict = defaultdict(lambda: {"n":0,"pay":0,"hit":0,"cost":0})
         for r in valid:
             v = str(r.get(key,"") or "不明")
-            stats[v]["n"]   += 1
-            stats[v]["hit"] += int(r.get("hit",0) or 0)
+            stats[v]["n"]    += 1
+            stats[v]["hit"]  += int(r.get("hit",0) or 0)
+            stats[v]["cost"] += max(1, len((r.get("buy_list") or "").split("|"))) * 100
             if int(r.get("hit",0) or 0):
                 stats[v]["pay"] += int(r.get("payout",0) or 0)
-        rows_ = [(v,s["n"],s["hit"],s["pay"]/(s["n"]*100),s["pay"]-s["n"]*100)
+        rows_ = [(v,s["n"],s["hit"],s["pay"]/max(s["cost"],1),s["pay"]-s["cost"])
                  for v,s in stats.items() if s["n"]>=3]
         rows_.sort(key=lambda x:-x[3])
         print(f"\n  ── {title} ──")
@@ -3511,7 +3518,9 @@ def _auto_extract_patterns(csv_file: str = "hit_record.csv") -> None:
     with open(csv_file, "r", encoding="utf-8") as f:
         rows = list(_csv.DictReader(f))
 
-    valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
+    valid = [r for r in rows
+             if r.get("hit") not in ("", None, "-1")
+             and r.get("pred_combo")]  # 通知済みレースのみ
     if len(valid) < 10:
         print(f"データ不足: {len(valid)}件（10件以上必要）")
         return
@@ -3640,7 +3649,9 @@ def _monte_carlo_simulation(
     with open(csv_file, "r", encoding="utf-8") as f:
         rows = list(_csv.DictReader(f))
 
-    valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
+    valid = [r for r in rows
+             if r.get("hit") not in ("", None, "-1")
+             and r.get("pred_combo")]  # 通知済みレースのみ
     if len(valid) < 10:
         print(f"データ不足: {len(valid)}件")
         return
