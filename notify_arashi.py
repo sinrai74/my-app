@@ -562,8 +562,14 @@ def fetch_programs(race_date: str) -> list[dict]:
     url = f"{PROGRAMS_URL}/{race_date[:4]}/{race_date}.json"
     data = _safe_get(url)
     if data is None:
-        log.info("日付URL 404 → today.json にフォールバック (date=%s)", race_date)
-        data = _safe_get(f"{PROGRAMS_URL}/today.json")
+        # today.jsonフォールバックは当日分のみ（翌日分取得時には使わない）
+        from datetime import datetime, timezone, timedelta
+        today_str = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+        if race_date == today_str:
+            log.info("日付URL 404 → today.json にフォールバック (date=%s)", race_date)
+            data = _safe_get(f"{PROGRAMS_URL}/today.json")
+        else:
+            log.warning("出走表が取得できませんでした（開催なし or API 障害）")
     if data is None:
         return []
     programs = data.get("programs", [])
@@ -2696,8 +2702,18 @@ def _run_main(race_date: str | None = None) -> None:
 
     sent_file = f"sent_{race_date}.txt"
     try:
-        with open(sent_file, "r") as sf:
-            sent_set = set(sf.read().splitlines())
+        import json as _json
+        sent_set = set()
+        with open(sent_file, "r", encoding="utf-8") as sf:
+            for _line in sf:
+                _line = _line.strip()
+                if not _line:
+                    continue
+                try:
+                    _obj = _json.loads(_line)
+                    sent_set.add(_obj.get("key", ""))
+                except Exception:
+                    sent_set.add(_line)
     except Exception:
         sent_set = set()
 
