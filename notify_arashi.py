@@ -2173,10 +2173,12 @@ def _get_bet_multiplier() -> float:
         if not rows:
             return 1.0
 
-        # 連敗チェック
+        # 連敗チェック（通知済みレースのみ）
         streak = 0
         for r in reversed(rows):
-            if r.get("hit") in ("", None):
+            if not r.get("pred_combo"):
+                continue  # 通知していないレースは除外
+            if r.get("hit") in ("", None, "-1"):
                 continue
             if int(r.get("hit", 0) or 0) == 0:
                 streak += 1
@@ -3274,7 +3276,9 @@ def _load_skip_conditions(csv_file: str = "hit_record.csv") -> list[dict]:
     try:
         with open(csv_file, "r", encoding="utf-8") as f:
             rows = list(_csv.DictReader(f))
-        valid = [r for r in rows if r.get("hit") not in ("", None, "-1")]
+        valid = [r for r in rows
+                 if r.get("hit") not in ("", None, "-1")
+                 and r.get("pred_combo")]  # 通知済みレースのみ
         valid_hit = [r for r in valid if int(r.get("hit", 0) or 0) == 1]
         if len(valid_hit) < 20:
             return []
