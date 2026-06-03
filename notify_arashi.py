@@ -276,6 +276,11 @@ def _fetch_beforeinfo_api(venue_num: int, race_number: int, race_date: str) -> d
     url = f"{PREVIEWS_URL}/{race_date[:4]}/{race_date}.json"
     data = _safe_get(url)
     if not data:
+        from datetime import datetime, timezone, timedelta
+        today_str = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+        if race_date == today_str:
+            data = _safe_get(f"{PREVIEWS_URL}/today.json")
+    if not data:
         return {}
 
     previews = data.get("previews", [])
@@ -463,6 +468,11 @@ def _get_beforeinfo_bulk(race_list: list, race_date: str) -> dict:
     # ── ① previews API を1回だけ叩く ──────────────────────────
     url = f"{PREVIEWS_URL}/{race_date[:4]}/{race_date}.json"
     api_data = _safe_get(url)
+    if not api_data:
+        from datetime import datetime, timezone, timedelta
+        today_str = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+        if race_date == today_str:
+            api_data = _safe_get(f"{PREVIEWS_URL}/today.json")
     preview_map: dict[tuple, dict] = {}
     if api_data:
         for p in api_data.get("previews", []):
@@ -582,7 +592,14 @@ def fetch_previews(race_date: str) -> list[dict]:
     url = f"{PREVIEWS_URL}/{race_date[:4]}/{race_date}.json"
     data = _safe_get(url)
     if data is None:
-        log.info("直前情報: まだ公開前の可能性あり (date=%s)", race_date)
+        from datetime import datetime, timezone, timedelta
+        today_str = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+        if race_date == today_str:
+            log.info("直前情報: 日付URL 404 → today.json にフォールバック (date=%s)", race_date)
+            data = _safe_get(f"{PREVIEWS_URL}/today.json")
+        else:
+            log.info("直前情報: まだ公開前の可能性あり (date=%s)", race_date)
+    if data is None:
         return []
     previews = data.get("previews", [])
     log.info("直前情報取得: %d レース (date=%s)", len(previews), race_date)
@@ -3351,15 +3368,31 @@ def _calc_real_ev(csv_file: str = "hit_record.csv") -> dict:
     try:
         with open(csv_file, "r", encoding="utf-8") as f:
             rows = list(_csv.DictReader(f))
-        valid = [r for r in rows if r.get("hit") not in ("","",None,"-1") and r.get("pred_ev")]
+        valid = [r for r in rows
+                 if r.get("hit") not in ("", None, "-1")
+                 and r.get("pred_ev") and r.get("pred_combo")]
         if not valid:
             return {}
+        def _c(r):
+            try:
+                c = r.get("cost")
+                if c not in (None, ""): return int(c)
+                return max(1, int(r.get("n_bets", 1) or 1)) * 100
+            except: return 100
+        def _p(r):
+            try:
+                p = r.get("profit")
+                if p not in (None, ""): return int(p)
+            except: pass
+            pay = int(r.get("payout",0) or 0) if int(r.get("hit",0) or 0) else 0
+            return pay - _c(r)
         result = {}
         def _ev_stats(subset, label):
             if len(subset) < 3: return
             theory = sum(float(r.get("pred_ev",0) or 0) for r in subset)/len(subset)
-            pay    = sum(int(r.get("payout",0) or 0) for r in subset if int(r.get("hit",0) or 0))
-            real   = pay/(len(subset)*100) if subset else 0
+            cost   = sum(_c(r) for r in subset)
+            prof   = sum(_p(r) for r in subset)
+            real   = (cost + prof) / cost if cost > 0 else 0
             result[label] = {"n":len(subset),"理論EV":round(theory,3),
                              "実測ROI":round(real,3),"ギャップ":round(real-theory,3)}
         _ev_stats(valid, "全体")
@@ -4277,6 +4310,12 @@ def _fetch_race_result(venue_num: int, race_number: int, race_date: str) -> dict
     """
     url = f"{RESULTS_URL}/{race_date[:4]}/{race_date}.json"
     data = _safe_get(url)
+    if not data:
+        # today.jsonにフォールバック（当日分のみ）
+        from datetime import datetime, timezone, timedelta
+        today_str = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+        if race_date == today_str:
+            data = _safe_get(f"{RESULTS_URL}/today.json")
     if not data:
         return None
 
