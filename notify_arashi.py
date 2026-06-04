@@ -2309,7 +2309,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         top_ev_str = f" EV:{result.recommended_bets[0]['ev']:.2f}"
 
     subject = (
-        f"[v1.7]【荒れ検知】{result.venue_name} {result.race_number}R "
+        f"[v2.6]【荒れ検知】{result.venue_name} {result.race_number}R "
         f"{label} (score:{result.upset_score:.1f}{top_ev_str})"
     )
 
@@ -3072,11 +3072,13 @@ def _run_main(race_date: str | None = None) -> None:
 
             # 同じraceTypeが多すぎる
             if total_notified > 0:
-                style_ratio = style_count.get(race_type_str, 0) / total_notified
-                if style_ratio >= MAX_STYLE_EXPOSURE:
-                    log.info("exposure制限(型): %s %dR 型=%s (%.0f%%超)",
-                             result.venue_name, race_number, race_type_str, MAX_STYLE_EXPOSURE*100)
-                    continue
+                # race_type=不明のときはexposure制限をスキップ（分類できないため）
+                if race_type_str != "不明":
+                    style_ratio = style_count.get(race_type_str, 0) / total_notified
+                    if style_ratio >= MAX_STYLE_EXPOSURE:
+                        log.info("exposure制限(型): %s %dR 型=%s (%.0f%%超)",
+                                 result.venue_name, race_number, race_type_str, MAX_STYLE_EXPOSURE*100)
+                        continue
 
             # 同じクラスターが多すぎる
             if cluster_count.get(cluster_key, 0) >= MAX_CLUSTER_BETS:
