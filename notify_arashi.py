@@ -2309,7 +2309,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         top_ev_str = f" EV:{result.recommended_bets[0]['ev']:.2f}"
 
     subject = (
-        f"[v2.6]【荒れ検知】{result.venue_name} {result.race_number}R "
+        f"[v2.7]【荒れ検知】{result.venue_name} {result.race_number}R "
         f"{label} (score:{result.upset_score:.1f}{top_ev_str})"
     )
 
@@ -2718,7 +2718,7 @@ def _run_main(race_date: str | None = None) -> None:
     style_count:   dict[str, int] = {}   # race_type → count
     cluster_count: dict[str, int] = {}   # "regime_venue" → count
     total_notified  = 0
-    MAX_DAILY_BETS  = 12   # 1日の最大通知数（絶対上限）
+    MAX_DAILY_BETS  = 9999  # 上限なし
 
     sent_file = f"sent_{race_date}.txt"
     try:
@@ -3056,6 +3056,20 @@ def _run_main(race_date: str | None = None) -> None:
                         _json.dump(_pred_data, pf, ensure_ascii=False)
                 except Exception as _pe:
                     log.debug("予測ログ保存失敗: %s", _pe)
+
+            # ── 気象データ再取得（通知直前に最新化）──────────────────
+            try:
+                _fresh = _fetch_beforeinfo_api(venue_num, race_number, race_date)
+                if _fresh and _fresh.get("weather"):
+                    _fw = _fresh["weather"]
+                    result.weather = WeatherInfo(
+                        wind_speed     = _fw.get("wind_speed",     result.weather.wind_speed     if result.weather else None),
+                        wind_direction = _fw.get("wind_direction", result.weather.wind_direction if result.weather else None),
+                        wave_height    = _fw.get("wave_height",    result.weather.wave_height    if result.weather else None),
+                        weather        = result.weather.weather if result.weather else None,
+                    )
+            except Exception as _we:
+                log.debug("気象再取得失敗: %s", _we)
 
             log.info(
                 "荒れ検知: %s %dR score=%.2f target=%s",
