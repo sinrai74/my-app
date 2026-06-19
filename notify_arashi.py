@@ -2309,7 +2309,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         top_ev_str = f" EV:{result.recommended_bets[0]['ev']:.2f}"
 
     subject = (
-        f"[v2.7]【荒れ検知】{result.venue_name} {result.race_number}R "
+        f"[v2.8]【荒れ検知】{result.venue_name} {result.race_number}R "
         f"{label} (score:{result.upset_score:.1f}{top_ev_str})"
     )
 
@@ -4338,28 +4338,30 @@ def _fetch_race_result(venue_num: int, race_number: int, race_date: str) -> dict
     for r in data.get("results", []):
         if (r.get("race_stadium_number") == venue_num
                 and r.get("race_number") == race_number):
-            # 3連単着順
-            boats = r.get("boats", [])
-            if isinstance(boats, dict):
-                boats = list(boats.values())
-            order = sorted(
-                [b for b in boats if isinstance(b, dict) and b.get("racer_rank")],
-                key=lambda b: b.get("racer_rank", 99)
-            )
-            if len(order) >= 3:
-                combo = "-".join(str(b.get("racer_boat_number", "?")) for b in order[:3])
-            else:
-                combo = "不明"
-
-            # 3連単払戻
+            # 3連単結果・払戻（payouts.trifecta から直接取得）
+            combo  = "不明"
             payout = 0
-            for pay in r.get("payouts", []):
-                if isinstance(pay, dict) and pay.get("bet_type") in ("3T", "三連単", 7):
+            payouts = r.get("payouts", {})
+            if isinstance(payouts, dict):
+                trifecta = payouts.get("trifecta", [])
+                if isinstance(trifecta, list) and trifecta:
                     try:
-                        payout = int(pay.get("payout_amount", 0))
+                        combo  = trifecta[0].get("combination", "不明")
+                        payout = int(trifecta[0].get("payout", 0))
                     except (ValueError, TypeError):
                         pass
-                    break
+
+            # trifecta取得できなかった場合はboatsからフォールバック
+            if combo == "不明":
+                boats = r.get("boats", [])
+                if isinstance(boats, dict):
+                    boats = list(boats.values())
+                order = sorted(
+                    [b for b in boats if isinstance(b, dict) and b.get("racer_place_number")],
+                    key=lambda b: b.get("racer_place_number", 99)
+                )
+                if len(order) >= 3:
+                    combo = "-".join(str(b.get("racer_boat_number", "?")) for b in order[:3])
 
             return {"combo": combo, "payout": payout}
 
