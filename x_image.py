@@ -86,7 +86,7 @@ def _get_font(size: int, bold: bool = False):
         "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf",
         "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
         # Windows
-        "C:/Windows/Fonts/meiryob.ttc",
+        "C:/Windows/Fonts/meiryo.ttc",
         "C:/Windows/Fonts/YuGothB.ttc",
         # macOS
         "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
@@ -96,7 +96,7 @@ def _get_font(size: int, bold: bool = False):
         "/usr/share/fonts/truetype/noto/NotoSansCJKjp-Regular.otf",
         "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf",
         "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
-        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/meiryob.ttc",
         "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
     ]
     candidates = candidates_bold if bold else candidates_regular
@@ -127,15 +127,12 @@ def _draw_text_center(draw, text: str, y: int, font, color: tuple, width: int = 
         tw = bbox[2] - bbox[0]
     except AttributeError:
         tw = font.getlength(text)
-    x = int((width - tw) // 2)
+    x = (width - tw) // 2
     draw.text((x, y), text, font=font, fill=color)
 
 
-def _draw_header(draw, title: str, date_str: str, font_large, font_small,
-                 accent_color: tuple = C_WHITE) -> None:
+def _draw_header(draw, title: str, date_str: str, font_large, font_small) -> None:
     _draw_rect(draw, 0, 0, IMG_W, HEADER_H, C_HEADER)
-    # ヘッダー左にアクセントバー
-    _draw_rect(draw, 0, 0, 6, HEADER_H, accent_color)
     _draw_text_center(draw, title, 12, font_large, C_WHITE)
     _draw_text_center(draw, date_str, 58, font_small, C_GRAY)
 
@@ -143,8 +140,6 @@ def _draw_header(draw, title: str, date_str: str, font_large, font_small,
 def _draw_footer(draw, font_small) -> None:
     y = IMG_H - FOOTER_H
     _draw_rect(draw, 0, y, IMG_W, FOOTER_H, C_FOOTER)
-    _draw_text_center(draw, "AI分析 by 競艇荒れ検知Bot  |  #競艇 #ボートレース #競艇予想",
-                      y + 14, font_small, C_GRAY)
 
 
 # ════════════════════════════════════════════════════════════
@@ -164,8 +159,7 @@ def generate_danger_image(data: dict, output_path: str) -> None:
     font_ft   = _get_font(18)
 
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    _draw_header(draw, "本日の危険な1号艇 TOP10", date_str, font_hd, font_sub,
-                 accent_color=C_RED)
+    _draw_header(draw, "⚠️ 本日の危険な1号艇 TOP10", date_str, font_hd, font_sub)
 
     items = data.get("danger_boat1", [])
     y = HEADER_H + 4
@@ -223,8 +217,7 @@ def generate_hot_motor_image(data: dict, output_path: str) -> None:
     font_ft  = _get_font(18)
 
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    _draw_header(draw, "激走モーター TOP10", date_str, font_hd, font_sub,
-                 accent_color=C_ACCENT)
+    _draw_header(draw, "🔥 激走モーター TOP10", date_str, font_hd, font_sub)
 
     items = data.get("hot_motor", [])
     y = HEADER_H + 4
@@ -272,8 +265,7 @@ def generate_manshuu_image(data: dict, output_path: str) -> None:
     font_ft  = _get_font(18)
 
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    _draw_header(draw, "AI万舟警報 TOP10", date_str, font_hd, font_sub,
-                 accent_color=C_RED)
+    _draw_header(draw, "🚨 AI万舟警報 TOP10", date_str, font_hd, font_sub)
 
     items = data.get("manshuu_alert", [])
     y = HEADER_H + 4
@@ -322,8 +314,7 @@ def generate_awakening_image(data: dict, output_path: str) -> None:
     font_ft  = _get_font(18)
 
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    _draw_header(draw, "覚醒モーター TOP10", date_str, font_hd, font_sub,
-                 accent_color=(0, 188, 212))
+    _draw_header(draw, "⚡ 覚醒モーター TOP10", date_str, font_hd, font_sub)
 
     items = data.get("awakening_motor", [])
     y = HEADER_H + 4
