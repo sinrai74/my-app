@@ -2,14 +2,7 @@ name: X Ranking Post
 
 on:
   schedule:
-    # ─────────────────────────────────────────
-    # 投稿スケジュール（UTC → JST +9h）
-    #   UTC 23:00 = JST 08:00  → 危険な1号艇TOP10
-    #   UTC 23:30 = JST 08:30  → AI万舟警報
-    #   UTC 03:00 = JST 12:00  → 激走モーターTOP10
-    #   UTC 12:00 = JST 21:00  → 覚醒モーターTOP10
-    # ─────────────────────────────────────────
-    - cron: '0 23 * * *'    # JST 08:00 (危険1号艇 + 万舟警報 + 激走/覚醒 一括)
+    - cron: '0 23 * * *'    # JST 08:00 毎朝
   workflow_dispatch:        # 手動実行
     inputs:
       date:
@@ -17,11 +10,11 @@ on:
         required: false
         default: ''
       dry_run:
-        description: 'ドライラン（true=投稿しない）'
+        description: 'ドライラン（true=メール送信しない）'
         required: false
         default: 'false'
       with_image:
-        description: '画像付き投稿（true/false）'
+        description: '画像添付（true/false）'
         required: false
         default: 'true'
 
@@ -39,7 +32,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'   # 3.14 は runners 未対応のため 3.12 を使用
+          python-version: '3.12'
 
       # ── 日本語フォントインストール（画像生成用）──────────
       - name: Install Japanese fonts
@@ -51,7 +44,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install requests beautifulsoup4 tweepy Pillow scikit-learn pandas numpy
+          pip install requests beautifulsoup4 Pillow scikit-learn pandas numpy
 
       # ── モデルファイル確認 ──────────────────────────────
       - name: Check model file
@@ -67,7 +60,6 @@ jobs:
         run: |
           DATE_ARG=""
           if [ -n "${{ github.event.inputs.date }}" ]; then
-            # 手動実行時は指定日の前日を計算
             PREV_DATE=$(python3 -c 'from datetime import datetime, timedelta; d="${{ github.event.inputs.date }}"; print((datetime.strptime(d, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d"))')
             DATE_ARG="--date $PREV_DATE"
           fi
@@ -80,97 +72,29 @@ jobs:
           if [ -n "${{ github.event.inputs.date }}" ]; then
             DATE_ARG="--date ${{ github.event.inputs.date }}"
           fi
-          python x_ranking.py --generate $DATE_ARG --split
+          python x_ranking.py --generate $DATE_ARG
 
       # ── 画像生成 ──────────────────────────────────────────
       - name: Generate images
         if: ${{ github.event.inputs.with_image != 'false' }}
         run: |
-          python x_image.py --all --input ranking_cache.json || echo "⚠️ 画像生成失敗（テキストのみ投稿）"
+          python x_image.py --all --input ranking_cache.json || echo "⚠️ 画像生成失敗（テキストのみ送信）"
 
-      # ── 危険な1号艇 投稿（08:00）────────────────────────
-      - name: Post - Danger Boat1
+      # ── Gmail でランキングを送信 ──────────────────────────
+      - name: Send ranking email
         env:
-          X_API_KEY:       ${{ secrets.X_API_KEY }}
-          X_API_SECRET:    ${{ secrets.X_API_SECRET }}
-          X_ACCESS_TOKEN:  ${{ secrets.X_ACCESS_TOKEN }}
-          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
         run: |
           IMAGE_FLAG=""
-          if [ "${{ github.event.inputs.with_image }}" != "false" ] && [ -f danger.png ]; then
+          if [ "${{ github.event.inputs.with_image }}" != "false" ]; then
             IMAGE_FLAG="--with-image"
           fi
           DRY_FLAG=""
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             DRY_FLAG="--dry-run"
           fi
-          python x_post.py --type danger $IMAGE_FLAG $DRY_FLAG
-
-      # ── 30秒待機 ────────────────────────────────────────
-      - name: Wait between posts
-        run: sleep 30
-
-      # ── AI万舟警報 投稿（08:30相当）──────────────────────
-      - name: Post - Manshuu Alert
-        env:
-          X_API_KEY:       ${{ secrets.X_API_KEY }}
-          X_API_SECRET:    ${{ secrets.X_API_SECRET }}
-          X_ACCESS_TOKEN:  ${{ secrets.X_ACCESS_TOKEN }}
-          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
-        run: |
-          IMAGE_FLAG=""
-          if [ "${{ github.event.inputs.with_image }}" != "false" ] && [ -f manshuu.png ]; then
-            IMAGE_FLAG="--with-image"
-          fi
-          DRY_FLAG=""
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            DRY_FLAG="--dry-run"
-          fi
-          python x_post.py --type manshuu $IMAGE_FLAG $DRY_FLAG
-
-      # ── 30秒待機 ────────────────────────────────────────
-      - name: Wait between posts (2)
-        run: sleep 30
-
-      # ── 激走モーター 投稿 ────────────────────────────────
-      - name: Post - Hot Motor
-        env:
-          X_API_KEY:       ${{ secrets.X_API_KEY }}
-          X_API_SECRET:    ${{ secrets.X_API_SECRET }}
-          X_ACCESS_TOKEN:  ${{ secrets.X_ACCESS_TOKEN }}
-          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
-        run: |
-          IMAGE_FLAG=""
-          if [ "${{ github.event.inputs.with_image }}" != "false" ] && [ -f hot_motor.png ]; then
-            IMAGE_FLAG="--with-image"
-          fi
-          DRY_FLAG=""
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            DRY_FLAG="--dry-run"
-          fi
-          python x_post.py --type hot $IMAGE_FLAG $DRY_FLAG
-
-      # ── 30秒待機 ────────────────────────────────────────
-      - name: Wait between posts (3)
-        run: sleep 30
-
-      # ── 覚醒モーター 投稿 ────────────────────────────────
-      - name: Post - Awakening Motor
-        env:
-          X_API_KEY:       ${{ secrets.X_API_KEY }}
-          X_API_SECRET:    ${{ secrets.X_API_SECRET }}
-          X_ACCESS_TOKEN:  ${{ secrets.X_ACCESS_TOKEN }}
-          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
-        run: |
-          IMAGE_FLAG=""
-          if [ "${{ github.event.inputs.with_image }}" != "false" ] && [ -f awakening.png ]; then
-            IMAGE_FLAG="--with-image"
-          fi
-          DRY_FLAG=""
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            DRY_FLAG="--dry-run"
-          fi
-          python x_post.py --type awakening $IMAGE_FLAG $DRY_FLAG
+          python x_post.py $IMAGE_FLAG $DRY_FLAG
 
       # ── motor_history.csv をリポジトリに保存 ────────────
       - name: Commit motor history
