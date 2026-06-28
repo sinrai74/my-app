@@ -2,19 +2,31 @@ name: X Ranking Post
 
 on:
   schedule:
-    - cron: '0 23 * * *'    # JST 08:00 毎朝
-  workflow_dispatch:        # 手動実行
+    # ─────────────────────────────────────────────────────
+    # UTC → JST +9h
+    #   UTC 22:00 = JST 07:00  → 危険な1号艇
+    #   UTC 02:00 = JST 11:00  → 激走モーター
+    #   UTC 12:00 = JST 21:00  → 検証（前日結果）
+    # ─────────────────────────────────────────────────────
+    - cron: '0 22 * * *'     # JST 07:00 危険な1号艇
+    - cron: '0  2 * * *'     # JST 11:00 激走モーター
+    - cron: '0 12 * * *'     # JST 21:00 検証
+  workflow_dispatch:
     inputs:
+      post_type:
+        description: '投稿種類 (danger / hot / verification / all)'
+        required: false
+        default: 'all'
       date:
         description: '対象日 YYYYMMDD（省略時は今日）'
         required: false
         default: ''
       dry_run:
-        description: 'ドライラン（true=メール送信しない）'
+        description: 'ドライラン (true=メール送信しない)'
         required: false
         default: 'false'
       with_image:
-        description: '画像添付（true/false）'
+        description: '画像添付 (true/false)'
         required: false
         default: 'true'
 
@@ -24,85 +36,120 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      # ── リポジトリ取得 ────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Python セットアップ ──────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      # ── 日本語フォントインストール（画像生成用）──────────
       - name: Install Japanese fonts
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq fonts-noto-cjk > /dev/null 2>&1
 
-      # ── 依存パッケージインストール ──────────────────────
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install requests beautifulsoup4 Pillow scikit-learn pandas numpy
 
-      # ── モデルファイル確認 ──────────────────────────────
       - name: Check model file
         run: |
-          if [ -f model_all.pkl ]; then
-            echo "✅ model_all.pkl が存在します"
-          else
-            echo "⚠️  model_all.pkl が見つかりません（MLスコアなし）"
-          fi
+          [ -f model_all.pkl ] && echo "✅ model_all.pkl あり" || echo "⚠️ model_all.pkl なし"
 
-      # ── 前日のモーター履歴を蓄積 ────────────────────────
-      - name: Update motor history (yesterday)
+      # ── 投稿種類の自動判定 ──────────────────────────────
+      - name: Determine post type
+        id: post_type
+        run: |
+          INPUT="${{ github.event.inputs.post_type }}"
+          HOUR_UTC=$(date -u +%H)
+          if [ -n "$INPUT" ] && [ "$INPUT" != "all" ]; then
+            TYPE="$INPUT"
+          elif [ "$HOUR_UTC" = "22" ]; then
+            TYPE="danger"
+          elif [ "$HOUR_UTC" = "02" ]; then
+            TYPE="hot"
+          elif [ "$HOUR_UTC" = "12" ]; then
+            TYPE="verification"
+          else
+            TYPE="all"
+          fi
+          echo "type=$TYPE" >> $GITHUB_OUTPUT
+          echo "投稿種類: $TYPE"
+
+      # ── 前日モーター履歴を蓄積 ──────────────────────────
+      - name: Update motor history
+        if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         run: |
           DATE_ARG=""
           if [ -n "${{ github.event.inputs.date }}" ]; then
-            PREV_DATE=$(python3 -c 'from datetime import datetime, timedelta; d="${{ github.event.inputs.date }}"; print((datetime.strptime(d, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d"))')
-            DATE_ARG="--date $PREV_DATE"
+            PREV=$(python3 -c "from datetime import datetime,timedelta; d='${{ github.event.inputs.date }}'; print((datetime.strptime(d,'%Y%m%d')-timedelta(days=1)).strftime('%Y%m%d'))")
+            DATE_ARG="--date $PREV"
           fi
           python x_ranking.py --update-history $DATE_ARG || echo "⚠️ 履歴更新失敗（続行）"
 
-      # ── ランキング生成 ────────────────────────────────────
+      # ── ランキング生成 ─────────────────────────────────
       - name: Generate rankings
+        if: steps.post_type.outputs.type != 'verification'
         run: |
           DATE_ARG=""
-          if [ -n "${{ github.event.inputs.date }}" ]; then
-            DATE_ARG="--date ${{ github.event.inputs.date }}"
-          fi
+          [ -n "${{ github.event.inputs.date }}" ] && DATE_ARG="--date ${{ github.event.inputs.date }}"
           python x_ranking.py --generate $DATE_ARG
 
-      # ── 画像生成 ──────────────────────────────────────────
+      # ── 画像生成 ───────────────────────────────────────
       - name: Generate images
-        if: ${{ github.event.inputs.with_image != 'false' }}
+        if: >
+          steps.post_type.outputs.type != 'verification' &&
+          github.event.inputs.with_image != 'false'
         run: |
-          python x_image.py --all --input ranking_cache.json || echo "⚠️ 画像生成失敗（テキストのみ送信）"
+          python x_image.py --all --input ranking_cache.json || echo "⚠️ 画像生成失敗（テキストのみ）"
 
-      # ── Gmail でランキングを送信 ──────────────────────────
-      - name: Send ranking email
+      # ── 危険な1号艇を送信 ─────────────────────────────
+      - name: Send - Danger Boat1
+        if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
         run: |
-          IMAGE_FLAG=""
-          if [ "${{ github.event.inputs.with_image }}" != "false" ]; then
-            IMAGE_FLAG="--with-image"
-          fi
-          DRY_FLAG=""
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            DRY_FLAG="--dry-run"
-          fi
-          python x_post.py $IMAGE_FLAG $DRY_FLAG
+          IMG=""
+          [ "${{ github.event.inputs.with_image }}" != "false" ] && [ -f danger.png ] && IMG="--with-image"
+          DRY=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
+          python x_post.py --type danger $IMG $DRY
 
-      # ── motor_history.csv をリポジトリに保存 ────────────
+      # ── 激走モーターを送信 ────────────────────────────
+      - name: Send - Hot Motor
+        if: steps.post_type.outputs.type == 'hot' || steps.post_type.outputs.type == 'all'
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+        run: |
+          IMG=""
+          [ "${{ github.event.inputs.with_image }}" != "false" ] && [ -f hot_motor.png ] && IMG="--with-image"
+          DRY=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
+          python x_post.py --type hot $IMG $DRY
+
+      # ── 検証結果を送信（21:00）────────────────────────
+      - name: Send - Verification
+        if: steps.post_type.outputs.type == 'verification' || steps.post_type.outputs.type == 'all'
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+        run: |
+          DRY=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
+          python x_verification.py $DRY || echo "⚠️ 検証スクリプト未作成（スキップ）"
+
+      # ── motor_history.csv を保存 ──────────────────────
       - name: Commit motor history
+        if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add motor_history.csv ranking_cache.json || true
-          git diff --cached --quiet || git commit -m "auto: update motor_history $(date +%Y%m%d)"
-          git push origin main || echo "⚠️ push 失敗（競合の可能性）"
+          git add motor_history.csv ranking_cache.json manshuu_sent.json || true
+          git diff --cached --quiet || git commit -m "auto: update history $(date +%Y%m%d-%H%M)"
+          git push origin main || echo "⚠️ push失敗"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
