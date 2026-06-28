@@ -175,17 +175,15 @@ def generate_danger_image(data: dict, output_path: str) -> None:
 
         # 順位
         draw.text((12, y + 10), f"{i+1:>2}", font=font_row, fill=C_GRAY)
-        # スコアバー（左端）
-        bar_w = int(score / 100 * 60)
-        _draw_rect(draw, 50, y + 16, bar_w, 14, sc)
-        # 危険度数値
-        draw.text((118, y + 10), f"{score:3d}", font=font_row, fill=sc)
+        # スコアバー（色のみ、数字なし）
+        bar_w = int(score / 100 * 80)
+        _draw_rect(draw, 50, y + 14, bar_w, 18, sc)
         # 場所・レース番号
-        draw.text((175, y + 10), f"{d.get('venue','')}{d.get('race','')}R", font=font_row, fill=C_WHITE)
+        draw.text((145, y + 10), f"{d.get('venue','')}{d.get('race','')}R", font=font_row, fill=C_WHITE)
         # 選手名
-        draw.text((380, y + 10), d.get("racer", "?"), font=font_row, fill=C_WHITE)
+        draw.text((370, y + 10), d.get("racer", "?"), font=font_row, fill=C_WHITE)
         # 理由
-        draw.text((640, y + 14), d.get("reason", ""), font=font_rsn, fill=C_YELLOW)
+        draw.text((610, y + 14), d.get("reason", ""), font=font_rsn, fill=C_YELLOW)
 
         y += ROW_H
 
@@ -233,8 +231,7 @@ def generate_hot_motor_image(data: dict, output_path: str) -> None:
         _draw_rect(draw, 50, y + 16, bar_w, 14, C_ACCENT)
 
         draw.text((12, y + 10), f"{i+1:>2}", font=font_row, fill=C_GRAY)
-        draw.text((215, y + 10), f"指数 {score:3d}", font=font_row, fill=C_ACCENT)
-        draw.text((380, y + 10),
+        draw.text((210, y + 10),
                   f"{m.get('venue','')} {m.get('motor_no','')}号機",
                   font=font_row, fill=C_WHITE)
         y += ROW_H
@@ -290,8 +287,7 @@ def generate_manshuu_image(data: dict, output_path: str) -> None:
 
         # 1行目: 順位 / スコアバー / 荒れ指数 / 会場・レース番号
         draw.text((12,  y + 6),  f"{i+1:>2}",            font=font_row, fill=C_GRAY)
-        draw.text((160, y + 6),  f"荒れ指数{score:3d}",  font=font_row, fill=sc)
-        draw.text((380, y + 6),  f"{u.get('venue','')}{u.get('race','')}R",
+        draw.text((175, y + 6),  f"{u.get('venue','')}{u.get('race','')}R",
                   font=font_row, fill=C_WHITE)
 
         # 2行目: キー選手・根拠
@@ -346,8 +342,7 @@ def generate_awakening_image(data: dict, output_path: str) -> None:
         _draw_rect(draw, 50, y + 16, bar_w, 14, (0, 188, 212))  # シアン
 
         draw.text((12, y + 10), f"{i+1:>2}", font=font_row, fill=C_GRAY)
-        draw.text((215, y + 10), f"覚醒度{score:3d}", font=font_row, fill=(0, 229, 255))
-        draw.text((380, y + 10),
+        draw.text((210, y + 10),
                   f"{a.get('venue','')} {a.get('motor_no','')}号機",
                   font=font_row, fill=C_WHITE)
         y += ROW_H
