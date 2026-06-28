@@ -265,7 +265,7 @@ def generate_manshuu_image(data: dict, output_path: str) -> None:
     font_ft  = _get_font(18)
 
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    _draw_header(draw, "🚨 AI万舟警報 TOP10", date_str, font_hd, font_sub)
+    _draw_header(draw, "🚨 万舟警報 TOP10", date_str, font_hd, font_sub)
 
     items = data.get("manshuu_alert", [])
     y = HEADER_H + 4

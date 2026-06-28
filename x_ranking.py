@@ -93,16 +93,6 @@ def _is_valid_ex(val) -> bool:
         return False
 
 
-def _safe_float(val, default=""):
-    """float変換を安全に行う。失敗時はdefaultを返す"""
-    if val is None:
-        return default
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return default
-
-
 # ════════════════════════════════════════════════════════════
 # モーター履歴管理
 # ════════════════════════════════════════════════════════════
@@ -127,18 +117,8 @@ def load_motor_history() -> dict[tuple[int, int], list[dict]]:
 def update_motor_history(race_date: str) -> int:
     """
     指定日の結果データからモーター履歴を motor_history.csv に追記する。
-    同日のデータが既にある場合はスキップする。
     追記件数を返す。
     """
-    # ── 重複チェック ──────────────────────────────────────────
-    if os.path.exists(MOTOR_HISTORY):
-        with open(MOTOR_HISTORY, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row.get("date") == race_date:
-                    log.info("[履歴] %s は既に追記済み → スキップ", race_date)
-                    return 0
-
     # 結果 API 取得
     url = f"{RESULTS_URL}/{race_date[:4]}/{race_date}.json"
     data = _safe_get(url)
@@ -233,7 +213,7 @@ def update_motor_history(race_date: str) -> int:
                 "lane":         int(lane) if lane is not None else "",
                 "place":        int(place),
                 "ex_time":      ex_time if ex_time is not None else "",
-                "start_timing": _safe_float(st, ""),
+                "start_timing": float(st) if st is not None else "",
                 "race_number":  rno,
             })
 
@@ -281,8 +261,10 @@ def calc_danger_score(
     ex_times = [b.ex_time for b in all_boats if b.ex_time is not None and b.ex_time > 0]
     if boat1.ex_time is not None and boat1.ex_time > 0 and len(ex_times) >= 4:
         sorted_times = sorted(ex_times)
-        # 同値がある場合でも正しい順位を算出（自分より速い艇数 + 1）
-        rank = sum(1 for t in ex_times if t < boat1.ex_time) + 1
+        try:
+            rank = sorted_times.index(boat1.ex_time) + 1   # 1=最速
+        except ValueError:
+            rank = 3
         ex_score = {1: 0, 2: 0, 3: 20, 4: 50, 5: 80, 6: 100}.get(rank, 50)
 
     # ── モーター危険度 ──────────────────────────────────────
@@ -663,7 +645,7 @@ def format_hot_motor_tweet(data: dict) -> str:
 
 def format_manshuu_tweet(data: dict) -> str:
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    lines = [f"🚨【{date_str} AI万舟警報】🚨", ""]
+    lines = [f"🚨【{date_str} 万舟警報】🚨", ""]
     for i, u in enumerate(data["manshuu_alert"][:10], 1):
         emoji = "🔴" if u["score"] >= 80 else "🟡" if u["score"] >= 60 else "🟢"
         lines.append(f"{i}位 {u['venue']}{u['race']}R {emoji}荒れ指数{u['score']}")

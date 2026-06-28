@@ -76,7 +76,7 @@ def _format_hot(data: dict) -> str:
 
 def _format_manshuu(data: dict) -> str:
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    lines = [f"🚨【{date_str} AI万舟警報】🚨", ""]
+    lines = [f"🚨【{date_str} 万舟警報】🚨", ""]
     for i, u in enumerate(data["manshuu_alert"][:10], 1):
         emoji = "🔴" if u["score"] >= 80 else "🟡" if u["score"] >= 60 else "🟢"
         lines.append(f"{i}位 {u['venue']}{u['race']}R {emoji}荒れ指数{u['score']}")
@@ -103,7 +103,7 @@ FORMATTERS = {
 TITLES = {
     "danger":    "危険な1号艇TOP10",
     "hot":       "激走モーターTOP10",
-    "manshuu":   "AI万舟警報TOP10",
+    "manshuu":   "万舟警報TOP10",
     "awakening": "覚醒モーターTOP10",
 }
 
