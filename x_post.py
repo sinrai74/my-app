@@ -36,7 +36,7 @@ MAIL_TO = "bigkirinuki@gmail.com"
 _IMAGE_MAP: dict[str, str] = {
     "danger":    "danger.png",
     "hot":       "hot_motor.png",
-    "manshuu":   "manshuu.png",
+    "manshuu":   ["manshuu_1.png", "manshuu_2.png"],
     "awakening": "awakening.png",
 }
 
@@ -208,9 +208,11 @@ def post_from_ranking(
     image_paths: list[str] = []
     if with_image:
         for t in target_types:
-            path = _IMAGE_MAP.get(t, "")
-            if path:
-                image_paths.append(path)
+            paths = _IMAGE_MAP.get(t, "")
+            if isinstance(paths, list):
+                image_paths.extend(paths)
+            elif paths:
+                image_paths.append(paths)
 
     ok = _send_email(subject, body, image_paths, dry_run=dry_run)
     return {"mail": ok}

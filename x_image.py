@@ -252,14 +252,14 @@ def generate_hot_motor_image(data: dict, output_path: str) -> None:
 # 画像生成: ③ 万舟警報
 # ════════════════════════════════════════════════════════════
 
-def generate_manshuu_image(data: dict, output_path: str) -> None:
+def _draw_manshuu_block(data: dict, output_path: str,
+                        start: int, end: int, title: str) -> None:
+    """万舟警報を start〜end 番目（1始まり）で切り出して1枚の画像を生成する"""
     from PIL import Image, ImageDraw
 
-    # キー選手行があるため高さを拡張
-    MAX_ITEMS   = 10    # 表示件数
-    ROW_H2      = 60    # 2行分の行高さ
-    SUB_H       = 22    # キー選手行の高さ
-    IMG_H2      = HEADER_H + ROW_H2 * MAX_ITEMS + FOOTER_H + 8
+    BLOCK_SIZE  = end - start          # 表示件数
+    ROW_H2      = 60                   # 2行分の行高さ
+    IMG_H2      = HEADER_H + ROW_H2 * BLOCK_SIZE + FOOTER_H + 8
 
     img  = Image.new("RGB", (IMG_W, IMG_H2), C_BG)
     draw = ImageDraw.Draw(img)
@@ -271,12 +271,14 @@ def generate_manshuu_image(data: dict, output_path: str) -> None:
     font_ft  = _get_font(18)
 
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    _draw_header(draw, "万舟警報 TOP10", date_str, font_hd, font_sub, accent_color=C_RED)
+    _draw_header(draw, title, date_str, font_hd, font_sub, accent_color=C_RED)
 
-    items = data.get("manshuu_alert", [])
+    all_items = data.get("manshuu_alert", [])
+    items = all_items[start - 1 : end]   # 1始まり → 0始まりに変換
     y = HEADER_H + 4
 
-    for i, u in enumerate(items[:MAX_ITEMS]):
+    for i, u in enumerate(items):
+        rank = start + i   # 実際の順位（1〜10）
         bg = C_ROW_ODD if i % 2 == 0 else C_ROW_EVEN
         _draw_rect(draw, 0, y, IMG_W, ROW_H2, bg)
 
@@ -285,12 +287,11 @@ def generate_manshuu_image(data: dict, output_path: str) -> None:
         bar_w = int(score / 100 * 100)
         _draw_rect(draw, 50, y + 10, bar_w, 12, sc)
 
-        # 1行目: 順位 / スコアバー / 荒れ指数 / 会場・レース番号
-        draw.text((12,  y + 6),  f"{i+1:>2}",            font=font_row, fill=C_GRAY)
-        draw.text((175, y + 6),  f"{u.get('venue','')}{u.get('race','')}R",
+        draw.text((12,  y + 6), f"{rank:>2}",  font=font_row, fill=C_GRAY)
+        draw.text((175, y + 6),
+                  f"{u.get('venue','')}{u.get('race','')}R",
                   font=font_row, fill=C_WHITE)
 
-        # 2行目: キー選手・根拠
         key_racer  = u.get("key_racer",  "")
         key_reason = u.get("key_reason", "")
         key_text   = f"注目: {key_racer}  [{key_reason}]" if key_racer else ""
@@ -298,18 +299,35 @@ def generate_manshuu_image(data: dict, output_path: str) -> None:
 
         y += ROW_H2
 
-    # 残り枠
-    for j in range(MAX_ITEMS - len(items)):
+    # データが足りない場合は空行で埋める
+    for j in range(BLOCK_SIZE - len(items)):
+        rank = end - (BLOCK_SIZE - len(items)) + j + 1
         bg = C_ROW_ODD if (len(items) + j) % 2 == 0 else C_ROW_EVEN
         _draw_rect(draw, 0, y, IMG_W, ROW_H2, bg)
-        draw.text((12, y + 6), f"{len(items)+j+1:>2}", font=font_row, fill=(60, 60, 60))
-        draw.text((380, y + 6), "---", font=font_row, fill=(60, 60, 60))
+        draw.text((12, y + 6), f"{rank:>2}", font=font_row, fill=(60, 60, 60))
+        draw.text((380, y + 6), "---",       font=font_row, fill=(60, 60, 60))
         y += ROW_H2
 
-    # フッター
     _draw_rect(draw, 0, y, IMG_W, FOOTER_H, C_FOOTER)
     img.save(output_path)
     log.info("[画像] 保存: %s", output_path)
+
+
+def generate_manshuu_image(data: dict, output_path: str) -> None:
+    """互換用: 1-5 と 6-10 の2枚を生成する"""
+    base, ext = os.path.splitext(output_path)
+    generate_manshuu_image_top5(data,  f"{base}_1{ext}")
+    generate_manshuu_image_6to10(data, f"{base}_2{ext}")
+
+
+def generate_manshuu_image_top5(data: dict, output_path: str) -> None:
+    """万舟警報 1〜5位"""
+    _draw_manshuu_block(data, output_path, start=1, end=5, title="万舟警報 TOP5")
+
+
+def generate_manshuu_image_6to10(data: dict, output_path: str) -> None:
+    """万舟警報 6〜10位"""
+    _draw_manshuu_block(data, output_path, start=6, end=10, title="万舟警報 6〜10位")
 
 
 # ════════════════════════════════════════════════════════════
@@ -366,13 +384,14 @@ def generate_awakening_image(data: dict, output_path: str) -> None:
 GENERATORS = {
     "danger":    (generate_danger_image,    "danger.png"),
     "hot":       (generate_hot_motor_image, "hot_motor.png"),
-    "manshuu":   (generate_manshuu_image,   "manshuu.png"),
+    "manshuu_top5":   (generate_manshuu_image_top5,   "manshuu_1.png"),
+    "manshuu_6to10":  (generate_manshuu_image_6to10,  "manshuu_2.png"),
     "awakening": (generate_awakening_image, "awakening.png"),
 }
 
 
 def generate_all_images(data: dict, prefix: str = "") -> list[str]:
-    """全4種の画像を生成し、出力ファイルパスのリストを返す"""
+    """全5枚（危険1号艇/激走/万舟1-5/万舟6-10/覚醒）を生成し、パスのリストを返す"""
     paths: list[str] = []
     for key, (func, default_name) in GENERATORS.items():
         out = prefix + default_name if prefix else default_name
