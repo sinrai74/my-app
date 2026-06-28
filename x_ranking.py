@@ -851,6 +851,51 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
     except OSError as e:
         log.warning("[キャッシュ] 保存失敗: %s", e)
 
+    # ── ranking_filter.json に通知対象レースを保存 ──────────────
+    # notify_arashi.py がこれを参照して送信可否を判断する
+    try:
+        allowed: list[dict] = []
+        for d in result["danger_boat1"]:
+            allowed.append({
+                "venue_num": d["venue_num"],
+                "race":      d["race"],
+                "reason":    "danger",
+                "venue":     d["venue"],
+            })
+        for u in result["manshuu_alert"]:
+            key = (u["venue_num"], u["race"])
+            if not any(a["venue_num"] == key[0] and a["race"] == key[1] for a in allowed):
+                allowed.append({
+                    "venue_num": u["venue_num"],
+                    "race":      u["race"],
+                    "reason":    "manshuu",
+                    "venue":     u["venue"],
+                })
+        # 激走モーターは場単位なのでその場の全レースを許可
+        hot_venues = set(m["venue_num"] for m in result["hot_motor"])
+        for prog_vn in hot_venues:
+            # その場の全レース番号を追加（1〜12R）
+            for rno in range(1, 13):
+                key = (prog_vn, rno)
+                if not any(a["venue_num"] == key[0] and a["race"] == key[1] for a in allowed):
+                    vname = next((m["venue"] for m in result["hot_motor"] if m["venue_num"] == prog_vn), f"場{prog_vn}")
+                    allowed.append({
+                        "venue_num": prog_vn,
+                        "race":      rno,
+                        "reason":    "hot_motor",
+                        "venue":     vname,
+                    })
+
+        filter_data = {
+            "date":    race_date,
+            "allowed": allowed,
+        }
+        with open("ranking_filter.json", "w", encoding="utf-8") as f:
+            json.dump(filter_data, f, ensure_ascii=False, indent=2)
+        log.info("[フィルタ] 保存: ranking_filter.json (%d件)", len(allowed))
+    except OSError as e:
+        log.warning("[フィルタ] 保存失敗: %s", e)
+
     return result
 
 

@@ -2309,7 +2309,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         top_ev_str = f" EV:{result.recommended_bets[0]['ev']:.2f}"
 
     subject = (
-        f"[v3.1]【荒れ検知】{result.venue_name} {result.race_number}R "
+        f"[v2.9]【荒れ検知】{result.venue_name} {result.race_number}R "
         f"{label} (score:{result.upset_score:.1f}{top_ev_str})"
     )
 
@@ -2475,6 +2475,45 @@ def send_line(body: str) -> bool:
     except Exception as e:
         log.error("LINE通知エラー: %s", e)
         return False
+
+
+# ════════════════════════════════════════════════════════════
+# ランキングフィルタ（ranking_filter.json 参照）
+# ════════════════════════════════════════════════════════════
+
+def _load_ranking_filter() -> set[tuple[int, int]]:
+    """
+    ranking_filter.json から通知許可レースのセットを返す。
+    ファイルが存在しない・読み込み失敗時は None を返す（全許可）。
+    """
+    path = "ranking_filter.json"
+    if not os.path.exists(path):
+        return None   # ファイルなし → 制限なし（初日対応）
+    try:
+        import json as _json
+        with open(path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        allowed = set()
+        for a in data.get("allowed", []):
+            vn  = a.get("venue_num")
+            rno = a.get("race")
+            if vn is not None and rno is not None:
+                allowed.add((int(vn), int(rno)))
+        return allowed
+    except Exception as e:
+        log.warning("[フィルタ] 読み込み失敗: %s → 制限なし", e)
+        return None
+
+
+def _is_ranking_target(venue_num: int, race_number: int) -> bool:
+    """
+    このレースがランキングに含まれているか確認する。
+    ranking_filter.json がない場合は True（全許可）を返す。
+    """
+    allowed = _load_ranking_filter()
+    if allowed is None:
+        return True   # ファイルなし → 全許可
+    return (venue_num, race_number) in allowed
 
 
 def send_notification(subject: str, body: str) -> bool:
@@ -3077,6 +3116,12 @@ def _run_main(race_date: str | None = None) -> None:
                 result.upset_score, result.target_lanes,
             )
 
+            # 買い目なしの場合は通知スキップ（的中判定もできないため）
+            if not recommended:
+                log.debug("買い目なしスキップ: %s %dR (EVフィルタで全除外)",
+                         result.venue_name, race_number)
+                continue
+
             subject, body = build_message(result)
 
             # ── ① exposure チェック（型・クラスター偏り制限）──────
@@ -3104,6 +3149,56 @@ def _run_main(race_date: str | None = None) -> None:
             if total_notified >= MAX_DAILY_BETS:
                 log.info("1日上限到達: %d件", MAX_DAILY_BETS)
                 break
+
+            # ── ランキングフィルタチェック ──────────────────────────
+            _ranking_ok = _is_ranking_target(venue_num, race_number)
+            if not _ranking_ok:
+                log.info(
+                    "ランキング外スキップ: %s %dR（メール送信なし・データ蓄積のみ）",
+                    result.venue_name, race_number,
+                )
+                # sent_*.txt に予測データを保存（結果照合・hit_record.csv 記録のため）
+                import json as _json
+                _pred_entry_pre = {
+                    "key":         notify_key,
+                    "combo":       best["combo"]             if recommended else "",
+                    "buy":         [b["combo"] for b in recommended] if recommended else [],
+                    "buy_amounts": [b.get("amount", 100) for b in recommended] if recommended else [],
+                    "odds":        best["odds"]              if recommended else 0,
+                    "prob":        best["prob"]              if recommended else 0,
+                    "ev":          best["ev"]                if recommended else 0,
+                    "confidence":  best.get("confidence", 0) if recommended else 0,
+                    "why_bet":     best.get("why_bet", [])   if recommended else [],
+                    "race_type":   best.get("race_type", "") if recommended else "",
+                    "upset_score": round(score, 3),
+                    "venue":       VENUE_NAMES.get(venue_num, f"場{venue_num}"),
+                    "venue_num":   venue_num,
+                    "race":        race_number,
+                    "night":       int(venue_num in {4,6,12,17,20,21,22,23,24}),
+                    "wind_speed":  weather.wind_speed     if weather else None,
+                    "wind_dir":    weather.wind_direction if weather else None,
+                    "wave":        weather.wave_height    if weather else None,
+                    "ranking_skip": True,   # ランキング外フラグ
+                }
+                try:
+                    _sl, _ks = [], set()
+                    if os.path.exists(sent_file):
+                        with open(sent_file, "r", encoding="utf-8") as sf:
+                            for _ln in sf:
+                                _ln = _ln.strip()
+                                if not _ln: continue
+                                try:
+                                    _ks.add(_json.loads(_ln).get("key",""))
+                                    _sl.append(_ln)
+                                except Exception:
+                                    _ks.add(_ln); _sl.append(_ln)
+                    if notify_key not in _ks:
+                        _sl.append(_json.dumps(_pred_entry_pre, ensure_ascii=False))
+                    with open(sent_file, "w", encoding="utf-8") as sf:
+                        sf.write("\n".join(_sl))
+                except Exception as _pe:
+                    log.warning("sent_file(skip)保存失敗: %s", _pe)
+                continue
 
             if send_notification(subject, body):
                 notified += 1
@@ -3316,7 +3411,7 @@ def _load_skip_conditions(csv_file: str = "hit_record.csv") -> list[dict]:
                  if r.get("hit") not in ("", None, "-1")
                  and r.get("pred_combo")]  # 通知済みレースのみ
         valid_hit = [r for r in valid if int(r.get("hit", 0) or 0) == 1]
-        if len(valid_hit) < 30:
+        if len(valid_hit) < 20:
             return []
         SKIP_KEYS = ["venue", "wind_dir", "race_type"]
         skip_conds = []
@@ -3325,7 +3420,7 @@ def _load_skip_conditions(csv_file: str = "hit_record.csv") -> list[dict]:
                 if not val:
                     continue
                 subset = [r for r in valid if str(r.get(key,"") or "") == val]
-                if len(subset) < 30:
+                if len(subset) < 5:
                     continue
                 def _c(r):
                     try:
@@ -3343,7 +3438,7 @@ def _load_skip_conditions(csv_file: str = "hit_record.csv") -> list[dict]:
                 _cost = sum(_c(r) for r in subset)
                 _prof = sum(_p(r) for r in subset)
                 roi = (_cost + _prof) / _cost if _cost > 0 else 0
-                if roi < 0.30:
+                if roi < 0.50:
                     skip_conds.append({"key":key,"val":val,"roi":round(roi,3),"n":len(subset)})
                     log.info("捨て条件登録: %s=%s (ROI=%.2f n=%d)", key, val, roi, len(subset))
         return skip_conds
@@ -4291,19 +4386,6 @@ def _check_yesterday_results(today_date: str) -> None:
             "wind_speed","wind_dir","wave",
             "result_combo","payout","hit","profit","n_bets","cost",
         ]
-
-        # ── 重複チェック: 同日・同場・同レースが既にあればスキップ ──
-        existing_keys = set()
-        if os.path.exists(csv_file):
-            with open(csv_file, "r", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    existing_keys.add((row.get("date",""), row.get("venue_num",""), str(row.get("race",""))))
-        records = [r for r in records
-                   if (str(r["date"]), str(r["venue_num"]), str(r["race"])) not in existing_keys]
-        if not records:
-            log.info("照合スキップ: 全件既に記録済み")
-            return
-
         write_header = not os.path.exists(csv_file)
         with open(csv_file, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -4351,28 +4433,30 @@ def _fetch_race_result(venue_num: int, race_number: int, race_date: str) -> dict
     for r in data.get("results", []):
         if (r.get("race_stadium_number") == venue_num
                 and r.get("race_number") == race_number):
-            # 3連単着順
-            boats = r.get("boats", [])
-            if isinstance(boats, dict):
-                boats = list(boats.values())
-            order = sorted(
-                [b for b in boats if isinstance(b, dict) and b.get("racer_rank")],
-                key=lambda b: b.get("racer_rank", 99)
-            )
-            if len(order) >= 3:
-                combo = "-".join(str(b.get("racer_boat_number", "?")) for b in order[:3])
-            else:
-                combo = "不明"
-
-            # 3連単払戻
+            # 3連単結果・払戻（payouts.trifecta から直接取得）
+            combo  = "不明"
             payout = 0
-            for pay in r.get("payouts", []):
-                if isinstance(pay, dict) and pay.get("bet_type") in ("3T", "三連単", 7):
+            payouts = r.get("payouts", {})
+            if isinstance(payouts, dict):
+                trifecta = payouts.get("trifecta", [])
+                if isinstance(trifecta, list) and trifecta:
                     try:
-                        payout = int(pay.get("payout_amount", 0))
+                        combo  = trifecta[0].get("combination", "不明")
+                        payout = int(trifecta[0].get("payout", 0))
                     except (ValueError, TypeError):
                         pass
-                    break
+
+            # trifecta取得できなかった場合はboatsからフォールバック
+            if combo == "不明":
+                boats = r.get("boats", [])
+                if isinstance(boats, dict):
+                    boats = list(boats.values())
+                order = sorted(
+                    [b for b in boats if isinstance(b, dict) and b.get("racer_place_number")],
+                    key=lambda b: b.get("racer_place_number", 99)
+                )
+                if len(order) >= 3:
+                    combo = "-".join(str(b.get("racer_boat_number", "?")) for b in order[:3])
 
             return {"combo": combo, "payout": payout}
 
