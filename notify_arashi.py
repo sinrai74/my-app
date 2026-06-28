@@ -2309,7 +2309,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         top_ev_str = f" EV:{result.recommended_bets[0]['ev']:.2f}"
 
     subject = (
-        f"[v3.0]【荒れ検知】{result.venue_name} {result.race_number}R "
+        f"[v3.1]【荒れ検知】{result.venue_name} {result.race_number}R "
         f"{label} (score:{result.upset_score:.1f}{top_ev_str})"
     )
 
@@ -4291,6 +4291,19 @@ def _check_yesterday_results(today_date: str) -> None:
             "wind_speed","wind_dir","wave",
             "result_combo","payout","hit","profit","n_bets","cost",
         ]
+
+        # ── 重複チェック: 同日・同場・同レースが既にあればスキップ ──
+        existing_keys = set()
+        if os.path.exists(csv_file):
+            with open(csv_file, "r", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    existing_keys.add((row.get("date",""), row.get("venue_num",""), str(row.get("race",""))))
+        records = [r for r in records
+                   if (str(r["date"]), str(r["venue_num"]), str(r["race"])) not in existing_keys]
+        if not records:
+            log.info("照合スキップ: 全件既に記録済み")
+            return
+
         write_header = not os.path.exists(csv_file)
         with open(csv_file, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
