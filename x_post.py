@@ -270,19 +270,27 @@ def post_from_ranking(
     target_types = types or list(FORMATTERS.keys())
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
 
-    # ── 本文: 4種類を縦に並べる ──────────────────────────────
+    # ── 件名：種類数に応じて変える ───────────────────────────
+    type_labels = {
+        "danger":    "危険な1号艇",
+        "hot":       "激走モーター",
+        "manshuu":   "万舟警報",
+        "awakening": "覚醒モーター",
+    }
+    if len(target_types) == 1:
+        subject = f"[競艇AI] {date_str} {type_labels.get(target_types[0], target_types[0])}"
+    else:
+        subject = f"[競艇ランキング] {date_str} 本日のAIランキング"
+
+    # ── 本文: 指定種類を縦に並べる ───────────────────────────
     sep = "\n" + "=" * 50 + "\n"
     sections = []
     for t in target_types:
         if t in FORMATTERS:
             sections.append(FORMATTERS[t](data))
     body = sep.join(sections)
-
-    # ── X手動投稿用の案内を末尾に追加 ────────────────────────
     body += "\n\n" + "=" * 50
-    body += "\n【X手動投稿用】\n上記4ブロックをそれぞれXにコピペしてください。\n画像は添付ファイルを使用してください。"
-
-    subject = f"[競艇ランキング] {date_str} 本日の4大ランキング"
+    body += "\n【X投稿用】上記をXにコピペしてください。画像は添付ファイルを使用してください。"
 
     # ── 添付画像を収集 ───────────────────────────────────────
     image_paths: list[str] = []
@@ -312,6 +320,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="競艇ランキング Gmail 送信スクリプト")
     parser.add_argument("--input",      default="ranking_cache.json",
                         help="ランキング JSON ファイル（デフォルト: ranking_cache.json）")
+    parser.add_argument("--type",       choices=list(_IMAGE_MAP.keys()), action="append",
+                        dest="types",   help="送信する種類（複数指定可: danger / hot / manshuu / awakening）")
     parser.add_argument("--with-image", action="store_true",
                         help="画像を添付して送信（x_image.py で事前生成が必要）")
     parser.add_argument("--dry-run",    action="store_true",
@@ -328,6 +338,7 @@ def main() -> None:
 
     results = post_from_ranking(
         data,
+        types      = args.types,          # None のとき全種類を送信
         with_image = args.with_image,
         dry_run    = args.dry_run,
     )
