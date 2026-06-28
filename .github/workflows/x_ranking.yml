@@ -11,6 +11,7 @@ on:
     - cron: '0 22 * * *'     # JST 07:00 危険な1号艇
     - cron: '0  2 * * *'     # JST 11:00 激走モーター
     - cron: '0 12 * * *'     # JST 21:00 検証
+    - cron: '0 12 * * 0'     # JST 21:00 日曜のみ 週次レポート
   workflow_dispatch:
     inputs:
       post_type:
@@ -141,6 +142,17 @@ jobs:
           DRY=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_verification.py $DRY || echo "⚠️ 検証スクリプト未作成（スキップ）"
+
+      # ── 週次レポート（日曜のみ）─────────────────────────
+      - name: Send Weekly Report
+        if: github.event.schedule == '0 12 * * 0' || github.event.inputs.post_type == 'weekly'
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+        run: |
+          DRY=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
+          python x_weekly_report.py $DRY || echo "週次レポート失敗（続行）"
 
       # ── motor_history.csv を保存 ──────────────────────
       - name: Commit motor history

@@ -53,6 +53,16 @@ _HASHTAGS: dict[str, str] = {
 # テキスト生成（x_ranking.py と同じ内容）
 # ════════════════════════════════════════════════════════════
 
+def _get_yesterday_oneliner() -> str:
+    """前日サマリーを取得して1〜3行テキストを返す。失敗時は空文字"""
+    try:
+        from x_verification import get_yesterday_summary, format_yesterday_oneliner
+        summary = get_yesterday_summary()
+        return format_yesterday_oneliner(summary)
+    except Exception:
+        return ""
+
+
 def _score_to_rank(score: int) -> str:
     if score >= 80: return "🔴 S 危険"
     if score >= 60: return "🟠 A 注意"
@@ -70,18 +80,33 @@ def _format_danger(data: dict) -> str:
         return f"⚠️【{date_str} 危険な1号艇】⚠️\n\n本日は該当レースなし\n{_HASHTAGS['danger']}"
     top = items[0]
     rank = _score_to_rank(top["score"])
+    stars = top.get("stars", {})
     lines = [
-        f"⚠️ {date_str} 最も危険な1号艇 ⚠️", "",
+        f"🚨 AI危険艇速報 {date_str}", "",
         f"【{rank}】{top['venue']}{top['race']}R",
         f"{top['racer']}",
         f"▶ {top['reason']}", "",
     ]
+    if stars:
+        lines += [
+            "── AI評価 ──",
+            f"ST　　{stars.get('ST',  '★★★☆☆')}",
+            f"機力　{stars.get('機力', '★★★☆☆')}",
+            f"近況　{stars.get('近況', '★★★☆☆')}",
+            f"相手　{stars.get('相手', '★★★☆☆')}",
+            "",
+        ]
     if len(items) > 1:
         lines.append("── 他の注目レース ──")
         for d in items[1:6]:
             r = _score_to_rank_short(d["score"])
             lines.append(f"{r} {d['venue']}{d['race']}R {d['racer']}")
         lines.append("")
+    # 昨日の答え合わせを差し込む
+    yesterday_line = _get_yesterday_oneliner()
+    if yesterday_line:
+        lines += ["", "─" * 20, yesterday_line, "─" * 20]
+
     lines += ["あなたが今日気になるレースはどこですか？💬", _HASHTAGS["danger"]]
     return "\n".join(lines)
 
@@ -91,7 +116,7 @@ def _format_hot(data: dict) -> str:
     items = data.get("hot_motor", [])
     if not items:
         return f"🔥【{date_str} 激走モーターTOP10】🔥\n\nデータ蓄積中...\n{_HASHTAGS['hot']}"
-    lines = [f"🔥【{date_str} 数字以上に出ているモーター】🔥", ""]
+    lines = [f"🔥 AI激走モーター {date_str}", ""]
     for i, m in enumerate(items[:10], 1):
         recent = m.get("recent5", "---")
         gap    = m.get("gap", 0)
@@ -110,7 +135,7 @@ def _format_manshuu(data: dict) -> str:
     top = items[0]
     rank = _score_to_rank(top["score"])
     reasons = top.get("key_reason", "").split(" / ")
-    lines = [f"🚨 {date_str} AI万舟警報 🚨", "", f"【{rank}】{top['venue']}{top['race']}R", ""]
+    lines = [f"💰 AI万舟警報 {date_str}", "", f"【{rank}】{top['venue']}{top['race']}R", ""]
     for r in reasons[:3]:
         lines.append(r if r.startswith("🔥") else f"🔥 {r}")
     lines.append("")
@@ -129,7 +154,7 @@ def _format_awakening(data: dict) -> str:
     items = data.get("awakening_motor", [])
     if not items:
         return f"⚡【{date_str} 覚醒モーターTOP10】⚡\n\nデータ蓄積中...\n{_HASHTAGS['awakening']}"
-    lines = [f"⚡【{date_str} 今節から急に良くなったモーター】⚡", ""]
+    lines = [f"⚡ AI覚醒モーター {date_str}", ""]
     for i, a in enumerate(items[:10], 1):
         recent = a.get("recent10", "---")
         old_r  = a.get("old_2rate")

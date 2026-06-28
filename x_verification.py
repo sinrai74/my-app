@@ -202,7 +202,7 @@ def _star(value: float, thresholds: list[float], reverse: bool = False) -> str:
     return filled + empty
 
 
-def build_verification_text(agg: dict, date_str: str) -> str:
+def build_verification_text(agg: dict, date_str: str, records: Optional[list] = None) -> str:
     """X投稿用のテキストを生成する"""
     date_disp = f"{date_str[4:6]}/{date_str[6:8]}"
 
@@ -265,6 +265,21 @@ def build_verification_text(agg: dict, date_str: str) -> str:
     if agg["streak_lose"] >= 5:
         lines.append(f"⚠️ 最大{agg['streak_lose']}連敗あり（慎重に）")
 
+    # 外れ公開（信頼性向上）
+    if records:
+        notified_all = [r for r in records if r.get("pred_combo", "")]
+        missed_all   = [r for r in notified_all if _safe_int(r.get("hit")) == 0]
+        if missed_all:
+            lines += ["━━ 外れたレース（公開） ━━"]
+            for r in missed_all[:3]:
+                lines.append(
+                    f"❌ {r.get('venue','')}{r.get('race','')}R"
+                    f" 予想{r.get('pred_combo','-')} → 結果{r.get('result_combo','-')}"
+                )
+            if len(missed_all) > 3:
+                lines.append(f"   他{len(missed_all)-3}件")
+            lines += ["次回の精度向上に活用します🔧", ""]
+
     lines += [
         "",
         "明日も全レース分析します💪",
@@ -311,9 +326,10 @@ def send_verification(
     agg: dict,
     date_str: str,
     dry_run: bool = False,
+    records: Optional[list] = None,
 ) -> bool:
     date_disp  = f"{date_str[4:6]}/{date_str[6:8]}"
-    tweet_text = build_verification_text(agg, date_str)
+    tweet_text = build_verification_text(agg, date_str, records=records)
     body       = build_mail_body(agg, tweet_text, date_str)
     subject    = (
         f"📊 [{date_disp}] AI成績 "
@@ -356,6 +372,86 @@ def send_verification(
 # エントリポイント
 # ════════════════════════════════════════════════════════════
 
+# ════════════════════════════════════════════════════════════
+# 外部から呼び出せる前日サマリー取得API
+# ════════════════════════════════════════════════════════════
+
+def get_yesterday_summary() -> dict:
+    """
+    前日の実績サマリーを辞書で返す。
+    x_post.py の朝投稿（危険な1号艇）に「昨日の答え合わせ」として埋め込む。
+    hit_record.csv がない・前日データがない場合は空辞書を返す。
+    """
+    yesterday = (datetime.now(JST) - timedelta(days=1)).strftime("%Y%m%d")
+    records   = load_today_records(yesterday)
+    if not records:
+        return {}
+    agg = aggregate(records)
+    if agg["total_notified"] == 0:
+        return {}
+
+    # 外れたレース（hit=0 かつ pred_combo あり）
+    notified = [r for r in records if r.get("pred_combo", "")]
+    missed   = [r for r in notified if _safe_int(r.get("hit")) == 0]
+    missed_summary = []
+    for r in missed[:3]:   # 最大3件
+        missed_summary.append(f"{r.get('venue','')}{r.get('race','')}R"
+                               f"（結果{r.get('result_combo','-')}）")
+
+    date_disp = f"{yesterday[4:6]}/{yesterday[6:8]}"
+    return {
+        "date":           yesterday,
+        "date_disp":      date_disp,
+        "total_notified": agg["total_notified"],
+        "total_hit":      agg["total_hit"],
+        "hit_rate":       agg["hit_rate"],
+        "boat1_flew":     agg["boat1_flew"],
+        "boat1_total":    agg["boat1_total"],
+        "boat1_flew_rate":agg["boat1_flew_rate"],
+        "profit":         agg["total_profit"],
+        "roi":            agg["roi"],
+        "manshuu_count":  agg["manshuu_count"],
+        "missed_summary": missed_summary,
+    }
+
+
+def format_yesterday_oneliner(summary: dict) -> str:
+    """
+    朝投稿に差し込む「昨日の答え合わせ」1〜3行テキストを返す。
+    例:
+      📌 昨日(06/27)の答え合わせ
+      危険艇 10件中7件がイン逃げ失敗（70%）
+      詳しい結果は21時のAIレポートで公開します📊
+    """
+    if not summary:
+        return ""
+    flew  = summary["boat1_flew"]
+    total = summary["boat1_total"]
+    rate  = summary["boat1_flew_rate"]
+    date  = summary["date_disp"]
+    lines = [
+        f"📌 昨日({date})の答え合わせ",
+        f"危険艇 {total}件中{flew}件がイン逃げ失敗（{rate:.0f}%）",
+    ]
+    if summary["manshuu_count"] > 0:
+        lines.append(f"万舟も{summary['manshuu_count']}件発生！")
+    lines.append("詳しい結果は21時のAIレポートで公開します📊")
+    return "\n".join(lines)
+
+
+def format_missed_detail(summary: dict) -> str:
+    """
+    外れレースの詳細テキスト（21時検証投稿用）
+    """
+    if not summary or not summary.get("missed_summary"):
+        return ""
+    lines = ["── 外れたレース ──"]
+    for m in summary["missed_summary"]:
+        lines.append(f"❌ {m}")
+    lines.append("（次回の精度向上に活用します）")
+    return "\n".join(lines)
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -378,7 +474,7 @@ def main() -> None:
         agg["total_profit"],   agg["manshuu_count"],
     )
 
-    ok = send_verification(agg, date_str, dry_run=args.dry_run)
+    ok = send_verification(agg, date_str, dry_run=args.dry_run, records=records)
     sys.exit(0 if ok else 1)
 
 

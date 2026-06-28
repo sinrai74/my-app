@@ -321,44 +321,130 @@ def _score_to_rank_short(score: int) -> str:
 
 
 def _danger_reason(boat1: Optional[BoatInfo], all_boats: list[BoatInfo]) -> str:
-    """危険理由を数字付きで返す（② 改善）"""
+    """危険理由を比較対象付き数字で返す（A. 改善）"""
     if not boat1:
         return "不明"
     reasons: list[str] = []
+    n = len(all_boats)
 
-    # ST（平均＋展示）
+    # ── ST: 6艇中何位か ──────────────────────────────
     avg_st = boat1.avg_st or 0.0
     ex_st  = boat1.ex_st
-    if avg_st >= 0.20:
-        reasons.append(f"平均ST{avg_st:.2f}（大幅遅れ）")
-    elif avg_st >= 0.18:
-        st_str = f"平均ST{avg_st:.2f}"
-        if ex_st and ex_st >= 0.20:
-            st_str += f"/展示{ex_st:.2f}"
-        reasons.append(st_str)
-    elif ex_st and ex_st >= 0.22:
-        reasons.append(f"展示ST{ex_st:.2f}（遅れ）")
+    st_vals = [b.avg_st for b in all_boats if b.avg_st and b.avg_st > 0]
+    if st_vals and avg_st > 0:
+        # STは大きい方が遅い → 大きい順でランク付け
+        # 遅さランク: 自分より速い(小さい)艇が多いほど遅い順位が下がる
+        st_worst_rank = sum(1 for s in st_vals if s < avg_st) + 1  # 1=最も遅い
+        if avg_st >= 0.20:
+            reasons.append(f"平均ST{avg_st:.2f}（{n}艇中{st_worst_rank}位・大幅遅れ）")
+        elif avg_st >= 0.18:
+            st_str = f"平均ST{avg_st:.2f}（{n}艇中{st_worst_rank}位）"
+            if ex_st and ex_st >= 0.20:
+                st_str += f" 展示{ex_st:.2f}"
+            reasons.append(st_str)
+        elif ex_st and ex_st >= 0.22:
+            reasons.append(f"展示ST{ex_st:.2f}（遅れリスク）")
 
-    # 等級
+    # ── 等級 ─────────────────────────────────────────
     if boat1.racer_class in ("B1", "B2"):
         reasons.append(boat1.racer_class)
 
-    # モーター2連率
-    if boat1.motor and boat1.motor <= 30:
-        reasons.append(f"モーター{boat1.motor:.0f}%")
+    # ── モーター2連率: 平均との比較 ──────────────────
+    motor_vals = [b.motor for b in all_boats if b.motor and b.motor > 0]
+    if boat1.motor and motor_vals:
+        avg_motor = sum(motor_vals) / len(motor_vals)
+        diff = boat1.motor - avg_motor
+        if boat1.motor <= 30:
+            reasons.append(f"モーター{boat1.motor:.0f}%（平均比{diff:+.0f}%）")
 
-    # 勝率
-    if boat1.win_rate and boat1.win_rate < 4.5:
-        reasons.append(f"勝率{boat1.win_rate:.1f}")
+    # ── 勝率: 6艇平均との比較 ────────────────────────
+    wr_vals = [b.win_rate for b in all_boats if b.win_rate and b.win_rate > 0]
+    if boat1.win_rate and wr_vals and boat1.win_rate < 4.5:
+        avg_wr = sum(wr_vals) / len(wr_vals)
+        diff = boat1.win_rate - avg_wr
+        reasons.append(f"勝率{boat1.win_rate:.1f}（平均比{diff:+.1f}）")
 
-    # 相手にA1が多い
+    # ── 相手にA1が多い ────────────────────────────────
     others = [b for b in all_boats if b.lane != 1]
     a1_count = sum(1 for b in others if b.racer_class == "A1")
     if a1_count >= 2:
         best_wr = max((b.win_rate or 0) for b in others if b.racer_class == "A1")
-        reasons.append(f"A1×{a1_count}人(最高勝率{best_wr:.1f})")
+        reasons.append(f"A1×{a1_count}人（最高勝率{best_wr:.1f}）")
 
     return " / ".join(reasons) if reasons else "総合判定"
+
+
+# ══════════════════════════════════════════════════════
+# B. AI評価軸★を算出する関数
+# ══════════════════════════════════════════════════════
+
+def _calc_stars(boat1: Optional[BoatInfo], all_boats: list[BoatInfo]) -> dict[str, str]:
+    """
+    B. AI評価軸を★1〜5で返す
+    {
+      "ST":   "★★★★☆",
+      "機力":  "★★☆☆☆",
+      "近況":  "★★★☆☆",
+      "相手":  "★★★★★",
+    }
+    ★が多い = 1号艇が危ない（飛びやすい）
+    """
+    def stars(n: int) -> str:
+        n = max(0, min(5, n))
+        return "★" * n + "☆" * (5 - n)
+
+    if not boat1:
+        return {"ST": stars(3), "機力": stars(3), "近況": stars(3), "相手": stars(3)}
+
+    # ST危険度 (遅いほど★多)
+    avg_st = boat1.avg_st or 0.17
+    ex_st  = boat1.ex_st or avg_st
+    st_score = (
+        5 if avg_st >= 0.20 else
+        4 if avg_st >= 0.18 else
+        3 if avg_st >= 0.17 else
+        2 if avg_st >= 0.16 else 1
+    )
+    if ex_st >= 0.22: st_score = min(5, st_score + 1)
+
+    # 機力（モーター2連率が低いほど★多）
+    m2 = boat1.motor or 32.0
+    motor_score = (
+        5 if m2 <= 20 else
+        4 if m2 <= 25 else
+        3 if m2 <= 30 else
+        2 if m2 <= 35 else 1
+    )
+
+    # 近況（勝率・等級が低いほど★多）
+    wr = boat1.win_rate or 5.0
+    cls = boat1.racer_class or "A2"
+    grade_penalty = {"A1": 0, "A2": 1, "B1": 2, "B2": 3}.get(cls, 1)
+    recent_score = (
+        5 if wr < 4.0 else
+        4 if wr < 4.5 else
+        3 if wr < 5.0 else
+        2 if wr < 5.5 else 1
+    )
+    recent_score = min(5, recent_score + grade_penalty)
+
+    # 相手強度（強い相手が多いほど★多）
+    others = [b for b in all_boats if b.lane != 1]
+    a1_count = sum(1 for b in others if b.racer_class == "A1")
+    best_rival_wr = max((b.win_rate or 0) for b in others) if others else 0
+    rival_score = (
+        5 if a1_count >= 3 else
+        4 if a1_count >= 2 else
+        3 if best_rival_wr > wr + 1.5 else
+        2 if best_rival_wr > wr + 0.5 else 1
+    )
+
+    return {
+        "ST":  stars(st_score),
+        "機力": stars(motor_score),
+        "近況": stars(recent_score),
+        "相手": stars(rival_score),
+    }
 
 
 # ════════════════════════════════════════════════════════════
@@ -667,6 +753,7 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
                 "score":      d_score,
                 "racer":      boat1.name if boat1 else "?",
                 "reason":     _danger_reason(boat1, boats),
+                "stars":      _calc_stars(boat1, boats),
             })
 
         # ── ③ 万舟警報 ───────────────────────────────────
@@ -782,14 +869,24 @@ def format_danger_tweet(data: dict) -> str:
     top = items[0]
     rank = _score_to_rank(top["score"])
 
+    stars = top.get("stars", {})
     lines = [
-        f"⚠️ {date_str} 最も危険な1号艇 ⚠️",
+        f"🚨 AI危険艇速報 {date_str}",
         "",
         f"【{rank}】{top['venue']}{top['race']}R",
         f"{top['racer']}",
         f"▶ {top['reason']}",
         "",
     ]
+    if stars:
+        lines += [
+            "── AI評価 ──",
+            f"ST　　{stars.get('ST',  '★★★☆☆')}",
+            f"機力　{stars.get('機力', '★★★☆☆')}",
+            f"近況　{stars.get('近況', '★★★☆☆')}",
+            f"相手　{stars.get('相手', '★★★☆☆')}",
+            "",
+        ]
 
     if len(items) > 1:
         lines.append("── 他の注目レース ──")
@@ -797,6 +894,15 @@ def format_danger_tweet(data: dict) -> str:
             r = _score_to_rank_short(d["score"])
             lines.append(f"{r} {d['venue']}{d['race']}R {d['racer']}")
         lines.append("")
+
+    # 昨日の答え合わせを差し込む
+    try:
+        from x_verification import get_yesterday_summary, format_yesterday_oneliner
+        yday = format_yesterday_oneliner(get_yesterday_summary())
+        if yday:
+            lines += ["", "─" * 20, yday, "─" * 20]
+    except Exception:
+        pass
 
     lines += [
         "あなたが今日気になるレースはどこですか？💬",
@@ -814,7 +920,7 @@ def format_hot_motor_tweet(data: dict) -> str:
         return (f"🔥【{date_str} 激走モーターTOP10】🔥\n\n"
                 "データ蓄積中...\n#競艇 #ボートレース #モーター")
 
-    lines = [f"🔥【{date_str} 数字以上に出ているモーター】🔥", ""]
+    lines = [f"🔥 AI激走モーター {date_str}", ""]
 
     for i, m in enumerate(items[:10], 1):
         recent = m.get("recent5", "---")
@@ -847,7 +953,7 @@ def format_manshuu_tweet(data: dict) -> str:
     reasons = top.get("key_reason", "").split(" / ")
 
     lines = [
-        f"🚨 {date_str} AI万舟警報 🚨",
+        f"💰 AI万舟警報 {date_str}",
         "",
         f"【{rank}】{top['venue']}{top['race']}R",
         "",
@@ -880,7 +986,7 @@ def format_awakening_tweet(data: dict) -> str:
         return (f"⚡【{date_str} 覚醒モーターTOP10】⚡\n\n"
                 "データ蓄積中...\n#競艇 #ボートレース #モーター")
 
-    lines = [f"⚡【{date_str} 今節から急に良くなったモーター】⚡", ""]
+    lines = [f"⚡ AI覚醒モーター {date_str}", ""]
 
     for i, a in enumerate(items[:10], 1):
         recent  = a.get("recent10", "---")
