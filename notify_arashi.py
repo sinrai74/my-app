@@ -3158,29 +3158,30 @@ def _run_main(race_date: str | None = None) -> None:
                     result.venue_name, race_number,
                 )
                 # sent_*.txt に予測データを保存（結果照合・hit_record.csv 記録のため）
-                import json as _json
-                _pred_entry_pre = {
-                    "key":         notify_key,
-                    "combo":       best["combo"]             if recommended else "",
-                    "buy":         [b["combo"] for b in recommended] if recommended else [],
-                    "buy_amounts": [b.get("amount", 100) for b in recommended] if recommended else [],
-                    "odds":        best["odds"]              if recommended else 0,
-                    "prob":        best["prob"]              if recommended else 0,
-                    "ev":          best["ev"]                if recommended else 0,
-                    "confidence":  best.get("confidence", 0) if recommended else 0,
-                    "why_bet":     best.get("why_bet", [])   if recommended else [],
-                    "race_type":   best.get("race_type", "") if recommended else "",
-                    "upset_score": round(score, 3),
-                    "venue":       VENUE_NAMES.get(venue_num, f"場{venue_num}"),
-                    "venue_num":   venue_num,
-                    "race":        race_number,
-                    "night":       int(venue_num in {4,6,12,17,20,21,22,23,24}),
-                    "wind_speed":  weather.wind_speed     if weather else None,
-                    "wind_dir":    weather.wind_direction if weather else None,
-                    "wave":        weather.wave_height    if weather else None,
-                    "ranking_skip": True,   # ランキング外フラグ
-                }
                 try:
+                    import json as _json
+                    _best = recommended[0] if recommended else {}
+                    _pred_entry_pre = {
+                        "key":         notify_key,
+                        "combo":       _best.get("combo", ""),
+                        "buy":         [b["combo"] for b in recommended] if recommended else [],
+                        "buy_amounts": [b.get("amount", 100) for b in recommended] if recommended else [],
+                        "odds":        _best.get("odds", 0),
+                        "prob":        _best.get("prob", 0),
+                        "ev":          _best.get("ev", 0),
+                        "confidence":  _best.get("confidence", 0),
+                        "why_bet":     _best.get("why_bet", []),
+                        "race_type":   _best.get("race_type", ""),
+                        "upset_score": round(score, 3),
+                        "venue":       VENUE_NAMES.get(venue_num, f"場{venue_num}"),
+                        "venue_num":   venue_num,
+                        "race":        race_number,
+                        "night":       int(venue_num in {4,6,12,17,20,21,22,23,24}),
+                        "wind_speed":  weather.wind_speed     if weather else None,
+                        "wind_dir":    weather.wind_direction if weather else None,
+                        "wave":        weather.wave_height    if weather else None,
+                        "ranking_skip": True,   # ランキング外フラグ
+                    }
                     _sl, _ks = [], set()
                     if os.path.exists(sent_file):
                         with open(sent_file, "r", encoding="utf-8") as sf:
@@ -3197,7 +3198,7 @@ def _run_main(race_date: str | None = None) -> None:
                     with open(sent_file, "w", encoding="utf-8") as sf:
                         sf.write("\n".join(_sl))
                 except Exception as _pe:
-                    log.warning("sent_file(skip)保存失敗: %s", _pe)
+                    log.warning("ランキング外データ蓄積失敗: %s", _pe)
                 continue
 
             if send_notification(subject, body):
