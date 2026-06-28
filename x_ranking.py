@@ -703,7 +703,7 @@ def format_danger_tweet(data: dict) -> str:
     lines = [f"⚠️【{date_str} 危険な1号艇TOP10】⚠️", ""]
     for i, d in enumerate(data["danger_boat1"][:10], 1):
         emoji = "🔴" if d["score"] >= 80 else "🟡" if d["score"] >= 60 else "🟢"
-        lines.append(f"{i}位 {d['venue']}{d['race']}R {emoji}危険度{d['score']}")
+        lines.append(f"{i}位 {d['venue']}{d['race']}R {emoji}")
         lines.append(f"   {d['racer']}（{d['reason']}）")
     lines += ["", "1号艇が飛ぶ可能性が高いレースです🏁",
               "#競艇 #ボートレース #競艇予想 #1号艇 #荒れ予想"]
@@ -714,7 +714,7 @@ def format_hot_motor_tweet(data: dict) -> str:
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
     lines = [f"🔥【{date_str} 激走モーターTOP10】🔥", ""]
     for i, m in enumerate(data["hot_motor"][:10], 1):
-        lines.append(f"{i}位 {m['venue']}{m['motor_no']}号機 指数{m['score']}")
+        lines.append(f"{i}位 {m['venue']}{m['motor_no']}号機")
     lines += ["", "数字以上に出ているモーター🔧",
               "#競艇 #ボートレース #モーター #競艇予想"]
     return "\n".join(lines)
@@ -725,7 +725,7 @@ def format_manshuu_tweet(data: dict) -> str:
     lines = [f"🚨【{date_str} 万舟警報】🚨", ""]
     for i, u in enumerate(data["manshuu_alert"][:10], 1):
         emoji = "🔴" if u["score"] >= 80 else "🟡" if u["score"] >= 60 else "🟢"
-        lines.append(f"{i}位 {u['venue']}{u['race']}R {emoji}荒れ指数{u['score']}")
+        lines.append(f"{i}位 {u['venue']}{u['race']}R {emoji}")
     lines += ["", "高配当が出そうなレース💰",
               "#競艇 #ボートレース #万舟 #荒れ予想 #穴予想"]
     return "\n".join(lines)
@@ -735,7 +735,7 @@ def format_awakening_tweet(data: dict) -> str:
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
     lines = [f"⚡【{date_str} 覚醒モーターTOP10】⚡", ""]
     for i, a in enumerate(data["awakening_motor"][:10], 1):
-        lines.append(f"{i}位 {a['venue']}{a['motor_no']}号機 覚醒度{a['score']}")
+        lines.append(f"{i}位 {a['venue']}{a['motor_no']}号機")
     lines += ["", "最近急に伸びているモーター📈",
               "#競艇 #ボートレース #モーター #覚醒 #競艇予想"]
     return "\n".join(lines)
