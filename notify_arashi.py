@@ -2309,7 +2309,7 @@ def build_message(result: RaceResult) -> tuple[str, str]:
         top_ev_str = f" EV:{result.recommended_bets[0]['ev']:.2f}"
 
     subject = (
-        f"[v2.7]【荒れ検知】{result.venue_name} {result.race_number}R "
+        f"[v3.0]【荒れ検知】{result.venue_name} {result.race_number}R "
         f"{label} (score:{result.upset_score:.1f}{top_ev_str})"
     )
 
