@@ -259,9 +259,9 @@ def generate_manshuu_image(data: dict, output_path: str) -> None:
     from PIL import Image, ImageDraw
 
     # キー選手行があるため高さを拡張
-    MAX_ITEMS   = 7     # 表示件数（2行構成なので7件に絞る）
-    ROW_H2      = 70    # 2行分の行高さ
-    SUB_H       = 26    # キー選手行の高さ
+    MAX_ITEMS   = 10    # 表示件数
+    ROW_H2      = 60    # 2行分の行高さ
+    SUB_H       = 22    # キー選手行の高さ
     IMG_H2      = HEADER_H + ROW_H2 * MAX_ITEMS + FOOTER_H + 8
 
     img  = Image.new("RGB", (IMG_W, IMG_H2), C_BG)
@@ -270,11 +270,11 @@ def generate_manshuu_image(data: dict, output_path: str) -> None:
     font_hd  = _get_font(36, bold=True)
     font_sub = _get_font(22)
     font_row = _get_font(24, bold=True)
-    font_key = _get_font(19)
+    font_key = _get_font(20)
     font_ft  = _get_font(18)
 
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    _draw_header(draw, "万舟警報 TOP7", date_str, font_hd, font_sub, accent_color=C_RED)
+    _draw_header(draw, "万舟警報 TOP10", date_str, font_hd, font_sub, accent_color=C_RED)
 
     items = data.get("manshuu_alert", [])
     y = HEADER_H + 4
