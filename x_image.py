@@ -131,8 +131,10 @@ def _draw_text_center(draw, text: str, y: int, font, color: tuple, width: int = 
     draw.text((x, y), text, font=font, fill=color)
 
 
-def _draw_header(draw, title: str, date_str: str, font_large, font_small) -> None:
+def _draw_header(draw, title: str, date_str: str, font_large, font_small,
+                 accent_color: tuple = C_WHITE) -> None:
     _draw_rect(draw, 0, 0, IMG_W, HEADER_H, C_HEADER)
+    _draw_rect(draw, 0, 0, 6, HEADER_H, accent_color)
     _draw_text_center(draw, title, 12, font_large, C_WHITE)
     _draw_text_center(draw, date_str, 58, font_small, C_GRAY)
 
@@ -256,44 +258,60 @@ def generate_hot_motor_image(data: dict, output_path: str) -> None:
 def generate_manshuu_image(data: dict, output_path: str) -> None:
     from PIL import Image, ImageDraw
 
-    img  = Image.new("RGB", (IMG_W, IMG_H), C_BG)
+    # キー選手行があるため高さを拡張
+    MAX_ITEMS   = 7     # 表示件数（2行構成なので7件に絞る）
+    ROW_H2      = 70    # 2行分の行高さ
+    SUB_H       = 26    # キー選手行の高さ
+    IMG_H2      = HEADER_H + ROW_H2 * MAX_ITEMS + FOOTER_H + 8
+
+    img  = Image.new("RGB", (IMG_W, IMG_H2), C_BG)
     draw = ImageDraw.Draw(img)
 
     font_hd  = _get_font(36, bold=True)
     font_sub = _get_font(22)
-    font_row = _get_font(26, bold=True)
+    font_row = _get_font(24, bold=True)
+    font_key = _get_font(19)
     font_ft  = _get_font(18)
 
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    _draw_header(draw, "🚨 万舟警報 TOP10", date_str, font_hd, font_sub)
+    _draw_header(draw, "万舟警報 TOP7", date_str, font_hd, font_sub, accent_color=C_RED)
 
     items = data.get("manshuu_alert", [])
     y = HEADER_H + 4
 
-    for i, u in enumerate(items[:10]):
+    for i, u in enumerate(items[:MAX_ITEMS]):
         bg = C_ROW_ODD if i % 2 == 0 else C_ROW_EVEN
-        _draw_rect(draw, 0, y, IMG_W, ROW_H, bg)
+        _draw_rect(draw, 0, y, IMG_W, ROW_H2, bg)
 
         score = u.get("score", 0)
         sc    = _score_color(score)
-        bar_w = int(score / 100 * 120)
-        _draw_rect(draw, 50, y + 16, bar_w, 14, sc)
+        bar_w = int(score / 100 * 100)
+        _draw_rect(draw, 50, y + 10, bar_w, 12, sc)
 
-        draw.text((12, y + 10), f"{i+1:>2}", font=font_row, fill=C_GRAY)
-        draw.text((178, y + 10), f"荒れ指数{score:3d}", font=font_row, fill=sc)
-        draw.text((420, y + 10),
-                  f"{u.get('venue','')}{u.get('race','')}R",
+        # 1行目: 順位 / スコアバー / 荒れ指数 / 会場・レース番号
+        draw.text((12,  y + 6),  f"{i+1:>2}",            font=font_row, fill=C_GRAY)
+        draw.text((160, y + 6),  f"荒れ指数{score:3d}",  font=font_row, fill=sc)
+        draw.text((380, y + 6),  f"{u.get('venue','')}{u.get('race','')}R",
                   font=font_row, fill=C_WHITE)
-        y += ROW_H
 
-    for j in range(10 - len(items)):
+        # 2行目: キー選手・根拠
+        key_racer  = u.get("key_racer",  "")
+        key_reason = u.get("key_reason", "")
+        key_text   = f"注目: {key_racer}  [{key_reason}]" if key_racer else ""
+        draw.text((22, y + 38), key_text, font=font_key, fill=C_YELLOW)
+
+        y += ROW_H2
+
+    # 残り枠
+    for j in range(MAX_ITEMS - len(items)):
         bg = C_ROW_ODD if (len(items) + j) % 2 == 0 else C_ROW_EVEN
-        _draw_rect(draw, 0, y, IMG_W, ROW_H, bg)
-        draw.text((12, y + 10), f"{len(items)+j+1:>2}", font=font_row, fill=(60, 60, 60))
-        draw.text((420, y + 10), "---", font=font_row, fill=(60, 60, 60))
-        y += ROW_H
+        _draw_rect(draw, 0, y, IMG_W, ROW_H2, bg)
+        draw.text((12, y + 6), f"{len(items)+j+1:>2}", font=font_row, fill=(60, 60, 60))
+        draw.text((380, y + 6), "---", font=font_row, fill=(60, 60, 60))
+        y += ROW_H2
 
-    _draw_footer(draw, font_ft)
+    # フッター
+    _draw_rect(draw, 0, y, IMG_W, FOOTER_H, C_FOOTER)
     img.save(output_path)
     log.info("[画像] 保存: %s", output_path)
 

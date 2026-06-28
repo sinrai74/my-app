@@ -446,6 +446,80 @@ def calc_upset_index(
     return round(min(100, max(0, total)))
 
 
+
+# ════════════════════════════════════════════════════════════
+# ③ 万舟警報: キー選手ピックアップ
+# ════════════════════════════════════════════════════════════
+
+def _pick_key_racer(
+    boats: list,
+    boat1,
+) -> tuple:
+    """
+    万舟警報レースのキーとなる選手と根拠を返す。
+    選定基準（優先順）:
+      1. 展示タイム最速（1号艇除く）
+      2. 勝率最上位（1号艇除く）
+      3. A1等級かつモーター高い
+    戻り値: ("2号艇 山田太郎", "展示1位・A1・勝率6.8")
+    """
+    others = [b for b in boats if b.lane != 1]
+    if not others:
+        return ("不明", "データなし")
+
+    # 展示タイム最速艇
+    ex_valid = [b for b in others if b.ex_time and b.ex_time > 0]
+    ex_best = min(ex_valid, key=lambda b: b.ex_time) if ex_valid else None
+
+    # 勝率最上位艇
+    wr_best = max(others, key=lambda b: b.win_rate or 0)
+
+    # モーター最上位艇
+    motor_best = max(others, key=lambda b: b.motor or 0)
+
+    # キー選手を決定（3票制）
+    votes: dict = {}
+    for candidate in [ex_best, wr_best, motor_best]:
+        if candidate:
+            votes[candidate.lane] = votes.get(candidate.lane, 0) + 1
+
+    best_lane = max(votes, key=lambda k: (votes[k], k))
+    key_boat = next((b for b in others if b.lane == best_lane), others[0])
+
+    # 根拠テキスト生成
+    reasons = []
+
+    # 展示順位
+    if ex_valid and key_boat.ex_time and key_boat.ex_time > 0:
+        ex_rank = sum(1 for b in ex_valid if b.ex_time < key_boat.ex_time) + 1
+        if ex_rank == 1:
+            reasons.append(f"展示1位({key_boat.ex_time:.2f})")
+        elif ex_rank <= 2:
+            reasons.append(f"展示{ex_rank}位")
+
+    # 等級・勝率
+    if key_boat.racer_class in ("A1", "A2"):
+        reasons.append(key_boat.racer_class)
+    if key_boat.win_rate:
+        reasons.append(f"勝率{key_boat.win_rate:.1f}")
+
+    # モーター
+    if key_boat.motor and key_boat.motor >= 40:
+        reasons.append(f"モーター{key_boat.motor:.0f}%")
+
+    # 1号艇より勝率上
+    if boat1 and key_boat.win_rate and boat1.win_rate and key_boat.win_rate > boat1.win_rate:
+        reasons.append("1号艇より実力上")
+
+    # ST
+    if key_boat.avg_st and key_boat.avg_st <= 0.14:
+        reasons.append(f"ST{key_boat.avg_st:.2f}")
+
+    reason_str = "・".join(reasons) if reasons else "総合判定"
+    racer_str = f"{key_boat.lane}号艇 {key_boat.name}"
+
+    return (racer_str, reason_str)
+
 # ════════════════════════════════════════════════════════════
 # ④ 覚醒モーターランキング
 # ════════════════════════════════════════════════════════════
@@ -556,11 +630,14 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
         # ── ③ 万舟警報 ───────────────────────────────────
         u_score = calc_upset_index(boats, weather)
         if u_score >= 40:
+            key_racer, key_reason = _pick_key_racer(boats, boat1)
             upset_list.append({
-                "venue":     venue_name,
-                "venue_num": vn,
-                "race":      rno,
-                "score":     u_score,
+                "venue":      venue_name,
+                "venue_num":  vn,
+                "race":       rno,
+                "score":      u_score,
+                "key_racer":  key_racer,
+                "key_reason": key_reason,
             })
 
         # ── ②④ 用のモーター情報収集 ──────────────────────
