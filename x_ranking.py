@@ -306,24 +306,59 @@ def calc_danger_score(
     return round(min(100, max(0, total)))
 
 
+def _score_to_rank(score: int) -> str:
+    """スコアをS/A/Bランクに変換"""
+    if score >= 80: return "🔴 S 危険"
+    if score >= 60: return "🟠 A 注意"
+    return "🟡 B やや危険"
+
+
+def _score_to_rank_short(score: int) -> str:
+    """画像・テキスト用の短いランク表示"""
+    if score >= 80: return "🔴S"
+    if score >= 60: return "🟠A"
+    return "🟡B"
+
+
 def _danger_reason(boat1: Optional[BoatInfo], all_boats: list[BoatInfo]) -> str:
-    """危険理由を短いテキストで返す"""
+    """危険理由を数字付きで返す（② 改善）"""
     if not boat1:
         return "不明"
     reasons: list[str] = []
-    if boat1.avg_st and boat1.avg_st >= 0.18:
-        reasons.append("ST遅")
+
+    # ST（平均＋展示）
+    avg_st = boat1.avg_st or 0.0
+    ex_st  = boat1.ex_st
+    if avg_st >= 0.20:
+        reasons.append(f"平均ST{avg_st:.2f}（大幅遅れ）")
+    elif avg_st >= 0.18:
+        st_str = f"平均ST{avg_st:.2f}"
+        if ex_st and ex_st >= 0.20:
+            st_str += f"/展示{ex_st:.2f}"
+        reasons.append(st_str)
+    elif ex_st and ex_st >= 0.22:
+        reasons.append(f"展示ST{ex_st:.2f}（遅れ）")
+
+    # 等級
     if boat1.racer_class in ("B1", "B2"):
         reasons.append(boat1.racer_class)
-    if boat1.motor and boat1.motor <= 25:
-        reasons.append("低モーター")
+
+    # モーター2連率
+    if boat1.motor and boat1.motor <= 30:
+        reasons.append(f"モーター{boat1.motor:.0f}%")
+
+    # 勝率
     if boat1.win_rate and boat1.win_rate < 4.5:
-        reasons.append("低勝率")
+        reasons.append(f"勝率{boat1.win_rate:.1f}")
+
+    # 相手にA1が多い
     others = [b for b in all_boats if b.lane != 1]
     a1_count = sum(1 for b in others if b.racer_class == "A1")
     if a1_count >= 2:
-        reasons.append(f"A1×{a1_count}人")
-    return "/".join(reasons) if reasons else "総合判定"
+        best_wr = max((b.win_rate or 0) for b in others if b.racer_class == "A1")
+        reasons.append(f"A1×{a1_count}人(最高勝率{best_wr:.1f})")
+
+    return " / ".join(reasons) if reasons else "総合判定"
 
 
 # ════════════════════════════════════════════════════════════
@@ -451,74 +486,81 @@ def calc_upset_index(
 # ③ 万舟警報: キー選手ピックアップ
 # ════════════════════════════════════════════════════════════
 
-def _pick_key_racer(
-    boats: list,
-    boat1,
-) -> tuple:
+def _upset_reasons(boats: list, boat1) -> list[str]:
     """
-    万舟警報レースのキーとなる選手と根拠を返す。
-    選定基準（優先順）:
-      1. 展示タイム最速（1号艇除く）
-      2. 勝率最上位（1号艇除く）
-      3. A1等級かつモーター高い
-    戻り値: ("2号艇 山田太郎", "展示1位・A1・勝率6.8")
+    ③ 万舟警報: 「荒れる理由」を最大3つ返す。
+    画像・テキスト両方で使う。
+    例: ["🔥 5号艇が展示1位(6.68)", "🔥 1号艇より高勝率が2人", "🔥 モーター41%の強機あり"]
     """
+    others = [b for b in boats if b.lane != 1]
+    if not others:
+        return ["データなし"]
+
+    reasons: list[str] = []
+
+    # 展示タイム: 1号艇除いた最速艇
+    ex_valid = [b for b in boats if b.ex_time and b.ex_time > 0]
+    if ex_valid:
+        all_sorted = sorted(ex_valid, key=lambda b: b.ex_time)
+        fastest = all_sorted[0]
+        if fastest.lane != 1:
+            reasons.append(f"🔥 {fastest.lane}号艇が展示1位({fastest.ex_time:.2f}秒)")
+        elif len(all_sorted) > 1 and all_sorted[1].lane != 1:
+            second = all_sorted[1]
+            reasons.append(f"🔥 {second.lane}号艇が展示2位({second.ex_time:.2f}秒)")
+
+    # 1号艇より勝率上の選手
+    wr1 = boat1.win_rate or 0 if boat1 else 0
+    stronger = [b for b in others if (b.win_rate or 0) > wr1]
+    if stronger:
+        best = max(stronger, key=lambda b: b.win_rate or 0)
+        if len(stronger) >= 2:
+            reasons.append(f"🔥 1号艇より高勝率が{len(stronger)}人(最高{best.win_rate:.1f})")
+        else:
+            reasons.append(f"🔥 {best.lane}号艇が勝率{best.win_rate:.1f}で上回る")
+
+    # 高モーター艇
+    high_motor = [b for b in others if (b.motor or 0) >= 40]
+    if high_motor:
+        best_m = max(high_motor, key=lambda b: b.motor or 0)
+        reasons.append(f"🔥 {best_m.lane}号艇モーター{best_m.motor:.0f}%の強機")
+
+    # 1号艇のST遅れ
+    if boat1 and boat1.avg_st and boat1.avg_st >= 0.19:
+        st_str = f"🔥 1号艇ST{boat1.avg_st:.2f}（遅れリスク）"
+        if boat1.ex_st and boat1.ex_st >= 0.20:
+            st_str = f"🔥 1号艇ST{boat1.avg_st:.2f}/展示{boat1.ex_st:.2f}（遅れリスク）"
+        reasons.append(st_str)
+
+    # モーター格差
+    motors = [b.motor or 32 for b in boats]
+    if max(motors) - min(motors) >= 20:
+        reasons.append(f"🔥 モーター格差{max(motors)-min(motors):.0f}pt（荒れやすい）")
+
+    return reasons[:3] if reasons else ["🔥 複合要因で荒れ判定"]
+
+
+def _pick_key_racer(boats: list, boat1) -> tuple:
+    """後方互換用: upset_reasonsの結果をキー選手形式に変換"""
     others = [b for b in boats if b.lane != 1]
     if not others:
         return ("不明", "データなし")
 
-    # 展示タイム最速艇
     ex_valid = [b for b in others if b.ex_time and b.ex_time > 0]
-    ex_best = min(ex_valid, key=lambda b: b.ex_time) if ex_valid else None
-
-    # 勝率最上位艇
-    wr_best = max(others, key=lambda b: b.win_rate or 0)
-
-    # モーター最上位艇
+    ex_best  = min(ex_valid, key=lambda b: b.ex_time) if ex_valid else None
+    wr_best  = max(others, key=lambda b: b.win_rate or 0)
     motor_best = max(others, key=lambda b: b.motor or 0)
 
-    # キー選手を決定（3票制）
     votes: dict = {}
-    for candidate in [ex_best, wr_best, motor_best]:
-        if candidate:
-            votes[candidate.lane] = votes.get(candidate.lane, 0) + 1
-
+    for c in [ex_best, wr_best, motor_best]:
+        if c:
+            votes[c.lane] = votes.get(c.lane, 0) + 1
     best_lane = max(votes, key=lambda k: (votes[k], k))
-    key_boat = next((b for b in others if b.lane == best_lane), others[0])
+    key_boat  = next((b for b in others if b.lane == best_lane), others[0])
 
-    # 根拠テキスト生成
-    reasons = []
-
-    # 展示順位
-    if ex_valid and key_boat.ex_time and key_boat.ex_time > 0:
-        ex_rank = sum(1 for b in ex_valid if b.ex_time < key_boat.ex_time) + 1
-        if ex_rank == 1:
-            reasons.append(f"展示1位({key_boat.ex_time:.2f})")
-        elif ex_rank <= 2:
-            reasons.append(f"展示{ex_rank}位")
-
-    # 等級・勝率
-    if key_boat.racer_class in ("A1", "A2"):
-        reasons.append(key_boat.racer_class)
-    if key_boat.win_rate:
-        reasons.append(f"勝率{key_boat.win_rate:.1f}")
-
-    # モーター
-    if key_boat.motor and key_boat.motor >= 40:
-        reasons.append(f"モーター{key_boat.motor:.0f}%")
-
-    # 1号艇より勝率上
-    if boat1 and key_boat.win_rate and boat1.win_rate and key_boat.win_rate > boat1.win_rate:
-        reasons.append("1号艇より実力上")
-
-    # ST
-    if key_boat.avg_st and key_boat.avg_st <= 0.14:
-        reasons.append(f"ST{key_boat.avg_st:.2f}")
-
-    reason_str = "・".join(reasons) if reasons else "総合判定"
-    racer_str = f"{key_boat.lane}号艇 {key_boat.name}"
-
-    return (racer_str, reason_str)
+    reasons_raw = _upset_reasons(boats, boat1)
+    reason_str  = " / ".join(r.replace("🔥 ", "") for r in reasons_raw)
+    return (f"{key_boat.lane}号艇 {key_boat.name}", reason_str)
 
 # ════════════════════════════════════════════════════════════
 # ④ 覚醒モーターランキング
@@ -666,14 +708,45 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
     for (vn, mno), info in motor_seen.items():
         score = calc_hot_motor(vn, mno, info["motor_2rate"], history)
         if score is not None and score >= 50:
-            hot_list.append({**info, "score": score})
+            rows = history.get((vn, mno), [])
+            recent5_places = [str(int(r["place"])) for r in rows[-5:]]
+            recent10_2rate = (
+                sum(1 for r in rows[-10:] if int(r["place"]) <= 2) / min(len(rows), 10) * 100
+                if rows else 0
+            )
+            official_2rate = info["motor_2rate"] or 32.0
+            hot_list.append({
+                **info,
+                "score":           score,
+                "recent5":         "-".join(recent5_places) if recent5_places else "---",
+                "recent10_2rate":  round(recent10_2rate, 1),
+                "official_2rate":  official_2rate,
+                "gap":             round(recent10_2rate - official_2rate, 1),
+            })
 
     # ── ④ 覚醒モーター ───────────────────────────────────
     awake_list: list[dict] = []
     for (vn, mno), info in motor_seen.items():
         score = calc_awakening(vn, mno, history)
         if score is not None and score >= 50:
-            awake_list.append({**info, "score": score})
+            rows = history.get((vn, mno), [])
+            recent10 = rows[-10:]
+            recent10_places = [str(int(r["place"])) for r in recent10]
+            # 直近展示タイム平均
+            ex10 = [float(r["ex_time"]) for r in recent10 if _is_valid_ex(r.get("ex_time"))]
+            ex_avg = round(sum(ex10) / len(ex10), 2) if ex10 else None
+            # 直近10走 vs 前半10走の2連率比較
+            old10 = rows[-20:-10] if len(rows) >= 20 else []
+            old_2rate = (sum(1 for r in old10 if int(r["place"]) <= 2) / len(old10) * 100) if old10 else None
+            new_2rate = (sum(1 for r in recent10 if int(r["place"]) <= 2) / len(recent10) * 100) if recent10 else None
+            awake_list.append({
+                **info,
+                "score":         score,
+                "recent10":      "-".join(recent10_places) if recent10_places else "---",
+                "ex_avg":        ex_avg,
+                "old_2rate":     round(old_2rate, 1) if old_2rate is not None else None,
+                "new_2rate":     round(new_2rate,  1) if new_2rate  is not None else None,
+            })
 
     result = {
         "date":            race_date,
@@ -699,45 +772,138 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
 # ════════════════════════════════════════════════════════════
 
 def format_danger_tweet(data: dict) -> str:
+    """⑥ 危険な1号艇: ワースト1位を主役にした投稿文"""
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    lines = [f"⚠️【{date_str} 危険な1号艇TOP10】⚠️", ""]
-    for i, d in enumerate(data["danger_boat1"][:10], 1):
-        emoji = "🔴" if d["score"] >= 80 else "🟡" if d["score"] >= 60 else "🟢"
-        lines.append(f"{i}位 {d['venue']}{d['race']}R {emoji}")
-        lines.append(f"   {d['racer']}（{d['reason']}）")
-    lines += ["", "1号艇が飛ぶ可能性が高いレースです🏁",
-              "#競艇 #ボートレース #競艇予想 #1号艇 #荒れ予想"]
+    items = data.get("danger_boat1", [])
+
+    if not items:
+        return f"⚠️【{date_str} 危険な1号艇】⚠️\n\n本日は該当レースなし\n#競艇 #ボートレース"
+
+    top = items[0]
+    rank = _score_to_rank(top["score"])
+
+    lines = [
+        f"⚠️ {date_str} 最も危険な1号艇 ⚠️",
+        "",
+        f"【{rank}】{top['venue']}{top['race']}R",
+        f"{top['racer']}",
+        f"▶ {top['reason']}",
+        "",
+    ]
+
+    if len(items) > 1:
+        lines.append("── 他の注目レース ──")
+        for d in items[1:6]:
+            r = _score_to_rank_short(d["score"])
+            lines.append(f"{r} {d['venue']}{d['race']}R {d['racer']}")
+        lines.append("")
+
+    lines += [
+        "あなたが今日気になるレースはどこですか？💬",
+        "#競艇 #ボートレース #競艇予想 #1号艇 #荒れ予想",
+    ]
     return "\n".join(lines)
 
 
 def format_hot_motor_tweet(data: dict) -> str:
+    """⑥ 激走モーター: 直近走行と上昇率を表示"""
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    lines = [f"🔥【{date_str} 激走モーターTOP10】🔥", ""]
-    for i, m in enumerate(data["hot_motor"][:10], 1):
+    items = data.get("hot_motor", [])
+
+    if not items:
+        return (f"🔥【{date_str} 激走モーターTOP10】🔥\n\n"
+                "データ蓄積中...\n#競艇 #ボートレース #モーター")
+
+    lines = [f"🔥【{date_str} 数字以上に出ているモーター】🔥", ""]
+
+    for i, m in enumerate(items[:10], 1):
+        recent = m.get("recent5", "---")
+        gap    = m.get("gap", 0)
+        gap_str = f"+{gap:.0f}%" if gap > 0 else f"{gap:.0f}%"
         lines.append(f"{i}位 {m['venue']}{m['motor_no']}号機")
-    lines += ["", "数字以上に出ているモーター🔧",
-              "#競艇 #ボートレース #モーター #競艇予想"]
+        lines.append(f"   直近5走: {recent}  公式比{gap_str}")
+
+    lines += [
+        "",
+        "公式2連率を大きく上回る激走モーター🔧",
+        "今節乗っている選手に注目！",
+        "",
+        "あなたのお気に入りモーターはありましたか？💬",
+        "#競艇 #ボートレース #モーター #競艇予想",
+    ]
     return "\n".join(lines)
 
 
 def format_manshuu_tweet(data: dict) -> str:
+    """⑥ 万舟警報: 荒れる理由を前面に出した投稿文"""
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    lines = [f"🚨【{date_str} 万舟警報】🚨", ""]
-    for i, u in enumerate(data["manshuu_alert"][:10], 1):
-        emoji = "🔴" if u["score"] >= 80 else "🟡" if u["score"] >= 60 else "🟢"
-        lines.append(f"{i}位 {u['venue']}{u['race']}R {emoji}")
-    lines += ["", "高配当が出そうなレース💰",
-              "#競艇 #ボートレース #万舟 #荒れ予想 #穴予想"]
+    items = data.get("manshuu_alert", [])
+
+    if not items:
+        return (f"🚨【{date_str} 万舟警報】🚨\n\n本日は該当なし\n#競艇 #ボートレース")
+
+    top = items[0]
+    rank = _score_to_rank(top["score"])
+    reasons = top.get("key_reason", "").split(" / ")
+
+    lines = [
+        f"🚨 {date_str} AI万舟警報 🚨",
+        "",
+        f"【{rank}】{top['venue']}{top['race']}R",
+        "",
+    ]
+    for r in reasons[:3]:
+        lines.append(r if r.startswith("🔥") else f"🔥 {r}")
+    lines.append("")
+
+    if len(items) > 1:
+        lines.append("── 他の警戒レース ──")
+        for u in items[1:5]:
+            r = _score_to_rank_short(u["score"])
+            lines.append(f"{r} {u['venue']}{u['race']}R")
+        lines.append("")
+
+    lines += [
+        "高配当が出そうなレースに注目💰",
+        "どのレースが気になりますか？💬",
+        "#競艇 #ボートレース #万舟 #荒れ予想 #穴予想",
+    ]
     return "\n".join(lines)
 
 
 def format_awakening_tweet(data: dict) -> str:
+    """⑥ 覚醒モーター: 急変の証拠を数字で示す"""
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    lines = [f"⚡【{date_str} 覚醒モーターTOP10】⚡", ""]
-    for i, a in enumerate(data["awakening_motor"][:10], 1):
+    items = data.get("awakening_motor", [])
+
+    if not items:
+        return (f"⚡【{date_str} 覚醒モーターTOP10】⚡\n\n"
+                "データ蓄積中...\n#競艇 #ボートレース #モーター")
+
+    lines = [f"⚡【{date_str} 今節から急に良くなったモーター】⚡", ""]
+
+    for i, a in enumerate(items[:10], 1):
+        recent  = a.get("recent10", "---")
+        old_r   = a.get("old_2rate")
+        new_r   = a.get("new_2rate")
+        ex_avg  = a.get("ex_avg")
         lines.append(f"{i}位 {a['venue']}{a['motor_no']}号機")
-    lines += ["", "最近急に伸びているモーター📈",
-              "#競艇 #ボートレース #モーター #覚醒 #競艇予想"]
+        detail = []
+        if old_r is not None and new_r is not None:
+            detail.append(f"2連率 {old_r:.0f}%→{new_r:.0f}%")
+        if ex_avg:
+            detail.append(f"展示平均{ex_avg:.2f}秒")
+        lines.append(f"   直近10走: {recent}")
+        if detail:
+            lines.append(f"   {'  '.join(detail)}")
+
+    lines += [
+        "",
+        "急に仕上がってきたモーターは狙い目📈",
+        "",
+        "どのモーターが気になりましたか？💬",
+        "#競艇 #ボートレース #モーター #覚醒 #競艇予想",
+    ]
     return "\n".join(lines)
 
 

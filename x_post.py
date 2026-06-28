@@ -53,43 +53,98 @@ _HASHTAGS: dict[str, str] = {
 # テキスト生成（x_ranking.py と同じ内容）
 # ════════════════════════════════════════════════════════════
 
+def _score_to_rank(score: int) -> str:
+    if score >= 80: return "🔴 S 危険"
+    if score >= 60: return "🟠 A 注意"
+    return "🟡 B やや危険"
+
+def _score_to_rank_short(score: int) -> str:
+    if score >= 80: return "🔴S"
+    if score >= 60: return "🟠A"
+    return "🟡B"
+
 def _format_danger(data: dict) -> str:
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    lines = [f"⚠️【{date_str} 危険な1号艇TOP10】⚠️", ""]
-    for i, d in enumerate(data["danger_boat1"][:10], 1):
-        emoji = "🔴" if d["score"] >= 80 else "🟡" if d["score"] >= 60 else "🟢"
-        lines.append(f"{i}位 {d['venue']}{d['race']}R {emoji}")
-        lines.append(f"   {d['racer']}（{d['reason']}）")
-    lines += ["", "1号艇が飛ぶ可能性が高いレースです🏁",
-              _HASHTAGS["danger"]]
+    items = data.get("danger_boat1", [])
+    if not items:
+        return f"⚠️【{date_str} 危険な1号艇】⚠️\n\n本日は該当レースなし\n{_HASHTAGS['danger']}"
+    top = items[0]
+    rank = _score_to_rank(top["score"])
+    lines = [
+        f"⚠️ {date_str} 最も危険な1号艇 ⚠️", "",
+        f"【{rank}】{top['venue']}{top['race']}R",
+        f"{top['racer']}",
+        f"▶ {top['reason']}", "",
+    ]
+    if len(items) > 1:
+        lines.append("── 他の注目レース ──")
+        for d in items[1:6]:
+            r = _score_to_rank_short(d["score"])
+            lines.append(f"{r} {d['venue']}{d['race']}R {d['racer']}")
+        lines.append("")
+    lines += ["あなたが今日気になるレースはどこですか？💬", _HASHTAGS["danger"]]
     return "\n".join(lines)
 
 
 def _format_hot(data: dict) -> str:
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    lines = [f"🔥【{date_str} 激走モーターTOP10】🔥", ""]
-    for i, m in enumerate(data["hot_motor"][:10], 1):
+    items = data.get("hot_motor", [])
+    if not items:
+        return f"🔥【{date_str} 激走モーターTOP10】🔥\n\nデータ蓄積中...\n{_HASHTAGS['hot']}"
+    lines = [f"🔥【{date_str} 数字以上に出ているモーター】🔥", ""]
+    for i, m in enumerate(items[:10], 1):
+        recent = m.get("recent5", "---")
+        gap    = m.get("gap", 0)
+        gap_str = f"+{gap:.0f}%" if gap > 0 else f"{gap:.0f}%"
         lines.append(f"{i}位 {m['venue']}{m['motor_no']}号機")
-    lines += ["", "数字以上に出ているモーター🔧", _HASHTAGS["hot"]]
+        lines.append(f"   直近5走: {recent}  公式比{gap_str}")
+    lines += ["", "公式2連率を上回る激走モーター🔧", "あなたのお気に入りはありましたか？💬", _HASHTAGS["hot"]]
     return "\n".join(lines)
 
 
 def _format_manshuu(data: dict) -> str:
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    lines = [f"🚨【{date_str} 万舟警報】🚨", ""]
-    for i, u in enumerate(data["manshuu_alert"][:10], 1):
-        emoji = "🔴" if u["score"] >= 80 else "🟡" if u["score"] >= 60 else "🟢"
-        lines.append(f"{i}位 {u['venue']}{u['race']}R {emoji}")
-    lines += ["", "高配当が出そうなレース💰", _HASHTAGS["manshuu"]]
+    items = data.get("manshuu_alert", [])
+    if not items:
+        return f"🚨【{date_str} 万舟警報】🚨\n\n本日は該当なし\n{_HASHTAGS['manshuu']}"
+    top = items[0]
+    rank = _score_to_rank(top["score"])
+    reasons = top.get("key_reason", "").split(" / ")
+    lines = [f"🚨 {date_str} AI万舟警報 🚨", "", f"【{rank}】{top['venue']}{top['race']}R", ""]
+    for r in reasons[:3]:
+        lines.append(r if r.startswith("🔥") else f"🔥 {r}")
+    lines.append("")
+    if len(items) > 1:
+        lines.append("── 他の警戒レース ──")
+        for u in items[1:5]:
+            r = _score_to_rank_short(u["score"])
+            lines.append(f"{r} {u['venue']}{u['race']}R")
+        lines.append("")
+    lines += ["高配当が出そうなレースに注目💰", "どのレースが気になりますか？💬", _HASHTAGS["manshuu"]]
     return "\n".join(lines)
 
 
 def _format_awakening(data: dict) -> str:
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    lines = [f"⚡【{date_str} 覚醒モーターTOP10】⚡", ""]
-    for i, a in enumerate(data["awakening_motor"][:10], 1):
+    items = data.get("awakening_motor", [])
+    if not items:
+        return f"⚡【{date_str} 覚醒モーターTOP10】⚡\n\nデータ蓄積中...\n{_HASHTAGS['awakening']}"
+    lines = [f"⚡【{date_str} 今節から急に良くなったモーター】⚡", ""]
+    for i, a in enumerate(items[:10], 1):
+        recent = a.get("recent10", "---")
+        old_r  = a.get("old_2rate")
+        new_r  = a.get("new_2rate")
+        ex_avg = a.get("ex_avg")
         lines.append(f"{i}位 {a['venue']}{a['motor_no']}号機")
-    lines += ["", "最近急に伸びているモーター📈", _HASHTAGS["awakening"]]
+        lines.append(f"   直近10走: {recent}")
+        detail = []
+        if old_r is not None and new_r is not None:
+            detail.append(f"2連率 {old_r:.0f}%→{new_r:.0f}%")
+        if ex_avg:
+            detail.append(f"展示平均{ex_avg:.2f}秒")
+        if detail:
+            lines.append(f"   {'  '.join(detail)}")
+    lines += ["", "急に仕上がってきたモーターは狙い目📈", "どのモーターが気になりましたか？💬", _HASHTAGS["awakening"]]
     return "\n".join(lines)
 
 

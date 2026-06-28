@@ -175,11 +175,13 @@ def generate_danger_image(data: dict, output_path: str) -> None:
 
         # 順位
         draw.text((12, y + 10), f"{i+1:>2}", font=font_row, fill=C_GRAY)
-        # スコアバー（色のみ、数字なし）
-        bar_w = int(score / 100 * 80)
+        # ランクバー + ランク文字
+        bar_w = int(score / 100 * 60)
         _draw_rect(draw, 50, y + 14, bar_w, 18, sc)
+        rank_str = "S" if score >= 80 else "A" if score >= 60 else "B"
+        draw.text((120, y + 10), rank_str, font=font_row, fill=sc)
         # 場所・レース番号
-        draw.text((145, y + 10), f"{d.get('venue','')}{d.get('race','')}R", font=font_row, fill=C_WHITE)
+        draw.text((155, y + 10), f"{d.get('venue','')}{d.get('race','')}R", font=font_row, fill=C_WHITE)
         # 選手名
         draw.text((370, y + 10), d.get("racer", "?"), font=font_row, fill=C_WHITE)
         # 理由
