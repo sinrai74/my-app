@@ -257,8 +257,8 @@ def _draw_manshuu_block(data: dict, output_path: str,
     """万舟警報を start〜end 番目（1始まり）で切り出して1枚の画像を生成する"""
     from PIL import Image, ImageDraw
 
-    BLOCK_SIZE  = end - start          # 表示件数
-    ROW_H2      = 60                   # 2行分の行高さ
+    BLOCK_SIZE  = end - start + 1      # 表示件数（start〜end の件数）
+    ROW_H2      = 76                   # 2行分の行高さ
     IMG_H2      = HEADER_H + ROW_H2 * BLOCK_SIZE + FOOTER_H + 8
 
     img  = Image.new("RGB", (IMG_W, IMG_H2), C_BG)
@@ -295,7 +295,7 @@ def _draw_manshuu_block(data: dict, output_path: str,
         key_racer  = u.get("key_racer",  "")
         key_reason = u.get("key_reason", "")
         key_text   = f"注目: {key_racer}  [{key_reason}]" if key_racer else ""
-        draw.text((22, y + 38), key_text, font=font_key, fill=C_YELLOW)
+        draw.text((22, y + 44), key_text, font=font_key, fill=C_YELLOW)
 
         y += ROW_H2
 
