@@ -236,50 +236,57 @@ def update_motor_history(race_date: str) -> int:
 # ① 危険な1号艇ランキング
 # ════════════════════════════════════════════════════════════
 
-def calc_danger_score(
+def _calc_danger_breakdown(
     boat1: Optional[BoatInfo],
     all_boats: list[BoatInfo],
     weather: Optional[WeatherInfo] = None,
-) -> int:
-    """1号艇の危険度スコアを 0〜100 で返す"""
+) -> dict:
+    """
+    危険度スコアの内訳を辞書で返す。
+    note レポートのスコア内訳表示・AIコメント生成に使用。
+    {
+      "st":     (raw_score, weighted),  # ST危険度
+      "ex":     (raw_score, weighted),  # 展示危険度
+      "motor":  (raw_score, weighted),  # モーター危険度
+      "grade":  (raw_score, weighted),  # 等級危険度
+      "wr":     (raw_score, weighted),  # 勝率危険度
+      "rival":  (raw_score, weighted),  # 相手強度
+      "total":  int,
+    }
+    """
     if not boat1:
-        return 0
+        return {"st":(0,0),"ex":(0,0),"motor":(0,0),"grade":(0,0),"wr":(0,0),"rival":(0,0),"total":0}
 
-    # ── ST危険度 ────────────────────────────────────────────
+    # ST
     st = boat1.avg_st or 0.17
     if   st >= 0.20: st_score = 100
     elif st >= 0.18: st_score = 80
     elif st >= 0.16: st_score = 60
     elif st >= 0.14: st_score = 30
     else:            st_score = 0
-    # 展示STが取れていればボーナス
     if boat1.ex_st is not None and boat1.ex_st >= 0.22:
         st_score = min(100, st_score + 20)
 
-    # ── 展示危険度 ──────────────────────────────────────────
-    ex_score = 50  # データなし時はデフォルト
+    # 展示
+    ex_score = 50
     ex_times = [b.ex_time for b in all_boats if b.ex_time is not None and b.ex_time > 0]
     if boat1.ex_time is not None and boat1.ex_time > 0 and len(ex_times) >= 4:
-        sorted_times = sorted(ex_times)
-        try:
-            rank = sorted_times.index(boat1.ex_time) + 1   # 1=最速
-        except ValueError:
-            rank = 3
+        rank = sum(1 for b in all_boats
+                   if b.ex_time and b.ex_time < boat1.ex_time) + 1
         ex_score = {1: 0, 2: 0, 3: 20, 4: 50, 5: 80, 6: 100}.get(rank, 50)
 
-    # ── モーター危険度 ──────────────────────────────────────
-    m2 = boat1.motor or 32.0   # BoatInfo.motor = モーター2連率
+    # モーター
+    m2 = boat1.motor or 32.0
     if   m2 <= 20: motor_score = 100
     elif m2 <= 25: motor_score = 70
     elif m2 <= 30: motor_score = 40
     elif m2 <= 35: motor_score = 15
     else:          motor_score = 0
 
-    # ── 等級危険度 ──────────────────────────────────────────
-    grade_map = {"A1": 0, "A2": 20, "B1": 70, "B2": 100}
-    grade_score = grade_map.get(boat1.racer_class, 50)
+    # 等級
+    grade_score = {"A1": 0, "A2": 20, "B1": 70, "B2": 100}.get(boat1.racer_class, 50)
 
-    # ── 勝率危険度 ──────────────────────────────────────────
+    # 勝率
     wr = boat1.win_rate or 5.0
     if   wr < 4.0: wr_score = 100
     elif wr < 4.5: wr_score = 80
@@ -287,7 +294,7 @@ def calc_danger_score(
     elif wr < 5.5: wr_score = 25
     else:          wr_score = 0
 
-    # ── 相手強度 ────────────────────────────────────────────
+    # 相手
     others = [b for b in all_boats if b.lane != 1]
     best_other_wr = max((b.win_rate or 0) for b in others) if others else 0
     rival_score = min(100, max(0, (best_other_wr - wr) * 20))
@@ -295,15 +302,33 @@ def calc_danger_score(
     if a1_count >= 2:
         rival_score = min(100, rival_score + 30)
 
+    W = dict(st=0.20, ex=0.20, motor=0.15, grade=0.15, wr=0.15, rival=0.15)
     total = (
-        st_score    * 0.20 +
-        ex_score    * 0.20 +
-        motor_score * 0.15 +
-        grade_score * 0.15 +
-        wr_score    * 0.15 +
-        rival_score * 0.15
+        st_score    * W["st"]    +
+        ex_score    * W["ex"]    +
+        motor_score * W["motor"] +
+        grade_score * W["grade"] +
+        wr_score    * W["wr"]    +
+        rival_score * W["rival"]
     )
-    return round(min(100, max(0, total)))
+    return {
+        "st":    (st_score,    round(st_score    * W["st"],    1)),
+        "ex":    (ex_score,    round(ex_score    * W["ex"],    1)),
+        "motor": (motor_score, round(motor_score * W["motor"], 1)),
+        "grade": (grade_score, round(grade_score * W["grade"], 1)),
+        "wr":    (wr_score,    round(wr_score    * W["wr"],    1)),
+        "rival": (rival_score, round(rival_score * W["rival"], 1)),
+        "total": round(min(100, max(0, total))),
+    }
+
+
+def calc_danger_score(
+    boat1: Optional[BoatInfo],
+    all_boats: list[BoatInfo],
+    weather: Optional[WeatherInfo] = None,
+) -> int:
+    """1号艇の危険度スコアを 0〜100 で返す"""
+    return _calc_danger_breakdown(boat1, all_boats, weather)["total"]
 
 
 def _score_to_rank(score: int) -> str:
@@ -744,7 +769,8 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
         boat1 = next((b for b in boats if b.lane == 1), None)
 
         # ── ① 危険な1号艇 ────────────────────────────────
-        d_score = calc_danger_score(boat1, boats, weather)
+        breakdown  = _calc_danger_breakdown(boat1, boats, weather)
+        d_score    = breakdown["total"]
         if d_score >= 40:
             danger_list.append({
                 "venue":      venue_name,
@@ -752,8 +778,14 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
                 "race":       rno,
                 "score":      d_score,
                 "racer":      boat1.name if boat1 else "?",
+                "racer_class": boat1.racer_class if boat1 else "",
+                "win_rate":   boat1.win_rate    if boat1 else 0,
+                "motor":      boat1.motor       if boat1 else 0,
+                "avg_st":     boat1.avg_st      if boat1 else 0,
+                "ex_time":    boat1.ex_time      if boat1 else None,
                 "reason":     _danger_reason(boat1, boats),
                 "stars":      _calc_stars(boat1, boats),
+                "breakdown":  breakdown,
             })
 
         # ── ③ 万舟警報 ───────────────────────────────────
@@ -841,6 +873,9 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
         "hot_motor":       sorted(hot_list,    key=lambda x: -x["score"])[:20],
         "manshuu_alert":   sorted(upset_list,  key=lambda x: -x["score"])[:10],
         "awakening_motor": sorted(awake_list,  key=lambda x: -x["score"])[:10],
+        # note用: スコア40以上の全レース（ランク問わず）
+        "all_danger":      sorted(danger_list, key=lambda x: -x["score"]),
+        "all_manshuu":     sorted(upset_list,  key=lambda x: -x["score"]),
     }
 
     # ranking_cache.json に保存

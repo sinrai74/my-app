@@ -143,6 +143,18 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_verification.py $DRY || echo "⚠️ 検証スクリプト未作成（スキップ）"
 
+      # ── noteレポート生成・送信（毎朝7時）───────────────────
+      - name: Send Note Report
+        if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+        run: |
+          pip install weasyprint -q 2>/dev/null || true
+          DRY=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
+          python x_note_report.py $DRY || echo "noteレポート失敗（続行）"
+
       # ── 週次レポート（日曜のみ）─────────────────────────
       - name: Send Weekly Report
         if: github.event.schedule == '0 12 * * 0' || github.event.inputs.post_type == 'weekly'
