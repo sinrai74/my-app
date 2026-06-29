@@ -45,9 +45,17 @@ def _today_jst() -> str:
     return datetime.now(JST).strftime("%Y%m%d")
 
 
+def _yesterday_jst() -> str:
+    return (datetime.now(JST) - timedelta(days=1)).strftime("%Y%m%d")
+
+
 def load_today_records(target_date: Optional[str] = None) -> list[dict]:
-    """hit_record.csv から指定日のレコードを返す"""
-    date_str = target_date or _today_jst()
+    """
+    hit_record.csv から指定日のレコードを返す。
+    target_date 省略時は「前日」を対象にする。
+    （当日分の pred_combo は翌朝の照合まで埋まらないため）
+    """
+    date_str = target_date or _yesterday_jst()
     if not os.path.exists(HIT_CSV):
         log.warning("[検証] %s が見つかりません", HIT_CSV)
         return []
@@ -464,7 +472,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="送信せず表示のみ")
     args = parser.parse_args()
 
-    date_str = args.date or _today_jst()
+    date_str = args.date or _yesterday_jst()
     records  = load_today_records(date_str)
     agg      = aggregate(records)
 
