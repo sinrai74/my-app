@@ -1,0 +1,64 @@
+name: AI転がし日記
+
+on:
+  schedule:
+    # ─────────────────────────────────────────────────────
+    # UTC → JST +9h
+    #   UTC 21:30 = JST 06:30  → 朝の転がし候補発表
+    # ─────────────────────────────────────────────────────
+    - cron: '30 21 * * *'    # JST 06:30 毎朝
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 YYYYMMDD（省略時は今日）'
+        required: false
+        default: ''
+      dry_run:
+        description: 'ドライラン (true=送信しない)'
+        required: false
+        default: 'false'
+
+jobs:
+  korogashi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests beautifulsoup4 scikit-learn pandas numpy
+
+      - name: Check model file
+        run: |
+          [ -f model_all.pkl ] && echo "model_all.pkl あり" || echo "model_all.pkl なし"
+
+      - name: Generate korogashi candidates
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+        run: |
+          DATE_ARG=""
+          [ -n "${{ github.event.inputs.date }}" ] && DATE_ARG="--date ${{ github.event.inputs.date }}"
+          DRY=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
+          python x_korogashi.py --generate $DATE_ARG $DRY
+
+      - name: Commit korogashi cache
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add korogashi_cache.json || true
+          git diff --cached --quiet || git commit -m "auto: korogashi cache $(date +%Y%m%d)"
+          git push origin main || echo "push失敗"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
