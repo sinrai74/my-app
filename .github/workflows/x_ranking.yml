@@ -4,18 +4,21 @@ on:
   schedule:
     # ─────────────────────────────────────────────────────
     # UTC → JST +9h
-    #   UTC 22:00 = JST 07:00  → 危険な1号艇
+    #   UTC 22:00 = JST 07:00  → 危険な1号艇 + note競艇新聞
     #   UTC 02:00 = JST 11:00  → 激走モーター
-    #   UTC 12:00 = JST 21:00  → 検証（前日結果）
+    #   UTC 07:00 = JST 16:00  → 覚醒モーター（条件付き）
+    #   UTC 12:00 = JST 21:00  → 検証レポート
+    #   UTC 12:00 日曜 = JST 21:00  → 週次レポート
     # ─────────────────────────────────────────────────────
     - cron: '0 22 * * *'     # JST 07:00 危険な1号艇
-    - cron: '0  2 * * *'     # JST 11:00 激走モーター
+    - cron: '0 2 * * *'     # JST 11:00 激走モーター
+    - cron: '0 7 * * *'     # JST 16:00 覚醒モーター
     - cron: '0 12 * * *'     # JST 21:00 検証
     - cron: '0 12 * * 0'     # JST 21:00 日曜のみ 週次レポート
   workflow_dispatch:
     inputs:
       post_type:
-        description: '投稿種類 (danger / hot / verification / all)'
+        description: '投稿種類 (danger / hot / awakening / verification / all)'
         required: false
         default: 'all'
       date:
@@ -23,7 +26,7 @@ on:
         required: false
         default: ''
       dry_run:
-        description: 'ドライラン (true=メール送信しない)'
+        description: 'ドライラン (true=送信しない)'
         required: false
         default: 'false'
       with_image:
@@ -57,26 +60,33 @@ jobs:
 
       - name: Check model file
         run: |
-          [ -f model_all.pkl ] && echo "✅ model_all.pkl あり" || echo "⚠️ model_all.pkl なし"
+          [ -f model_all.pkl ] && echo "model_all.pkl あり" || echo "model_all.pkl なし"
 
-      # ── 投稿種類の自動判定 ──────────────────────────────
+      # ── 投稿種類の判定（cron から直接判定）──────────────
+      # 時刻判定はせず、github.event.schedule の値で判定する。
+      # GitHub Actionsの遅延で時刻がずれても正しく動作する。
       - name: Determine post type
         id: post_type
         run: |
           INPUT="${{ github.event.inputs.post_type }}"
-          HOUR_UTC=$(date -u +%H)
+          SCHEDULE="${{ github.event.schedule }}"
           if [ -n "$INPUT" ] && [ "$INPUT" != "all" ]; then
             TYPE="$INPUT"
-          elif [ "$HOUR_UTC" = "22" ]; then
+          elif [ "$SCHEDULE" = "0 22 * * *" ]; then
             TYPE="danger"
-          elif [ "$HOUR_UTC" = "02" ]; then
+          elif [ "$SCHEDULE" = "0 2 * * *" ] || [ "$SCHEDULE" = "0  2 * * *" ]; then
             TYPE="hot"
-          elif [ "$HOUR_UTC" = "12" ]; then
+          elif [ "$SCHEDULE" = "0 7 * * *" ] || [ "$SCHEDULE" = "0  7 * * *" ]; then
+            TYPE="awakening"
+          elif [ "$SCHEDULE" = "0 12 * * *" ]; then
             TYPE="verification"
+          elif [ -n "$SCHEDULE" ]; then
+            TYPE="danger"
           else
             TYPE="all"
           fi
           echo "type=$TYPE" >> $GITHUB_OUTPUT
+          echo "schedule=$SCHEDULE"
           echo "投稿種類: $TYPE"
 
       # ── 前日モーター履歴を蓄積 ──────────────────────────
@@ -88,9 +98,9 @@ jobs:
             PREV=$(python3 -c "from datetime import datetime,timedelta; d='${{ github.event.inputs.date }}'; print((datetime.strptime(d,'%Y%m%d')-timedelta(days=1)).strftime('%Y%m%d'))")
             DATE_ARG="--date $PREV"
           fi
-          python x_ranking.py --update-history $DATE_ARG || echo "⚠️ 履歴更新失敗（続行）"
+          python x_ranking.py --update-history $DATE_ARG || echo "履歴更新失敗（続行）"
 
-      # ── ランキング生成 ─────────────────────────────────
+      # ── ランキング生成（検証以外は常に実行）────────────
       - name: Generate rankings
         if: steps.post_type.outputs.type != 'verification'
         run: |
@@ -100,13 +110,11 @@ jobs:
 
       # ── 画像生成 ───────────────────────────────────────
       - name: Generate images
-        if: >
-          steps.post_type.outputs.type != 'verification' &&
-          github.event.inputs.with_image != 'false'
+        if: steps.post_type.outputs.type != 'verification' && github.event.inputs.with_image != 'false'
         run: |
-          python x_image.py --all --input ranking_cache.json || echo "⚠️ 画像生成失敗（テキストのみ）"
+          python x_image.py --all --input ranking_cache.json || echo "画像生成失敗（テキストのみ）"
 
-      # ── 危険な1号艇を送信 ─────────────────────────────
+      # ── 危険な1号艇を送信（07:00）─────────────────────
       - name: Send - Danger Boat1
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         env:
@@ -119,7 +127,7 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type danger $IMG $DRY
 
-      # ── 激走モーターを送信 ────────────────────────────
+      # ── 激走モーターを送信（11:00）────────────────────
       - name: Send - Hot Motor
         if: steps.post_type.outputs.type == 'hot' || steps.post_type.outputs.type == 'all'
         env:
@@ -132,9 +140,9 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type hot $IMG $DRY
 
-      # ── 万舟警報を送信 ───────────────────────────────
+      # ── 万舟警報を送信（イベント駆動のため allのみ）──
       - name: Send - Manshuu Alert
-        if: steps.post_type.outputs.type == 'manshuu' || steps.post_type.outputs.type == 'all'
+        if: steps.post_type.outputs.type == 'all'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
@@ -145,13 +153,19 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type manshuu $IMG $DRY
 
-      # ── 覚醒モーターを送信 ──────────────────────────
+      # ── 覚醒モーターを送信（16:00/覚醒度90以上のみ）──
       - name: Send - Awakening Motor
         if: steps.post_type.outputs.type == 'awakening' || steps.post_type.outputs.type == 'all'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
         run: |
+          HAS=$(python3 -c "import json; d=json.load(open('ranking_cache.json')); print('yes' if any(m.get('score',0)>=90 for m in d.get('awakening_motor',[])) else 'no')" 2>/dev/null || echo "no")
+          if [ "$HAS" = "no" ]; then
+            echo "覚醒度90以上なし → 本日はスキップ"
+            exit 0
+          fi
+          echo "覚醒度90以上あり → 送信"
           IMG=""
           [ "${{ github.event.inputs.with_image }}" != "false" ] && [ -f awakening.png ] && IMG="--with-image"
           DRY=""
@@ -167,9 +181,9 @@ jobs:
         run: |
           DRY=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
-          python x_verification.py $DRY || echo "⚠️ 検証スクリプト未作成（スキップ）"
+          python x_verification.py $DRY || echo "検証スクリプト失敗（スキップ）"
 
-      # ── noteレポート生成・送信（毎朝7時）───────────────────
+      # ── noteレポート生成・送信（07:30 = danger直後）──
       - name: Send Note Report
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         env:
@@ -200,6 +214,6 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add motor_history.csv ranking_cache.json manshuu_sent.json || true
           git diff --cached --quiet || git commit -m "auto: update history $(date +%Y%m%d-%H%M)"
-          git push origin main || echo "⚠️ push失敗"
+          git push origin main || echo "push失敗"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
