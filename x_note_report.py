@@ -529,35 +529,215 @@ def generate_pdf(html_path: str, pdf_path: str) -> bool:
     except Exception as e:
         log.warning("[PDF] pdfkit失敗: %s", e)
 
-    # Pillowフォールバック
+    # Pillowフォールバック（ダークテーマ・構造的レンダリング）
     try:
         from PIL import Image, ImageDraw, ImageFont
-        import re as _re
-        with open(html_path, encoding="utf-8") as f:
-            content = f.read()
-        text = _re.sub(r'<[^>]+>', '', content)
-        text = _re.sub(r'\n{3,}', '\n\n', text).strip()
-        lines = [l.strip() for l in text.split('\n') if l.strip()][:150]
+        import re as _re, json as _json
 
-        def _gf(size):
-            for p in ["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                      "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf"]:
+        # ── フォント取得 ─────────────────────────────────────
+        def _gf(size, bold=False):
+            candidates = (
+                ["/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+                 "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
+                 "C:/Windows/Fonts/meiryob.ttc"] if bold else
+                ["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                 "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
+                 "C:/Windows/Fonts/meiryo.ttc"]
+            )
+            for p in candidates:
                 if os.path.exists(p):
                     try: return ImageFont.truetype(p, size)
                     except: pass
             return ImageFont.load_default()
 
-        W, LH = 1200, 24
-        H = max(1800, len(lines) * LH + 120)
-        img = Image.new("RGB", (W, H), (255,255,255))
+        # ── HTMLからデータを再取得 ────────────────────────────
+        # ranking_cache.json が隣にあれば使う
+        cache_path = os.path.join(os.path.dirname(html_path), "ranking_cache.json")
+        if os.path.exists(cache_path):
+            with open(cache_path, encoding="utf-8") as f:
+                data = _json.load(f)
+        else:
+            data = {}
+
+        all_danger  = data.get("all_danger",  data.get("danger_boat1", []))
+        all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
+        hot_motor   = data.get("hot_motor", [])
+        awake_motor = data.get("awakening_motor", [])
+        date_str_d  = data.get("date", "")
+        date_disp   = f"{date_str_d[4:6]}/{date_str_d[6:8]}" if len(date_str_d) >= 8 else ""
+
+        # ── カラー定義 ────────────────────────────────────────
+        C_BG     = (13,  13,  26)
+        C_CARD   = (22,  22,  42)
+        C_WHITE  = (232, 232, 240)
+        C_GRAY   = (136, 136, 170)
+        C_ACCENT = ( 79, 195, 247)
+        C_S      = (239,  83,  80)
+        C_A      = (255, 167,  38)
+        C_B      = (102, 187, 106)
+        C_SEP    = ( 37,  37,  64)
+
+        W = 1200
+        fhd  = _gf(38, bold=True)
+        fbig = _gf(28, bold=True)
+        fmd  = _gf(22, bold=True)
+        fsm  = _gf(18)
+        fxs  = _gf(15)
+
+        def txt_w(text, font):
+            try: return font.getbbox(text)[2] - font.getbbox(text)[0]
+            except: return len(text) * 14
+
+        def rank_color(score):
+            if score >= 80: return C_S
+            if score >= 60: return C_A
+            return C_B
+
+        def rank_label(score):
+            if score >= 80: return "S"
+            if score >= 60: return "A"
+            return "B"
+
+        # ── 描画ブロックをリストで構築 ────────────────────────
+        # (type, *args) 形式
+        blocks = []  # (y_cost, draw_fn)
+
+        # ページ幅固定で各ブロックの高さを計算してから一気に描く
+
+        # セクション描画用のリスト形式
+        # 最終的にブロックの合計高さを計算してImageを作る
+
+        draw_commands = []  # (y, fn) リスト
+
+        y = [0]  # mutable
+
+        def add_gap(h):
+            y[0] += h
+
+        def draw_header(draw):
+            # ヘッダー背景
+            draw.rectangle([0, y[0], W, y[0]+80], fill=(26,35,126))
+            draw.rectangle([0, y[0], 6, y[0]+80], fill=C_ACCENT)
+            # タイトル
+            t = f"AI競艇新聞  {date_disp}"
+            draw.text((W//2 - txt_w(t, fhd)//2, y[0]+12), t, font=fhd, fill=C_WHITE)
+            sub = "全レースAI分析 | 毎朝7時更新"
+            draw.text((W//2 - txt_w(sub, fxs)//2, y[0]+56), sub, font=fxs, fill=C_GRAY)
+            y[0] += 100
+
+        def draw_section_title(draw, title, color=C_ACCENT):
+            draw.rectangle([0, y[0], W, y[0]+48], fill=C_CARD)
+            draw.rectangle([0, y[0], 4, y[0]+48], fill=color)
+            draw.text((16, y[0]+10), title, font=fmd, fill=color)
+            y[0] += 58
+
+        def draw_danger_row(draw, d):
+            score = d.get("score", 0)
+            rc    = rank_color(score)
+            rl    = rank_label(score)
+            # 行背景
+            draw.rectangle([0, y[0], W, y[0]+62], fill=C_CARD)
+            draw.rectangle([0, y[0], 4, y[0]+62], fill=rc)
+            # ランクバッジ
+            draw.rectangle([12, y[0]+14, 54, y[0]+48], fill=rc)
+            draw.text((18, y[0]+16), rl, font=fmd, fill=C_WHITE)
+            # レース名
+            race_t = f"{d.get('venue','')}{d.get('race','')}R"
+            draw.text((64, y[0]+10), race_t, font=fbig, fill=C_WHITE)
+            # 選手名・等級
+            racer_t = f"{d.get('racer','?')} {d.get('racer_class','')}"
+            draw.text((64, y[0]+38), racer_t, font=fxs, fill=C_GRAY)
+            # 理由（右寄せ）
+            reason = d.get("reason", "")[:40]
+            draw.text((320, y[0]+10), reason, font=fxs, fill=C_A)
+            # セパレータ
+            draw.rectangle([0, y[0]+62, W, y[0]+63], fill=C_SEP)
+            y[0] += 64
+
+        def draw_manshuu_row(draw, u):
+            score = u.get("score", 0)
+            rc    = rank_color(score)
+            rl    = rank_label(score)
+            draw.rectangle([0, y[0], W, y[0]+62], fill=C_CARD)
+            draw.rectangle([0, y[0], 4, y[0]+62], fill=rc)
+            draw.rectangle([12, y[0]+14, 54, y[0]+48], fill=rc)
+            draw.text((18, y[0]+16), rl, font=fmd, fill=C_WHITE)
+            race_t = f"{u.get('venue','')}{u.get('race','')}R"
+            draw.text((64, y[0]+10), race_t, font=fbig, fill=C_WHITE)
+            key_racer = u.get("key_racer", "")
+            draw.text((64, y[0]+38), f"注目: {key_racer}", font=fxs, fill=C_GRAY)
+            # 荒れ理由
+            reason_raw = u.get("key_reason", "")
+            reason_clean = _re.sub(r'🔥\s*', '', reason_raw)[:45]
+            draw.text((320, y[0]+10), reason_clean, font=fxs, fill=C_A)
+            draw.rectangle([0, y[0]+62, W, y[0]+63], fill=C_SEP)
+            y[0] += 64
+
+        def draw_motor_row(draw, m, is_awake=False):
+            draw.rectangle([0, y[0], W, y[0]+46], fill=C_CARD)
+            venue_t = f"{m.get('venue','')} {m.get('motor_no','')}号機"
+            draw.text((16, y[0]+4), venue_t, font=fmd, fill=C_WHITE)
+            if is_awake:
+                detail = f"直近10走: {m.get('recent10','---')}  {m.get('old_2rate','')}%→{m.get('new_2rate','')}%  展示{m.get('ex_avg','')}秒"
+            else:
+                gap = m.get("gap", "")
+                gs = f"+{gap:.0f}%" if isinstance(gap,(int,float)) and gap > 0 else f"{gap}"
+                detail = f"直近5走: {m.get('recent5','---')}  公式比{gs}"
+            draw.text((16, y[0]+28), detail, font=fxs, fill=C_GRAY)
+            draw.rectangle([0, y[0]+46, W, y[0]+47], fill=C_SEP)
+            y[0] += 48
+
+        # ── 高さ計算（描画なしで一巡）───────────────────────
+        # ヘッダー: 100
+        # 危険 セクションタイトル: 58、各行: 64
+        # 万舟 セクションタイトル: 58、各行: 64
+        # 激走 セクションタイトル: 58、各行: 48
+        # 覚醒 セクションタイトル: 58、各行: 48
+        # フッター: 60、余白: 30
+
+        total_h = (
+            100 + 20 +
+            58 + len(all_danger)  * 64 + 20 +
+            58 + len(all_manshuu) * 64 + 20 +
+            58 + len(hot_motor)   * 48 + 20 +
+            58 + len(awake_motor) * 48 + 60
+        )
+        total_h = max(1600, total_h)
+
+        # ── 実際に描画 ────────────────────────────────────────
+        img  = Image.new("RGB", (W, total_h), C_BG)
         draw = ImageDraw.Draw(img)
-        font = _gf(17)
-        y = 50
-        for line in lines:
-            draw.text((50, y), line[:75], font=font, fill=(20,20,20))
-            y += LH
-        img.save(pdf_path, "PDF", resolution=150)
-        log.info("[PDF] 保存(Pillow): %s", pdf_path)
+
+        y[0] = 0
+        draw_header(draw)
+        add_gap(20)
+
+        draw_section_title(draw, f"⚠ 危険な1号艇  全{len(all_danger)}レース", C_S)
+        for d in all_danger:
+            draw_danger_row(draw, d)
+        add_gap(20)
+
+        draw_section_title(draw, f"¥ 万舟警報  全{len(all_manshuu)}レース", C_A)
+        for u in all_manshuu:
+            draw_manshuu_row(draw, u)
+        add_gap(20)
+
+        draw_section_title(draw, f"激走モーター  全{len(hot_motor)}件", (255,112,67))
+        for m in hot_motor:
+            draw_motor_row(draw, m, is_awake=False)
+        add_gap(20)
+
+        draw_section_title(draw, f"覚醒モーター  全{len(awake_motor)}件", (0,188,212))
+        for a in awake_motor:
+            draw_motor_row(draw, a, is_awake=True)
+
+        # フッター
+        draw.rectangle([0, total_h-50, W, total_h], fill=(20,20,40))
+        ft = "AI競艇新聞 | 全レース機械学習分析 | 毎日更新"
+        draw.text((W//2 - txt_w(ft, fxs)//2, total_h-34), ft, font=fxs, fill=C_GRAY)
+
+        img.save(pdf_path, "PDF", resolution=120)
+        log.info("[PDF] 保存(Pillow dark): %s", pdf_path)
         return True
     except Exception as e:
         log.warning("[PDF] Pillow失敗: %s", e)
