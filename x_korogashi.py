@@ -113,6 +113,11 @@ class KorogashiScore:
     dangers:      list  = field(default_factory=list)
     # 理由テキスト
     reason:       str   = ""
+    # 展示データ状態
+    ex_available: bool  = False   # 展示タイムが取れているか
+    ex_badge:     str   = ""      # "展示確認済✅" / "展示未取得⚠️" / "展示反映済✅"
+    data_trust:   float = 0.0     # データ信頼度（0-100）
+    phase:        str   = "朝"    # "朝" / "確定"
 
 
 def _rank_in_list(value: float, values: list[float],
@@ -165,11 +170,17 @@ def calc_korogashi_score(
 
     # ── ① 展示タイム ─────────────────────────────────────
     ex_times = [b.ex_time for b in all_boats if b.ex_time and b.ex_time > 0]
+    ex_time_available = bool(ex_times)  # レース全体で取れているか
+
     if target.ex_time and target.ex_time > 0 and ex_times:
         rank = _rank_in_list(target.ex_time, ex_times, reverse=True)  # 小さい=速い
         ks.sc_ex_time = _score_rank(rank, len(ex_times))
+    elif ex_time_available:
+        # レースの他の艇は取れているが自艇だけ未取得 → ペナルティ
+        ks.sc_ex_time = 15.0  # 最低近い点数（最下位想定）
     else:
-        ks.sc_ex_time = 50.0
+        # レース全体で展示タイム未公開（展示前・API遅延）→ 中立
+        ks.sc_ex_time = 40.0  # 50より少し下げる
 
     # ── ② 平均ST ─────────────────────────────────────────
     avg_sts = [b.avg_st for b in all_boats if b.avg_st and b.avg_st > 0]
@@ -283,7 +294,11 @@ def calc_korogashi_score(
 
     # ── 危険要因チェック ─────────────────────────────────
     dangers = []
-    if target.ex_time and ex_times:
+    if not ex_time_available:
+        dangers.append("展示未公開")   # レース全体で未取得
+    elif not target.ex_time or target.ex_time <= 0:
+        dangers.append("展示取得失敗") # 自艇だけ未取得
+    elif ex_times:
         ex_rank = _rank_in_list(target.ex_time, ex_times, reverse=True)
         if ex_rank >= n - 1:
             dangers.append("展示ワースト")
@@ -299,24 +314,80 @@ def calc_korogashi_score(
         dangers.append(f"波高({weather.wave_height}cm)")
     ks.dangers = dangers
 
-    # ── 総合スコア計算 ───────────────────────────────────
-    W = WEIGHTS
-    raw = (
-        ks.sc_ex_time    * W["ex_time"]    +
-        ks.sc_avg_st     * W["avg_st"]     +
-        ks.sc_motor      * W["motor"]      +
-        ks.sc_recent     * W["recent"]     +
-        ks.sc_course_win * W["course_win"] +
-        ks.sc_in_trust   * W["in_trust"]   +
-        ks.sc_rival      * W["rival"]      +
-        ks.sc_odds_ev    * W["odds_ev"]    +
-        ks.sc_weather    * W["weather"]
-    ) / sum(W.values())
+    # ── 展示データ状態の確定 ─────────────────────────────
+    my_ex_ok = bool(target.ex_time and target.ex_time > 0)
+    ks.ex_available = my_ex_ok
 
-    ks.reliability  = round(raw, 1)
+    # ── 総合スコア計算（展示を「加点要素」として扱う）──
+    W = WEIGHTS
+
+    if my_ex_ok:
+        # 展示あり: 全9指標で計算（フル）
+        raw = (
+            ks.sc_ex_time    * W["ex_time"]    +
+            ks.sc_avg_st     * W["avg_st"]     +
+            ks.sc_motor      * W["motor"]      +
+            ks.sc_recent     * W["recent"]     +
+            ks.sc_course_win * W["course_win"] +
+            ks.sc_in_trust   * W["in_trust"]   +
+            ks.sc_rival      * W["rival"]      +
+            ks.sc_odds_ev    * W["odds_ev"]    +
+            ks.sc_weather    * W["weather"]
+        ) / sum(W.values())
+        # データ信頼度: 展示あり = 高
+        base_trust = 85.0
+        if ex_time_available:   # レース全体で取れている
+            base_trust = 95.0
+    else:
+        # 展示なし: 展示を除いた8指標で再正規化
+        W_no_ex = {k: v for k, v in W.items() if k != "ex_time"}
+        raw = (
+            ks.sc_avg_st     * W_no_ex["avg_st"]     +
+            ks.sc_motor      * W_no_ex["motor"]      +
+            ks.sc_recent     * W_no_ex["recent"]     +
+            ks.sc_course_win * W_no_ex["course_win"] +
+            ks.sc_in_trust   * W_no_ex["in_trust"]   +
+            ks.sc_rival      * W_no_ex["rival"]      +
+            ks.sc_odds_ev    * W_no_ex["odds_ev"]    +
+            ks.sc_weather    * W_no_ex["weather"]
+        ) / sum(W_no_ex.values())
+        # データ信頼度ペナルティ（20〜40pt下げる）
+        if ex_time_available:
+            # レースの他の艇は取れているが自艇だけ未取得 → 重いペナルティ
+            base_trust = 60.0
+        else:
+            # レース全体で未公開（展示前・API遅延）→ 軽いペナルティ
+            base_trust = 75.0
+
+    ks.reliability = round(raw, 1)
+
+    # データ信頼度（モーター・ST・勝率の信頼性も加味）
+    data_quality = 0.0
+    if target.motor  and target.motor  > 0: data_quality += 0.33
+    if target.avg_st and target.avg_st > 0: data_quality += 0.33
+    if target.win_rate and target.win_rate > 0: data_quality += 0.34
+    ks.data_trust = round(base_trust * data_quality, 1)
+
+    # 展示バッジ
+    if my_ex_ok:
+        ex_rank_disp = ""
+        if ex_times:
+            r_ex = _rank_in_list(target.ex_time, ex_times, reverse=True)
+            ex_rank_disp = f"（{r_ex}位/{len(ex_times)}艇）"
+        ks.ex_badge = f"展示確認済✅ {ex_rank_disp}".strip()
+        ks.phase    = "確定"
+    elif ex_time_available:
+        ks.ex_badge = "展示未取得⚠️（他艇は取得済）"
+        ks.phase    = "朝"
+    else:
+        ks.ex_badge = "展示未反映⏳（公開前）"
+        ks.phase    = "朝"
+
     # 配当期待スコア（オッズ重視）
+    ex_bonus = ks.sc_ex_time * 0.2 if my_ex_ok else 0.0
     ks.payout_score = round(
-        ks.sc_odds_ev * 0.5 + ks.sc_in_trust * 0.3 + ks.sc_ex_time * 0.2, 1)
+        ks.sc_odds_ev * 0.5 + ks.sc_in_trust * 0.3 + ex_bonus, 1)
+
     # 転がし適性（信頼度と配当の調和平均）
     r = ks.reliability / 100
     p = ks.payout_score / 100
@@ -326,7 +397,7 @@ def calc_korogashi_score(
         harmonic = 0
     ks.fitness = round(harmonic * 100, 1)
 
-    # 判定
+    # 判定（展示なしでも通常通り判定 → 見送り強制は廃止）
     if ks.fitness >= THRESHOLD_BUY:
         ks.verdict = "購入"
     elif ks.fitness >= THRESHOLD_WATCH:
@@ -336,8 +407,12 @@ def calc_korogashi_score(
 
     # 理由テキスト
     positives = []
-    if ks.sc_ex_time >= 70:
-        positives.append(f"展示{ex_times.index(target.ex_time)+1 if target.ex_time in ex_times else '?'}位")
+    if my_ex_ok and ks.sc_ex_time >= 70 and ex_times:
+        try:
+            r_ex = _rank_in_list(target.ex_time, ex_times, reverse=True)
+            positives.append(f"展示{r_ex}位")
+        except Exception:
+            pass
     if ks.sc_motor >= 70:
         positives.append(f"モーター{target.motor:.0f}%")
     if ks.sc_avg_st >= 70:
@@ -346,6 +421,8 @@ def calc_korogashi_score(
         positives.append("1号艇弱め")
     if target.racer_class in ("A1", "A2"):
         positives.append(target.racer_class)
+    if not my_ex_ok:
+        positives.append("展示待ち")
     ks.reason = " / ".join(positives) if positives else "総合判定"
 
     return ks
@@ -438,6 +515,16 @@ def scan_all_races(
             if lane in {5, 6} and ks.ev < ALLOW_LANE_5_6_EV_MIN:
                 continue
 
+            # 展示未公開レースは fitness に上限を設ける
+            # （全艇未取得の場合: 上限70。「購入」判定は出さない）
+            ex_times_race = [b2.ex_time for b2 in boats
+                             if b2.ex_time and b2.ex_time > 0]
+            if not ex_times_race:
+                ks.fitness = min(ks.fitness, 69.9)
+                if ks.verdict == "購入":
+                    ks.verdict = "注意"
+                    ks.reason  = "[展示未公開] " + ks.reason
+
             results.append(ks)
 
     # 転がし適性降順でソート
@@ -527,6 +614,10 @@ def scores_to_dict(scores: list[KorogashiScore]) -> list[dict]:
             "ev":           s.ev,
             "dangers":      s.dangers,
             "reason":       s.reason,
+            "ex_available": s.ex_available,
+            "ex_badge":     s.ex_badge,
+            "data_trust":   s.data_trust,
+            "phase":        s.phase,
             "score_detail": {
                 "ex_time":    round(s.sc_ex_time, 1),
                 "avg_st":     round(s.sc_avg_st, 1),
@@ -555,16 +646,45 @@ def save_cache(result: dict, path: str = KOROGASHI_CACHE) -> None:
 # テキスト生成（X投稿用）
 # ════════════════════════════════════════════════════════════
 
-def format_daily_tweet(result: dict, date_str: str) -> str:
-    """毎朝の転がし候補投稿テキスト"""
+def _phase_header(top1) -> str:
+    """フェーズ（朝/確定）のヘッダー文字列を返す"""
+    if top1 is None:
+        return "朝（データ版）"
+    phase = getattr(top1, "phase", top1.get("phase", "朝") if isinstance(top1, dict) else "朝")
+    if phase == "確定":
+        return "確定版 展示反映済"
+    return "朝（データ版）"
+
+
+def _get_field(obj, key, default=None):
+    """KorogashiScore または dict から属性を取得するヘルパー"""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def format_daily_tweet(result: dict, date_str: str, phase: str = "朝") -> str:
+    """
+    転がし候補投稿テキスト（二段階対応）
+    phase: "朝"=データ版 / "確定"=展示反映済
+    """
     date_disp = f"{date_str[4:6]}/{date_str[6:8]}"
     verdict   = result["verdict"]
     top1      = result.get("top1")
     top10     = result.get("top10", [])
 
+    # フェーズ自動判定（top1 の phase を優先）
+    if top1:
+        actual_phase = _get_field(top1, "phase", phase)
+    else:
+        actual_phase = phase
+
+    phase_label = "確定版✅ 展示反映済" if actual_phase == "確定" else "朝（データ版）"
+
     if verdict == "見送り":
         return (
-            f"🤖【{date_disp} AI転がし日記】\n\n"
+            f"🤖【{date_disp} AI転がし日記】\n"
+            f"【{phase_label}】\n\n"
             f"本日の判定：⛔ 見送り\n\n"
             f"{result['reason']}\n\n"
             "期待値が低い日は無理に買いません。\n"
@@ -575,41 +695,78 @@ def format_daily_tweet(result: dict, date_str: str) -> str:
     emoji = "✅" if verdict == "購入" else "⚠️"
     lines = [
         f"🤖【{date_disp} AI転がし日記】",
+        f"【{phase_label}】",
         "",
         f"本日の判定：{emoji} {verdict}",
         "",
     ]
 
     if top1:
+        fitness    = _get_field(top1, "fitness",    0)
+        rely       = _get_field(top1, "reliability", 0)
+        data_trust = _get_field(top1, "data_trust",  0)
+        odds_est   = _get_field(top1, "odds_est",    0)
+        ex_badge   = _get_field(top1, "ex_badge",    "")
+        venue      = _get_field(top1, "venue",       "")
+        race       = _get_field(top1, "race",        "")
+        lane       = _get_field(top1, "lane",        "")
+        racer_name = _get_field(top1, "racer_name",  "")
+        dangers    = _get_field(top1, "dangers",     [])
+
         lines += [
             f"🏆 本日のチャレンジレース",
-            f"  {top1.venue}{top1.race}R  {top1.lane}号艇 {top1.racer_name}",
-            f"  転がし適性 {top1.fitness}点",
-            f"  AI信頼度 {top1.reliability}点",
-            f"  想定オッズ {top1.odds_est}倍",
-            "",
+            f"  {venue}{race}R  {lane}号艇 {racer_name}",
+            f"  転がし適性   {fitness}点",
+            f"  AI信頼度    {rely}点",
+            f"  データ信頼度 {data_trust}点",
+            f"  想定オッズ  {odds_est}倍",
         ]
-        if top1.dangers:
-            lines.append(f"  ⚠️ リスク: {' / '.join(top1.dangers)}")
+        if ex_badge:
+            lines.append(f"  {ex_badge}")
+        lines.append("")
+        if dangers:
+            lines.append(f"  ⚠️ リスク: {' / '.join(dangers)}")
             lines.append("")
 
     if len(top10) > 1:
         lines.append("── 転がし候補ランキング ──")
         for i, s in enumerate(top10[:5], 1):
-            verdict_mark = "✅" if s.verdict == "購入" else "⚠️" if s.verdict == "注意" else "❌"
+            s_fitness = _get_field(s, "fitness", 0)
+            s_odds    = _get_field(s, "odds_est", 0)
+            s_verdict = _get_field(s, "verdict", "")
+            s_venue   = _get_field(s, "venue", "")
+            s_race    = _get_field(s, "race", "")
+            s_lane    = _get_field(s, "lane", "")
+            s_badge   = _get_field(s, "ex_badge", "")
+            s_trust   = _get_field(s, "data_trust", 0)
+            vm = "✅" if s_verdict == "購入" else "⚠️" if s_verdict == "注意" else "❌"
+            ex_mark = "📊" if "確認済" in s_badge else "⏳"
             lines.append(
-                f"{i}位 {s.venue}{s.race}R {s.lane}号艇 "
-                f"{verdict_mark}適性{s.fitness} / {s.odds_est}倍"
+                f"{i}位 {s_venue}{s_race}R {s_lane}号艇 "
+                f"{vm}適性{s_fitness} / {s_odds}倍 "
+                f"{ex_mark}信頼度{s_trust}"
             )
         lines.append("")
 
     lines += [
         f"購入候補: {result['buy_count']}件  注意: {result['watch_count']}件",
         "",
-        "結果は夜に報告します📊",
-        "#AI転がし日記 #競艇 #ボートレース #転がし",
     ]
+    if actual_phase == "朝":
+        lines += [
+            "展示後に最終更新します🔄",
+            "結果は夜に報告します📊",
+        ]
+    else:
+        lines += ["結果は夜に報告します📊"]
+
+    lines.append("#AI転がし日記 #競艇 #ボートレース #転がし")
     return "\n".join(lines)
+
+
+def format_final_tweet(result: dict, date_str: str) -> str:
+    """展示取得後の確定版ツイート"""
+    return format_daily_tweet(result, date_str, phase="確定")
 
 
 def format_result_tweet(result: dict, date_str: str,
@@ -648,12 +805,14 @@ def send_korogashi_mail(
     result: dict,
     date_str: str,
     dry_run: bool = False,
+    is_final: bool = False,
 ) -> bool:
     date_disp = f"{date_str[4:6]}/{date_str[6:8]}"
     verdict   = result["verdict"]
     top10     = result.get("top10", [])
 
-    tweet = format_daily_tweet(result, date_str)
+    phase_label = "確定版" if is_final else "朝データ版"
+    tweet = format_final_tweet(result, date_str) if is_final else format_daily_tweet(result, date_str)
 
     # メール本文（詳細版）
     lines = [
@@ -691,7 +850,7 @@ def send_korogashi_mail(
         ]
     lines += ["", "── X投稿用テキスト ──", "", tweet]
 
-    subject = f"🤖 AI転がし日記 {date_disp} [{verdict}] 候補{len(top10)}件"
+    subject = f"🤖 AI転がし日記 {date_disp} [{phase_label}/{verdict}] 候補{len(top10)}件"
     body    = "\n".join(lines)
 
     if dry_run:
@@ -740,7 +899,8 @@ def main() -> None:
     parser.add_argument("--generate", action="store_true", help="転がし候補を生成")
     parser.add_argument("--date",     help="対象日 YYYYMMDD（省略時は今日）")
     parser.add_argument("--dry-run",  action="store_true", help="送信せず表示のみ")
-    parser.add_argument("--top",      type=int, default=10, help="表示件数（デフォルト10）")
+    parser.add_argument("--final",    action="store_true",
+                        help="確定版モード（展示後に実行）件名に「確定版」を付ける")
     args = parser.parse_args()
 
     race_date = args.date or datetime.now(JST).strftime("%Y%m%d")
@@ -782,7 +942,8 @@ def main() -> None:
         )
 
         # メール送信
-        ok = send_korogashi_mail(result, race_date, dry_run=args.dry_run)
+        ok = send_korogashi_mail(result, race_date, dry_run=args.dry_run,
+                                 is_final=args.final)
         sys.exit(0 if ok else 1)
 
     else:

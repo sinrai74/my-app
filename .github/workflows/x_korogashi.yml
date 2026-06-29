@@ -9,6 +9,10 @@ on:
     - cron: '30 21 * * *'    # JST 06:30 毎朝
   workflow_dispatch:
     inputs:
+      post_type:
+        description: '実行種類 (morning=朝データ版 / final=確定版)'
+        required: false
+        default: 'morning'
       date:
         description: '対象日 YYYYMMDD（省略時は今日）'
         required: false
@@ -50,7 +54,9 @@ jobs:
           [ -n "${{ github.event.inputs.date }}" ] && DATE_ARG="--date ${{ github.event.inputs.date }}"
           DRY=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
-          python x_korogashi.py --generate $DATE_ARG $DRY
+          FINAL=""
+          [ "${{ github.event.inputs.post_type }}" = "final" ] && FINAL="--final"
+          python x_korogashi.py --generate $DATE_ARG $DRY $FINAL
 
       - name: Commit korogashi cache
         if: always()
