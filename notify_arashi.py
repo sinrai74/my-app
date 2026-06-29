@@ -3201,74 +3201,63 @@ def _run_main(race_date: str | None = None) -> None:
                     log.warning("ランキング外データ蓄積失敗: %s", _pe)
                 continue
 
-            if send_notification(subject, body):
-                notified += 1
-                total_notified += 1
-                # exposure更新
-                style_count[race_type_str]  = style_count.get(race_type_str, 0) + 1
-                cluster_count[cluster_key]  = cluster_count.get(cluster_key, 0) + 1
-                # 送信済みに記録
-                sent_set.add(notify_key)
-                # 予測データをJSON Lines形式でsent_fileに保存
-                import json as _json
-                _pred_entry = {
-                    "key":        notify_key,
-                    "combo":      best["combo"]          if recommended else "",
-                    "buy":        [b["combo"] for b in recommended] if recommended else [],
-                    "buy_amounts": [b.get("amount", 100) for b in recommended] if recommended else [],
-                    "odds":       best["odds"]           if recommended else 0,
-                    "prob":       best["prob"]           if recommended else 0,
-                    "ev":         best["ev"]             if recommended else 0,
-                    "confidence": best.get("confidence", 0) if recommended else 0,
-                    "why_bet":    best.get("why_bet", [])   if recommended else [],
-                    "race_type":  best.get("race_type", "") if recommended else "",
-                    "upset_score": round(score, 3),
-                    "venue":      VENUE_NAMES.get(venue_num, f"場{venue_num}"),
-                    "venue_num":  venue_num,
-                    "race":       race_number,
-                    "night":      int(venue_num in {4,6,12,17,20,21,22,23,24}),
-                    "wind_speed": weather.wind_speed      if weather else None,
-                    "wind_dir":   weather.wind_direction  if weather else None,
-                    "wave":       weather.wave_height     if weather else None,
-                }
-                try:
-                    _sent_lines = []
-                    _keys_seen = set()
-                    if os.path.exists(sent_file):
-                        with open(sent_file, "r", encoding="utf-8") as sf:
-                            for _line in sf:
-                                _line = _line.strip()
-                                if not _line:
-                                    continue
-                                try:
-                                    _obj = _json.loads(_line)
-                                    _keys_seen.add(_obj.get("key",""))
-                                    _sent_lines.append(_line)
-                                except Exception:
-                                    _keys_seen.add(_line)
-                                    _sent_lines.append(_line)
-                    if notify_key not in _keys_seen:
-                        _sent_lines.append(_json.dumps(_pred_entry, ensure_ascii=False))
-                    with open(sent_file, "w", encoding="utf-8") as sf:
-                        sf.write("\n".join(_sent_lines))
-                    # GitHub Actions上のみgit操作（ローカル実行時はスキップ）
-                    gh_token = os.getenv("GITHUB_TOKEN", "")
-                    gh_repo  = os.getenv("GITHUB_REPO", "sinrai74/my-app")
-                    if gh_token:
-                        os.system('git config user.email "action@render.com"')
-                        os.system('git config user.name "Render Bot"')
-                        os.system("git checkout main")
-                        os.system(f"git add {sent_file}")
-                        os.system(f'git commit -m "update sent races [skip ci]"')
-                        remote = f"https://{gh_token}@github.com/{gh_repo}.git"
-                        os.system(f"git push {remote} main")
-                    else:
-                        log.debug("ローカル実行: git push スキップ（sent_fileはローカルに保存済み）")
-                except Exception as ge:
-                    log.warning("sent_file保存失敗: %s", ge)
-
-            # Gmail レート制限対策（連続送信を避ける）
-            time.sleep(1.0)
+            # ── メール通知は停止（転がし専用エンジンに移行）────────
+            # send_notification はスキップし、予測データの蓄積のみ継続する
+            log.debug(
+                "通知スキップ（蓄積のみ）: %s %dR",
+                VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number,
+            )
+            notified += 1
+            total_notified += 1
+            # exposure更新
+            style_count[race_type_str]  = style_count.get(race_type_str, 0) + 1
+            cluster_count[cluster_key]  = cluster_count.get(cluster_key, 0) + 1
+            # 送信済みに記録（照合・hit_record.csv のために必要）
+            sent_set.add(notify_key)
+            # 予測データをJSON Lines形式でsent_fileに保存
+            import json as _json
+            _pred_entry = {
+                "key":        notify_key,
+                "combo":      best["combo"]          if recommended else "",
+                "buy":        [b["combo"] for b in recommended] if recommended else [],
+                "buy_amounts": [b.get("amount", 100) for b in recommended] if recommended else [],
+                "odds":       best["odds"]           if recommended else 0,
+                "prob":       best["prob"]           if recommended else 0,
+                "ev":         best["ev"]             if recommended else 0,
+                "confidence": best.get("confidence", 0) if recommended else 0,
+                "why_bet":    best.get("why_bet", [])   if recommended else [],
+                "race_type":  best.get("race_type", "") if recommended else "",
+                "upset_score": round(score, 3),
+                "venue":      VENUE_NAMES.get(venue_num, f"場{venue_num}"),
+                "venue_num":  venue_num,
+                "race":       race_number,
+                "night":      int(venue_num in {4,6,12,17,20,21,22,23,24}),
+                "wind_speed": weather.wind_speed      if weather else None,
+                "wind_dir":   weather.wind_direction  if weather else None,
+                "wave":       weather.wave_height     if weather else None,
+            }
+            try:
+                _sent_lines = []
+                _keys_seen = set()
+                if os.path.exists(sent_file):
+                    with open(sent_file, "r", encoding="utf-8") as sf:
+                        for _line in sf:
+                            _line = _line.strip()
+                            if not _line:
+                                continue
+                            try:
+                                _obj = _json.loads(_line)
+                                _keys_seen.add(_obj.get("key",""))
+                                _sent_lines.append(_line)
+                            except Exception:
+                                _keys_seen.add(_line)
+                                _sent_lines.append(_line)
+                if notify_key not in _keys_seen:
+                    _sent_lines.append(_json.dumps(_pred_entry, ensure_ascii=False))
+                with open(sent_file, "w", encoding="utf-8") as sf:
+                    sf.write("\n".join(_sent_lines))
+            except Exception as ge:
+                log.warning("sent_file保存失敗: %s", ge)
 
         except Exception as e:
             log.error(
@@ -3364,8 +3353,8 @@ def send_preview_notification() -> None:
             lines.append("")
 
         body = "\n".join(lines)
-        send_notification("【明日の注目レース予告】", body)
-        log.info("翌日予告通知送信: %d レース", len(top))
+        # send_notification("【明日の注目レース予告】", body)  # 通知停止（転がし専用に移行）
+        log.info("翌日予告（蓄積のみ、通知なし）: %d レース", len(top))
 
     except Exception as e:
         log.warning("翌日予告通知失敗: %s", e)
@@ -4499,8 +4488,8 @@ def _check_losing_streak() -> None:
 
         if miss_count >= 5:
             msg = f"⚠️ 連敗アラート\n直近{miss_count}回連続で外れています。\nスコア閾値を上げることを検討してください。\n現在の閾値: {UPSET_SCORE_THRESHOLD}"
-            send_notification("【連敗アラート】", msg)
-            log.warning("連敗アラート送信: %d連敗", miss_count)
+            # send_notification("【連敗アラート】", msg)  # 通知停止（転がし専用に移行）
+            log.warning("連敗アラート（通知なし）: %d連敗 ※ログのみ", miss_count)
 
     except Exception as e:
         log.debug("連敗アラートエラー: %s", e)
