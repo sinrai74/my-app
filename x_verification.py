@@ -38,6 +38,9 @@ HIT_CSV  = "hit_record.csv"
 # 万舟の定義：払戻3万円以上
 MANSHUU_PAYOUT = 30000
 
+# upset_score の理論上限（0-9.5スケール）。100点換算の分母に使う。
+UPSET_SCORE_MAX = 9.5
+
 
 # ════════════════════════════════════════════════════════════
 # データ読み込み
@@ -203,10 +206,14 @@ def aggregate(records: list[dict]) -> dict:
 def _upset_score_to_100(raw_upset_score) -> float:
     """
     hit_record.csv の upset_score（0-9.5スケール）を
-    x_note_report.py 側のランク基準（0-100スケール）に変換する。
+    x_brand_config のランク基準（0-100スケール）に線形変換する。
+    上限 9.5 が 100 に対応する（v * 10 だと 95 止まりで S 到達が
+    構造的に困難になるため、9.5 を満点として正規化する）。
     """
     v = _safe_float(raw_upset_score, 0.0)
-    return min(100.0, v * 10.0)
+    if v <= 0:
+        return 0.0
+    return min(100.0, v / UPSET_SCORE_MAX * 100.0)
 
 
 def aggregate_by_rank(records: list[dict]) -> dict:
@@ -237,14 +244,18 @@ def aggregate_by_rank(records: list[dict]) -> dict:
             continue   # 危険艇/万舟の対象外（スコア40未満）
         rank = rank_of(score_100)
 
-        # 危険艇判定の成否: 1号艇が飛んだか
+        # 危険艇・万舟とも、結果(result_combo)が確定したレコードのみ母数に入れる
+        # （result_combo 欠損レコードで母数がカテゴリ間でずれるのを防ぐ）
         result_combo = r.get("result_combo", "")
-        if result_combo and "-" in result_combo:
-            first_boat = result_combo.split("-")[0].strip()
-            boat1_flew = (first_boat != "1")
-            result["danger"][rank]["total"] += 1
-            if boat1_flew:
-                result["danger"][rank]["hit"] += 1
+        if not (result_combo and "-" in result_combo):
+            continue
+
+        # 危険艇判定の成否: 1号艇が飛んだか
+        first_boat = result_combo.split("-")[0].strip()
+        boat1_flew = (first_boat != "1")
+        result["danger"][rank]["total"] += 1
+        if boat1_flew:
+            result["danger"][rank]["hit"] += 1
 
         # 万舟判定の成否: 払戻が閾値以上か
         payout = _safe_float(r.get("payout"))
@@ -375,10 +386,12 @@ def _miss_reason(record: dict) -> str:
     return "・".join(reasons) if reasons else "通常の予測誤差"
 
 
-def analyze_misses(records: list[dict], top_n: int = 5) -> list[dict]:
+def analyze_misses(records: list[dict], top_n: int = 5) -> dict:
     """
     ⑰ 外れたレースをピックアップし、原因・改善案をまとめる。
-    payout(実際の結果)が低いほど深刻な外れとみなしてソートする。
+    upset_score が高い（=荒れ予想だったのに外した「最も悔しい外れ」）順に
+    ソートして上位 top_n 件を返す。
+    戻り値: {"total_missed": int, "top_misses": list[dict]}
     """
     notified = [r for r in records if r.get("pred_combo", "")]
     missed   = [r for r in notified if _safe_int(r.get("hit")) == 0]

@@ -380,7 +380,9 @@ def _calc_match_index(brands: list[str], raw_scores: dict) -> float:
     """
     ① AI一致指数を算出する（加点方式・100点満点）。
     各ブランドの掲載で配点を加算し、そのブランドのスコアが
-    Sランク(80+)なら1.15倍、Aランク(60+)なら1.05倍のボーナスを掛ける。
+    Sランクなら MATCH_INDEX_RANK_BONUS_S、Aランクなら MATCH_INDEX_RANK_BONUS_A
+    のボーナスを掛ける。ランク判定は x_brand_config.rank_of に統一する
+    （閾値 S=80 / A=65 / B=50 / C=0 は RANK_THRESHOLDS が唯一の基準）。
     激走/覚醒は会場単位データのため、掲載されていれば満額加点する。
     """
     total = 0.0
@@ -389,10 +391,12 @@ def _calc_match_index(brands: list[str], raw_scores: dict) -> float:
         if base == 0:
             continue
         score = raw_scores.get(b)
-        if score is not None and score >= 80:
-            base *= MATCH_INDEX_RANK_BONUS_S
-        elif score is not None and score >= 60:
-            base *= MATCH_INDEX_RANK_BONUS_A
+        if score is not None:
+            rank = rank_of(score)
+            if rank == "S":
+                base *= MATCH_INDEX_RANK_BONUS_S
+            elif rank == "A":
+                base *= MATCH_INDEX_RANK_BONUS_A
         total += base
     return round(min(100, total), 1)
 
