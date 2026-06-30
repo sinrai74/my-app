@@ -33,6 +33,17 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
+from x_brand_config import (
+    BRANDS, BRAND_ICONS, BRAND_NAMES, BRAND_SHORT, BRAND_COLOR,
+    brand_icon, brand_name, brand_short, brand_color,
+    RANK_THRESHOLDS, rank_of, rank_color, rank_color_of_score, rank_label_with_emoji,
+    MATCH_INDEX_POINTS, MATCH_INDEX_RANK_BONUS_S, MATCH_INDEX_RANK_BONUS_A,
+    VENUE_CONDITION_WEIGHTS,
+    HOT_HIGH_THRESHOLD_FALLBACK, HOT_HIGH_RATIO,
+    AI_VERSION, SYSTEM_NAME,
+    stars, heat_emoji,
+)
+
 log = logging.getLogger("x_note")
 
 JST           = timezone(timedelta(hours=9))
@@ -343,28 +354,12 @@ def generate_csvs(data: dict, prefix: str = "") -> list[str]:
 # HTML生成（noteコピペ用・スマホ対応）
 # ════════════════════════════════════════════════════════════
 
-# ── ブランドアイコン定義 ──────────────────────────────────
-# 要件のアイコン配分: 🚨危険艇 💰万舟 🔥高配当期待 ⚡激走 📈覚醒 🎯転がし 👤注目レーサー
-BRAND_ICONS = {
-    "danger":    "🚨",   # AI危険艇速報
-    "manshuu":   "💰",   # AI万舟警報
-    "hot_high":  "🔥",   # AI高配当期待（万舟Sランク＝荒れ指数80以上）
-    "motor_hot": "⚡",   # AI激走モーター
-    "motor_awk": "📈",   # AI覚醒モーター
-    "korogashi": "🎯",   # AI転がし候補
-    "racer":     "👤",   # 注目レーサー
-}
-BRAND_NAMES = {
-    "danger":    "AI危険艇速報",
-    "manshuu":   "AI万舟警報",
-    "hot_high":  "AI高配当期待",
-    "motor_hot": "AI激走モーター",
-    "motor_awk": "AI覚醒モーター",
-    "korogashi": "AI転がし候補",
-    "racer":     "今日の注目レーサー",
-}
+# ════════════════════════════════════════════════════════════
+# ブランド・ランク・一致指数の定数は x_brand_config.py に集約済み
+# （BRAND_ICONS, BRAND_NAMES, MATCH_INDEX_POINTS, VENUE_CONDITION_WEIGHTS 等）
+# ════════════════════════════════════════════════════════════
 
-# AI総合注目度の重み（要件指定）
+# AI総合注目度（PICKセクション用の加重平均、一致指数とは別軸）の重み
 OVERALL_WEIGHTS = {
     "danger":    0.25,
     "manshuu":   0.25,
@@ -374,20 +369,7 @@ OVERALL_WEIGHTS = {
     "hot_high":  0.05,
 }
 
-HOT_HIGH_THRESHOLD = 80   # 万舟Sランク＝高配当期待の閾値（フォールバック用固定値）
-HOT_HIGH_RATIO     = 0.3 # 万舟TOP10のうち上位30%を高配当期待とする
-
-# ── ① AI一致指数の配点（要件指定の加点方式）──────────────
-MATCH_INDEX_POINTS = {
-    "danger":    20,
-    "manshuu":   20,
-    "korogashi": 20,
-    "motor_hot": 15,
-    "motor_awk": 15,
-    "hot_high":  10,
-}
-MATCH_INDEX_RANK_BONUS_S = 1.15   # Sランク掲載ブランドへの加点倍率
-MATCH_INDEX_RANK_BONUS_A = 1.05   # Aランク掲載ブランドへの加点倍率
+HOT_HIGH_THRESHOLD = HOT_HIGH_THRESHOLD_FALLBACK   # 互換用エイリアス
 
 
 def _calc_match_index(brands: list[str], raw_scores: dict) -> float:
@@ -415,14 +397,10 @@ def _calc_match_index(brands: list[str], raw_scores: dict) -> float:
 # 📈 AIコンディション指数（開催場別・要件追加分）
 # ════════════════════════════════════════════════════════════
 
-VENUE_CONDITION_WEIGHTS = {
-    "danger":    0.30,
-    "manshuu":   0.30,
-    "korogashi": 0.20,
-    "motor_hot": 0.10,
-    "motor_awk": 0.10,
-}
-
+# ════════════════════════════════════════════════════════════
+# 📈 AIコンディション指数（開催場別・要件追加分）
+# 重みは x_brand_config.VENUE_CONDITION_WEIGHTS を使用
+# ════════════════════════════════════════════════════════════
 
 def calc_venue_conditions(data: dict) -> list[dict]:
     """
@@ -724,9 +702,8 @@ def _anchor_for_brand(venue, race, brand: str) -> str:
 
 
 def _stars(score: float) -> str:
-    """0-100点を★5段階表示に変換"""
-    n = max(0, min(5, round(score / 20)))
-    return "★" * n + "☆" * (5 - n)
+    """0-100点を★5段階表示に変換（x_brand_config.stars のエイリアス）"""
+    return stars(score, max_score=100)
 
 
 def _brand_badge_html(brands: list[str]) -> str:
@@ -980,15 +957,14 @@ def generate_html(data: dict, output_path: str) -> None:
     hot_high_cutoff   = _hot_high_threshold(manshuu_display)
     high_payout       = [u for u in manshuu_display if u.get("score", 0) >= hot_high_cutoff]
 
-    s_d = len([d for d in all_danger  if d.get("score",0) >= 80])
-    a_d = len([d for d in all_danger  if 60 <= d.get("score",0) < 80])
-    b_d = len([d for d in all_danger  if 40 <= d.get("score",0) < 60])
-    s_m = len([u for u in all_manshuu if u.get("score",0) >= 80])
+    s_d = len([d for d in all_danger  if rank_of(d.get("score",0)) == "S"])
+    a_d = len([d for d in all_danger  if rank_of(d.get("score",0)) == "A"])
+    b_d = len([d for d in all_danger  if rank_of(d.get("score",0)) == "B"])
+    c_d = len([d for d in all_danger  if rank_of(d.get("score",0)) == "C"])
+    s_m = len([u for u in all_manshuu if rank_of(u.get("score",0)) == "S"])
 
     def rank_label(score):
-        if score >= 80: return "🔴 Sランク"
-        if score >= 60: return "🟠 Aランク"
-        return "🟡 Bランク"
+        return rank_label_with_emoji(score) + "ランク"
 
     def danger_rows():
         rows = ""
@@ -1010,7 +986,7 @@ def generate_html(data: dict, output_path: str) -> None:
                 f'<span class="bv">{v:.0f}pt</span></div>'
                 for l, v, c in bar_items
             )
-            rank_cls = "s" if score >= 80 else "a" if score >= 60 else "b"
+            rank_cls = rank_of(score).lower()
             _anchor = _race_anchor(d.get('venue',''), d.get('race',''))
             _brands = next((b for v, r, b in race_index_data[0]
                            if v == d.get('venue','') and str(r) == str(d.get('race',''))), ["danger"])
@@ -1033,7 +1009,7 @@ def generate_html(data: dict, output_path: str) -> None:
         rows = ""
         for u in manshuu_display:
             score = u.get("score", 0)
-            rank_cls = "s" if score >= 80 else "a" if score >= 60 else "b"
+            rank_cls = rank_of(score).lower()
             reasons = u.get("key_reason","").split(" / ")
             reason_html = "".join(f"<div class='mr'>{r}</div>" for r in reasons if r.strip())
             _anchor_m = _race_anchor(u.get('venue',''), u.get('race','')) + "-manshuu"
@@ -1098,7 +1074,7 @@ def generate_html(data: dict, output_path: str) -> None:
 :root{{
   --bg:#0d0d1a;--card:#16162a;--border:#252540;
   --text:#e8e8f0;--gray:#8888aa;--accent:#4fc3f7;
-  --s:#ef5350;--a:#ffa726;--b:#66bb6a;--hot:#ff7043;--awake:#00bcd4;
+  --s:#ef5350;--a:#ffa726;--b:#ffee58;--c:#42a5f5;--hot:#ff7043;--awake:#00bcd4;
 }}
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sans JP',sans-serif;
@@ -1217,11 +1193,13 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 .race-card.s{{border-left-color:var(--s)}}
 .race-card.a{{border-left-color:var(--a)}}
 .race-card.b{{border-left-color:var(--b)}}
+.race-card.c{{border-left-color:var(--c)}}
 .rc-header{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}}
 .badge{{padding:2px 8px;border-radius:4px;font-size:.78em;font-weight:bold}}
 .badge.s{{background:var(--s);color:#fff}}
 .badge.a{{background:var(--a);color:#000}}
 .badge.b{{background:var(--b);color:#000}}
+.badge.c{{background:var(--c);color:#fff}}
 .rc-name{{font-size:1.05em}}
 .rc-racer{{color:var(--gray);font-size:.88em}}
 .rc-reason{{color:#bbb;font-size:.85em;margin:4px 0}}
@@ -1557,15 +1535,18 @@ def generate_pdf(html_path: str, pdf_path: str) -> bool:
             try: return font.getbbox(text)[2] - font.getbbox(text)[0]
             except: return len(text) * 14
 
-        def rank_color(score):
-            if score >= 80: return C_S
-            if score >= 60: return C_A
-            return C_B
+        def _hex_to_rgb(hex_color: str) -> tuple:
+            h = hex_color.lstrip("#")
+            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
-        def rank_label(score):
-            if score >= 80: return "S"
-            if score >= 60: return "A"
-            return "B"
+        C_C = (66, 165, 245)   # Cランク用カラー（青）
+
+        def _pdf_rank_color(score):
+            rank = rank_of(score)
+            return {"S": C_S, "A": C_A, "B": C_B, "C": C_C}.get(rank, C_B)
+
+        def _pdf_rank_label(score):
+            return rank_of(score)
 
         # ── 描画ブロックをリストで構築 ────────────────────────
         # (type, *args) 形式
@@ -1602,8 +1583,8 @@ def generate_pdf(html_path: str, pdf_path: str) -> bool:
 
         def draw_danger_row(draw, d):
             score = d.get("score", 0)
-            rc    = rank_color(score)
-            rl    = rank_label(score)
+            rc    = _pdf_rank_color(score)
+            rl    = _pdf_rank_label(score)
             # 行背景
             draw.rectangle([0, y[0], W, y[0]+62], fill=C_CARD)
             draw.rectangle([0, y[0], 4, y[0]+62], fill=rc)
@@ -1625,8 +1606,8 @@ def generate_pdf(html_path: str, pdf_path: str) -> bool:
 
         def draw_manshuu_row(draw, u):
             score = u.get("score", 0)
-            rc    = rank_color(score)
-            rl    = rank_label(score)
+            rc    = _pdf_rank_color(score)
+            rl    = _pdf_rank_label(score)
             draw.rectangle([0, y[0], W, y[0]+62], fill=C_CARD)
             draw.rectangle([0, y[0], 4, y[0]+62], fill=rc)
             draw.rectangle([12, y[0]+14, 54, y[0]+48], fill=rc)
