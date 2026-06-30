@@ -128,6 +128,65 @@ def _generate_editorial(data: dict) -> dict:
 
 
 # ════════════════════════════════════════════════════════════
+# 各ブランドセクション冒頭のAIコメント生成
+# ════════════════════════════════════════════════════════════
+
+def _section_comment_danger(all_danger: list) -> str:
+    if not all_danger:
+        return "本日は対象レースがありません。"
+    s_count = sum(1 for d in all_danger if d.get("score", 0) >= 80)
+    venues  = list(dict.fromkeys(d.get("venue","") for d in all_danger[:5]))
+    venue_txt = "・".join(venues[:3]) if venues else ""
+    lines = [f"本日は危険艇Sランクが{s_count}件あります。"] if s_count else [f"本日は危険艇候補が{len(all_danger)}件あります。"]
+    if venue_txt:
+        lines.append(f"{venue_txt}で1号艇の信頼度低下が目立ちます。2〜4号艇に注目です。")
+    return " ".join(lines)
+
+
+def _section_comment_manshuu(all_manshuu: list) -> str:
+    if not all_manshuu:
+        return "本日は対象レースがありません。"
+    s_count = sum(1 for u in all_manshuu if u.get("score", 0) >= 80)
+    venues  = list(dict.fromkeys(u.get("venue","") for u in all_manshuu[:5]))
+    venue_txt = "・".join(venues[:3]) if venues else ""
+    lines = [f"本日は万舟候補が{len(all_manshuu)}件あります。"]
+    if s_count:
+        lines.append(f"うちSランクは{s_count}件。")
+    if venue_txt:
+        lines.append(f"特に{venue_txt}で高配当期待値が高くなっています。")
+    return " ".join(lines)
+
+
+def _section_comment_hot_high(all_manshuu: list) -> str:
+    high = [u for u in all_manshuu if u.get("score", 0) >= HOT_HIGH_THRESHOLD]
+    if not high:
+        return "本日は高配当期待レースがありません。"
+    venues = list(dict.fromkeys(u.get("venue","") for u in high[:5]))
+    venue_txt = "・".join(venues[:3])
+    return f"荒れ指数{HOT_HIGH_THRESHOLD}以上の高配当期待レースが{len(high)}件。{venue_txt}は特に要チェックです。"
+
+
+def _section_comment_motor(hot_motor: list, label: str) -> str:
+    if not hot_motor:
+        return "本日はデータ蓄積中です（数日後に表示されます）。"
+    venues = list(dict.fromkeys(m.get("venue","") for m in hot_motor[:5]))
+    venue_txt = "・".join(venues[:3])
+    return f"{label}が{len(hot_motor)}件検出されました。{venue_txt}のモーターに注目です。"
+
+
+def _section_comment_korogashi(kdata: dict) -> str:
+    top10 = kdata.get("top10", [])
+    buy = [s for s in top10 if s.get("verdict") == "購入"]
+    if not top10:
+        return "本日は転がし候補の算出データがありません。"
+    if not buy:
+        return f"本日は転がし適性70未満が多く、見送り寄りの判定です（候補{len(top10)}件中）。"
+    venues = list(dict.fromkeys(s.get("venue","") for s in buy[:3]))
+    venue_txt = "・".join(venues)
+    return f"購入判定レースが{len(buy)}件あります。{venue_txt}が本日の有力候補です。"
+
+
+# ════════════════════════════════════════════════════════════
 # レースごとのAIコメント（1〜2行）
 # ════════════════════════════════════════════════════════════
 
@@ -236,6 +295,354 @@ def generate_csvs(data: dict, prefix: str = "") -> list[str]:
 # HTML生成（noteコピペ用・スマホ対応）
 # ════════════════════════════════════════════════════════════
 
+# ── ブランドアイコン定義 ──────────────────────────────────
+# 要件のアイコン配分: 🚨危険艇 💰万舟 🔥高配当期待 ⚡激走 📈覚醒 🎯転がし 👤注目レーサー
+BRAND_ICONS = {
+    "danger":    "🚨",   # AI危険艇速報
+    "manshuu":   "💰",   # AI万舟警報
+    "hot_high":  "🔥",   # AI高配当期待（万舟Sランク＝荒れ指数80以上）
+    "motor_hot": "⚡",   # AI激走モーター
+    "motor_awk": "📈",   # AI覚醒モーター
+    "korogashi": "🎯",   # AI転がし候補
+    "racer":     "👤",   # 注目レーサー
+}
+BRAND_NAMES = {
+    "danger":    "AI危険艇速報",
+    "manshuu":   "AI万舟警報",
+    "hot_high":  "AI高配当期待",
+    "motor_hot": "AI激走モーター",
+    "motor_awk": "AI覚醒モーター",
+    "korogashi": "AI転がし候補",
+    "racer":     "今日の注目レーサー",
+}
+
+# AI総合注目度の重み（要件指定）
+OVERALL_WEIGHTS = {
+    "danger":    0.25,
+    "manshuu":   0.25,
+    "korogashi": 0.20,
+    "motor_hot": 0.15,
+    "motor_awk": 0.10,
+    "hot_high":  0.05,
+}
+
+HOT_HIGH_THRESHOLD = 80   # 万舟Sランク＝高配当期待の閾値
+
+
+def _race_anchor(venue: str, race) -> str:
+    """会場名・レース番号からHTMLアンカーIDを生成する"""
+    import re as _re
+    safe_venue = _re.sub(r'[^\w]', '', str(venue))
+    return f"race-{safe_venue}-{race}"
+
+
+def _load_korogashi_cache() -> dict:
+    """korogashi_cache.json を安全に読み込む"""
+    try:
+        if os.path.exists("korogashi_cache.json"):
+            with open("korogashi_cache.json", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _build_race_index(data: dict) -> tuple:
+    """
+    全レースのブランド掲載状況とAI総合注目度を集計する。
+    戻り値: (sorted_index, brand_counts, race_scores)
+      sorted_index: [(venue, race, [brand_key, ...]), ...]  会場→レース番号昇順
+      brand_counts: {"danger": 18, "manshuu": 10, ...}
+      race_scores:  {(venue, race): {"overall": 98, "danger": 85, "manshuu": 82,
+                                      "korogashi": 90, "motor_hot": None, "motor_awk": None,
+                                      "hot_high": True/False}}
+    """
+    race_brands: dict[tuple, list[str]] = {}
+    race_raw: dict[tuple, dict] = {}   # 各カテゴリの生スコアを保持
+
+    def _add(venue, race, brand_key, score=None):
+        key = (venue, race)
+        race_brands.setdefault(key, [])
+        if brand_key not in race_brands[key]:
+            race_brands[key].append(brand_key)
+        race_raw.setdefault(key, {})
+        if score is not None:
+            race_raw[key][brand_key] = score
+
+    all_danger  = data.get("all_danger",  data.get("danger_boat1", []))
+    all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
+
+    for d in all_danger:
+        _add(d.get("venue",""), d.get("race",""), "danger", d.get("score", 0))
+
+    for u in all_manshuu:
+        venue, race = u.get("venue",""), u.get("race","")
+        score = u.get("score", 0)
+        _add(venue, race, "manshuu", score)
+        # 高配当期待: 万舟スコアが閾値以上のものを別ブランドとしても掲載
+        if score >= HOT_HIGH_THRESHOLD:
+            _add(venue, race, "hot_high", score)
+
+    # 転がし候補（korogashi_cache.json があれば統合）
+    kdata = _load_korogashi_cache()
+    for s in kdata.get("top10", []):
+        if s.get("verdict") in ("購入", "注意"):
+            _add(s.get("venue",""), s.get("race",""), "korogashi", s.get("fitness", 0))
+
+    # 会場名→開催場コード順、レース番号昇順でソート
+    def _sort_key(item):
+        (venue, race), brands = item
+        try:
+            race_num = int(race)
+        except (ValueError, TypeError):
+            race_num = 0
+        return (venue, race_num)
+
+    sorted_items = sorted(race_brands.items(), key=_sort_key)
+    sorted_index = [(v, r, brands) for (v, r), brands in sorted_items]
+
+    # ── AI総合注目度の算出 ──────────────────────────────────
+    race_scores: dict[tuple, dict] = {}
+    for key, brands in race_brands.items():
+        raw = race_raw.get(key, {})
+        W   = OVERALL_WEIGHTS
+
+        # 各指標を0-100に正規化（なければ0扱い、重みは「掲載なし」を考慮）
+        danger_s    = raw.get("danger", 0)
+        manshuu_s   = raw.get("manshuu", 0)
+        korogashi_s = raw.get("korogashi", 0)
+        hot_high_s  = raw.get("hot_high", 0)
+        # 激走/覚醒は会場単位データのためレース単位スコアはなし→掲載有無のみ反映
+        motor_hot_present = any(
+            m.get("venue","") == key[0]
+            for m in data.get("hot_motor", [])
+        )
+        motor_awk_present = any(
+            m.get("venue","") == key[0]
+            for m in data.get("awakening_motor", [])
+        )
+        motor_hot_s = 70 if motor_hot_present and "motor_hot" in brands else 0
+        motor_awk_s = 70 if motor_awk_present and "motor_awk" in brands else 0
+
+        overall = (
+            danger_s    * W["danger"]    +
+            manshuu_s   * W["manshuu"]   +
+            korogashi_s * W["korogashi"] +
+            motor_hot_s * W["motor_hot"] +
+            motor_awk_s * W["motor_awk"] +
+            hot_high_s  * W["hot_high"]
+        )
+        # 重み合計に対して正規化（満点ブランドが揃っていなくても公平に）
+        total_w = sum(W[b] for b in brands if b in W) or 1.0
+        # 掲載されているブランドの重みだけで正規化すると相対比較しやすい
+        norm_overall = overall / total_w if total_w > 0 else overall
+
+        race_scores[key] = {
+            "overall":    round(min(100, norm_overall), 1),
+            "danger":     danger_s,
+            "manshuu":    manshuu_s,
+            "korogashi":  korogashi_s,
+            "hot_high":   hot_high_s,
+            "motor_hot":  motor_hot_s if motor_hot_present else None,
+            "motor_awk":  motor_awk_s if motor_awk_present else None,
+            "brand_count": len(brands),
+        }
+
+    # ブランド別件数
+    brand_counts = {
+        "danger":    len(all_danger),
+        "manshuu":   len(all_manshuu),
+        "hot_high":  sum(1 for u in all_manshuu if u.get("score", 0) >= HOT_HIGH_THRESHOLD),
+        "motor_hot": len(data.get("hot_motor", [])),
+        "motor_awk": len(data.get("awakening_motor", [])),
+        "korogashi": sum(1 for s in kdata.get("top10", []) if s.get("verdict") in ("購入", "注意")),
+    }
+
+    return sorted_index, brand_counts, race_scores
+
+
+def _anchor_for(venue, race, brands) -> str:
+    """優先順位: danger > manshuu の順でジャンプ先アンカーを決める"""
+    base = _race_anchor(venue, race)
+    if "danger" in brands:
+        return base
+    if "manshuu" in brands or "hot_high" in brands:
+        return base + "-manshuu"
+    return base
+
+
+def _stars(score: float) -> str:
+    """0-100点を★5段階表示に変換"""
+    n = max(0, min(5, round(score / 20)))
+    return "★" * n + "☆" * (5 - n)
+
+
+def _brand_badge_html(brands: list[str]) -> str:
+    """レース詳細カードのタイトル右上に表示するブランドバッジ"""
+    icons = "".join(
+        f'<span class="brand-badge" title="{BRAND_NAMES.get(b,b)}">{BRAND_ICONS.get(b,"")}</span>'
+        for b in brands
+    )
+    return f'<span class="brand-badges">{icons}</span>' if icons else ""
+
+
+def _render_index_section(data: dict) -> str:
+    """📖 本日のレースインデックス セクションのHTMLを生成する"""
+    sorted_index, brand_counts, race_scores = _build_race_index(data)
+
+    if not sorted_index:
+        return ""
+
+    rows_html = ""
+    for venue, race, brands in sorted_index:
+        anchor = _anchor_for(venue, race, brands)
+        icons  = " ".join(BRAND_ICONS.get(b, "") for b in brands)
+        rows_html += f"""
+<a href="#{anchor}" class="idx-row">
+  <span class="idx-race">{venue}{race}R</span>
+  <span class="idx-icons">{icons}</span>
+</a>"""
+
+    count_rows = ""
+    for key in ["danger", "manshuu", "hot_high", "motor_hot", "motor_awk", "korogashi"]:
+        cnt = brand_counts.get(key, 0)
+        if cnt == 0:
+            continue
+        icon = BRAND_ICONS.get(key, "")
+        name = BRAND_NAMES.get(key, key)
+        count_rows += f'<div class="idx-count-row"><span>{icon} {name}</span><span class="idx-count-num">{cnt}件</span></div>'
+
+    return f"""
+<section id="race-index">
+  <h2>📖 本日のレースINDEX</h2>
+  <div class="index-counts top">
+    {count_rows}
+  </div>
+  <div class="index-grid">
+    {rows_html}
+  </div>
+</section>"""
+
+
+def _race_detail(venue: str, race, data: dict) -> Optional[dict]:
+    """指定レースの詳細データ（危険艇/万舟/転がし）を1つにまとめて返す"""
+    all_danger  = data.get("all_danger",  data.get("danger_boat1", []))
+    all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
+    kdata       = _load_korogashi_cache()
+
+    d = next((x for x in all_danger  if x.get("venue")==venue and str(x.get("race"))==str(race)), None)
+    u = next((x for x in all_manshuu if x.get("venue")==venue and str(x.get("race"))==str(race)), None)
+    k = next((x for x in kdata.get("top10", [])
+              if x.get("venue")==venue and str(x.get("race"))==str(race)), None)
+    if not (d or u or k):
+        return None
+    return {"danger": d, "manshuu": u, "korogashi": k}
+
+
+def _render_pickup_section(data: dict) -> str:
+    """⭐ 本日のAIイチオシ セクション（総合注目度1位のレース）"""
+    sorted_index, brand_counts, race_scores = _build_race_index(data)
+    if not race_scores:
+        return ""
+
+    best_key = max(race_scores, key=lambda k: race_scores[k]["overall"])
+    venue, race = best_key
+    s = race_scores[best_key]
+    brands = next((b for v, r, b in sorted_index if (v, r) == best_key), [])
+
+    detail = _race_detail(venue, race, data) or {}
+    d, u, k = detail.get("danger"), detail.get("manshuu"), detail.get("korogashi")
+
+    badges = _brand_badge_html(brands)
+    stars  = _stars(s["overall"])
+
+    # 注目ポイント（3〜5行）
+    points = []
+    if d:
+        points.append(f"🚨 危険艇: {d.get('reason','')}")
+    if u:
+        reasons = u.get("key_reason","").split(" / ")
+        clean = [r.replace('🔥 ','').replace('🔥','').strip() for r in reasons if r.strip()]
+        if clean:
+            points.append(f"💰 万舟: {clean[0]}")
+    if k:
+        points.append(f"🎯 転がし: 適性{k.get('fitness','-')}点・{k.get('lane','-')}号艇 {k.get('racer_name','')}")
+    if s.get("motor_hot"):
+        points.append("⚡ 激走モーター対象会場")
+    if s.get("motor_awk"):
+        points.append("📈 覚醒モーター対象会場")
+
+    points_html = "".join(f"<li>{p}</li>" for p in points[:5])
+
+    # 総合コメント生成
+    condition_parts = []
+    if d and d.get("score", 0) >= 80: condition_parts.append("危険艇Sランク")
+    if u and u.get("score", 0) >= 80: condition_parts.append("万舟Sランク")
+    if k and k.get("fitness", 0) >= 90: condition_parts.append("転がし適性90以上")
+    if s.get("motor_hot"): condition_parts.append("激走モーター対象")
+    if s.get("motor_awk"): condition_parts.append("覚醒モーター対象")
+
+    cond_text = "・".join(condition_parts) if condition_parts else "複数指標で高評価"
+    ai_comment = (
+        f"本日唯一、{cond_text}の条件が重なりました。"
+        f"AI総合注目度{s['overall']}点は本日最高評価です。"
+    )
+
+    anchor = _anchor_for(venue, race, brands)
+
+    return f"""
+<section id="pickup">
+  <h2>⭐ 本日のAIイチオシ</h2>
+  <div class="pickup-card">
+    <a href="#{anchor}" class="pickup-race">{venue}{race}R</a>
+    <div class="pickup-score">
+      <span class="pickup-num">AI総合注目度 {s['overall']}</span>
+      <span class="pickup-stars">{stars}</span>
+    </div>
+    <div class="pickup-badges">{badges}</div>
+    <div class="pickup-comment">
+      <strong>【AIコメント】</strong>
+      <p>{ai_comment}</p>
+    </div>
+    <div class="pickup-points">
+      <strong>【注目ポイント】</strong>
+      <ul>{points_html}</ul>
+    </div>
+  </div>
+</section>"""
+
+
+def _render_top5_section(data: dict) -> str:
+    """🏆 本日の注目レースTOP5 セクション"""
+    sorted_index, brand_counts, race_scores = _build_race_index(data)
+    if not race_scores:
+        return ""
+
+    ranked = sorted(race_scores.items(), key=lambda kv: -kv[1]["overall"])[:5]
+
+    rows = ""
+    for i, (key, s) in enumerate(ranked, 1):
+        venue, race = key
+        brands = next((b for v, r, b in sorted_index if (v, r) == key), [])
+        anchor = _anchor_for(venue, race, brands)
+        icons  = " ".join(BRAND_ICONS.get(b, "") for b in brands)
+        rows += f"""
+<a href="#{anchor}" class="top5-row">
+  <span class="top5-rank">{i}</span>
+  <span class="top5-race">{venue}{race}R</span>
+  <span class="top5-icons">{icons}</span>
+  <span class="top5-score">注目度{s['overall']}</span>
+</a>"""
+
+    return f"""
+<section id="top5">
+  <h2>🏆 本日の注目レースTOP5</h2>
+  <div class="top5-list">
+    {rows}
+  </div>
+</section>"""
+
+
 def generate_html(data: dict, output_path: str) -> None:
     date_str  = data.get("date", "")
     date_disp = f"{date_str[4:6]}/{date_str[6:8]}" if len(date_str) >= 8 else ""
@@ -246,6 +653,16 @@ def generate_html(data: dict, output_path: str) -> None:
     hot_motor   = data.get("hot_motor", [])
     awake_motor = data.get("awakening_motor", [])
     editorial   = _generate_editorial(data)
+
+    # 新セクション用データ（INDEX/イチオシ/TOP5で共有）
+    race_index_data = _build_race_index(data)   # (sorted_index, brand_counts, race_scores)
+    pickup_section  = _render_pickup_section(data)
+    top5_section    = _render_top5_section(data)
+    index_section   = _render_index_section(data)
+
+    # 転がし候補データ（高配当期待・転がしセクション用）
+    korogashi_data  = _load_korogashi_cache()
+    high_payout     = [u for u in all_manshuu if u.get("score", 0) >= HOT_HIGH_THRESHOLD]
 
     s_d = len([d for d in all_danger  if d.get("score",0) >= 80])
     a_d = len([d for d in all_danger  if 60 <= d.get("score",0) < 80])
@@ -278,12 +695,17 @@ def generate_html(data: dict, output_path: str) -> None:
                 for l, v, c in bar_items
             )
             rank_cls = "s" if score >= 80 else "a" if score >= 60 else "b"
+            _anchor = _race_anchor(d.get('venue',''), d.get('race',''))
+            _brands = next((b for v, r, b in race_index_data[0]
+                           if v == d.get('venue','') and str(r) == str(d.get('race',''))), ["danger"])
+            _badges = _brand_badge_html(_brands)
             rows += f"""
-<div class="race-card {rank_cls}">
+<div class="race-card {rank_cls}" id="{_anchor}">
   <div class="rc-header">
     <span class="badge {rank_cls}">{rank_label(score)}</span>
     <strong class="rc-name">{d.get('venue','')}{d.get('race','')}R</strong>
     <span class="rc-racer">{d.get('racer','?')} {d.get('racer_class','')}</span>
+    {_badges}
   </div>
   <div class="rc-reason">{d.get('reason','')}</div>
   <div class="rc-comment">💬 {comment}</div>
@@ -298,12 +720,17 @@ def generate_html(data: dict, output_path: str) -> None:
             rank_cls = "s" if score >= 80 else "a" if score >= 60 else "b"
             reasons = u.get("key_reason","").split(" / ")
             reason_html = "".join(f"<div class='mr'>{r}</div>" for r in reasons if r.strip())
+            _anchor_m = _race_anchor(u.get('venue',''), u.get('race','')) + "-manshuu"
+            _brands = next((b for v, r, b in race_index_data[0]
+                           if v == u.get('venue','') and str(r) == str(u.get('race',''))), ["manshuu"])
+            _badges = _brand_badge_html(_brands)
             rows += f"""
-<div class="race-card {rank_cls}">
+<div class="race-card {rank_cls}" id="{_anchor_m}">
   <div class="rc-header">
     <span class="badge {rank_cls}">{rank_label(score)}</span>
     <strong class="rc-name">{u.get('venue','')}{u.get('race','')}R</strong>
     <span class="rc-racer">注目: {u.get('key_racer','')}</span>
+    {_badges}
   </div>
   {reason_html}
   <div class="rc-comment">💬 {_manshuu_comment(u)}</div>
@@ -379,6 +806,68 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
 .editorial .reasons li{{color:#aaa;font-size:.9em;margin:4px 0 4px 16px}}
 .editorial .summary{{color:#aaa;font-size:.88em;margin-top:10px;padding-top:10px;
   border-top:1px solid #2a4a2a}}
+/* レースインデックス */
+#race-index{{background:var(--card);border:1px solid var(--border);
+  border-radius:10px;padding:18px;margin-bottom:20px}}
+#race-index h2{{border-bottom:none;padding-top:0}}
+.index-grid{{display:flex;flex-direction:column;gap:2px;margin:12px 0 16px}}
+.idx-row{{display:flex;justify-content:space-between;align-items:center;
+  padding:9px 12px;border-radius:6px;background:#1a1a30;
+  text-decoration:none;color:var(--text);transition:background .15s}}
+.idx-row:hover,.idx-row:active{{background:#22224a}}
+.idx-race{{font-weight:bold;font-size:.92em}}
+.idx-icons{{font-size:1em;letter-spacing:2px}}
+.index-counts{{border-top:1px solid var(--border);padding-top:12px;
+  display:flex;flex-direction:column;gap:6px}}
+.idx-count-row{{display:flex;justify-content:space-between;font-size:.88em;color:#bbb}}
+.idx-count-num{{color:var(--accent);font-weight:bold}}
+.index-counts.top{{margin-bottom:16px;padding-top:0;border-top:none;
+  background:#1a1a30;border-radius:8px;padding:12px}}
+/* AIイチオシ */
+#pickup{{margin-bottom:20px}}
+#pickup h2{{border-bottom:none;padding-top:0}}
+.pickup-card{{background:linear-gradient(135deg,#1a1a30,#1e1e3a);
+  border:2px solid #ffd54f;border-radius:14px;padding:20px;
+  box-shadow:0 0 20px rgba(255,213,79,.15)}}
+.pickup-race{{display:block;font-size:1.6em;font-weight:bold;color:#fff;
+  text-decoration:none;margin-bottom:8px}}
+.pickup-race:hover{{color:#ffd54f}}
+.pickup-score{{display:flex;align-items:center;gap:12px;margin-bottom:10px}}
+.pickup-num{{font-size:1.1em;color:#ffd54f;font-weight:bold}}
+.pickup-stars{{font-size:1.1em;color:#ffd54f}}
+.pickup-badges{{margin-bottom:14px}}
+.pickup-comment{{background:#14142a;border-radius:8px;padding:12px;margin-bottom:12px}}
+.pickup-comment strong{{color:#ffd54f;font-size:.9em}}
+.pickup-comment p{{color:#ccc;font-size:.92em;margin-top:6px}}
+.pickup-points strong{{color:#81c784;font-size:.9em}}
+.pickup-points ul{{list-style:none;margin-top:8px}}
+.pickup-points li{{color:#bbb;font-size:.88em;padding:4px 0 4px 4px;
+  border-left:2px solid #2a4a2a;padding-left:10px;margin-bottom:4px}}
+/* TOP5 */
+#top5{{margin-bottom:20px}}
+#top5 h2{{border-bottom:none;padding-top:0}}
+.top5-list{{display:flex;flex-direction:column;gap:6px}}
+.top5-row{{display:flex;align-items:center;gap:10px;background:var(--card);
+  border-radius:8px;padding:12px;text-decoration:none;color:var(--text);
+  border-left:3px solid var(--accent)}}
+.top5-row:hover{{background:#1e1e3a}}
+.top5-rank{{font-size:1.3em;font-weight:bold;color:var(--accent);width:24px}}
+.top5-race{{font-weight:bold;flex:1}}
+.top5-icons{{font-size:.95em;letter-spacing:1px}}
+.top5-score{{font-size:.82em;color:var(--gray)}}
+/* ブランドバッジ */
+.brand-badges{{margin-left:auto;display:inline-flex;gap:2px}}
+.brand-badge{{font-size:.95em}}
+/* セクションコメント */
+.section-comment{{background:#14142a;border-left:3px solid var(--accent);
+  border-radius:6px;padding:10px 14px;margin-bottom:14px;
+  color:#bbb;font-size:.87em;line-height:1.6}}
+/* 高配当期待・転がしリンク */
+.hp-link,.kr-link{{display:block;background:var(--card);border-radius:6px;
+  padding:10px 14px;margin-bottom:6px;color:var(--text);text-decoration:none;
+  font-size:.9em;border-left:3px solid var(--hot)}}
+.kr-link{{border-left-color:#26a69a}}
+.hp-link:hover,.kr-link:hover{{background:#1e1e3a}}
 /* セクション */
 section{{margin-bottom:24px}}
 section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
@@ -426,7 +915,11 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 .dl-list li{{padding:8px 0;border-bottom:1px solid #1a3a5a;color:#aaa;font-size:.9em}}
 .dl-list li:last-child{{border-bottom:none}}
 /* フッター */
-.footer{{text-align:center;color:#444;font-size:.78em;padding:20px 0}}
+.footer{{text-align:center;color:#444;font-size:.78em;padding:20px 0;
+  border-top:1px solid var(--border);margin-top:10px}}
+.footer-line{{color:#666;margin-bottom:6px}}
+.footer-meta{{color:#444;font-size:.92em;margin-bottom:6px}}
+.footer-note{{color:#3a3a3a;font-size:.85em}}
 </style>
 </head>
 <body>
@@ -453,34 +946,78 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
   <div class="summary">📊 {editorial['summary']}</div>
 </div>
 
-<!-- ③ 危険な1号艇 -->
+<!-- ③ 本日のAIイチオシ -->
+{pickup_section}
+
+<!-- ④ 本日の注目レースTOP5 -->
+{top5_section}
+
+<!-- ⑤ 本日のレースINDEX -->
+{index_section}
+
+<!-- ⑥ 危険な1号艇 -->
 <section id="danger">
-  <h2>⚠️ 危険な1号艇　全{len(all_danger)}レース</h2>
+  <h2>🚨 AI危険艇速報　全{len(all_danger)}レース</h2>
+  <div class="section-comment">{_section_comment_danger(all_danger)}</div>
   {danger_rows()}
 </section>
 
-<!-- ④ 万舟警報 -->
+<!-- ⑦ 万舟警報 -->
 <section id="manshuu">
-  <h2>💰 万舟警報　全{len(all_manshuu)}レース</h2>
+  <h2>💰 AI万舟警報　全{len(all_manshuu)}レース</h2>
+  <div class="section-comment">{_section_comment_manshuu(all_manshuu)}</div>
   {manshuu_rows()}
 </section>
 
-<!-- ⑤ 激走モーター -->
+<!-- ⑧ 高配当期待 -->
+<section id="hot-high">
+  <h2>🔥 AI高配当期待　全{len(high_payout)}レース</h2>
+  <div class="section-comment">{_section_comment_hot_high(all_manshuu)}</div>
+  {''.join(f'<a href="#" class="hp-link">{u.get("venue","")}{u.get("race","")}R  荒れ指数{u.get("score",0)}</a>' for u in high_payout)}
+</section>
+
+<!-- ⑨ 激走モーター -->
 <section id="motor">
-  <h2>🔥 激走モーター　全{len(hot_motor)}件</h2>
+  <h2>⚡ AI激走モーター　全{len(hot_motor)}件</h2>
+  <div class="section-comment">{_section_comment_motor(hot_motor, "激走モーター")}</div>
   {motor_table(hot_motor, hot_cols)}
 </section>
 
-<!-- ⑥ 覚醒モーター -->
+<!-- ⑩ 覚醒モーター -->
 <section id="awake">
-  <h2>⚡ 覚醒モーター　全{len(awake_motor)}件</h2>
+  <h2>📈 AI覚醒モーター　全{len(awake_motor)}件</h2>
+  <div class="section-comment">{_section_comment_motor(awake_motor, "覚醒モーター")}</div>
   {motor_table(awake_motor, awake_cols)}
 </section>
 
-<!-- ⑦ 昨日の検証 -->
+<!-- ⑪ 転がし候補 -->
+<section id="korogashi">
+  <h2>🎯 AI転がし候補</h2>
+  <div class="section-comment">{_section_comment_korogashi(korogashi_data)}</div>
+  {''.join(
+      f'<a href="#" class="kr-link">{s.get("venue","")}{s.get("race","")}R　'
+      f'{s.get("lane","")}号艇 {s.get("racer_name","")}　適性{s.get("fitness","")}点　[{s.get("verdict","")}]</a>'
+      for s in korogashi_data.get("top10", [])
+  ) or '<p class="no-data">本日のデータはまだありません</p>'}
+</section>
+
+<!-- ⑫ 今日の注目レーサー -->
+<section id="racer">
+  <h2>👤 今日の注目レーサー</h2>
+  <div class="section-comment">勝率・モーター・直近成績から本日特に注目すべき選手をピックアップしています。</div>
+  {''.join(
+      f'<div class="race-card a"><div class="rc-header">'
+      f'<strong class="rc-name">{d.get("racer","?")}</strong>'
+      f'<span class="rc-racer">{d.get("venue","")}{d.get("race","")}R {d.get("racer_class","")}</span>'
+      f'</div><div class="rc-reason">{d.get("reason","")}</div></div>'
+      for d in sorted(all_danger, key=lambda x: -x.get("score",0))[:5]
+  ) or '<p class="no-data">本日のデータはまだありません</p>'}
+</section>
+
+<!-- ⑬ 昨日の検証 -->
 {yesterday_block}
 
-<!-- ⑧⑨ ダウンロード案内 -->
+<!-- ダウンロード案内 -->
 <div class="dl-section">
   <h2>📥 データダウンロード（購入者特典）</h2>
   <ul class="dl-list">
@@ -494,8 +1031,12 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 </div>
 
 <div class="footer">
-  AI競艇新聞 | 全レース機械学習分析 | 毎日更新<br>
-  ※本レポートはデータ分析結果であり、的中を保証するものではありません。
+  <div class="footer-line">AI競艇新聞 | 全レース機械学習分析 | 毎日更新</div>
+  <div class="footer-meta">
+    生成日時: {date_disp} {now_str}　|　AI Engine v3.0　|
+    総データ件数: {len(all_danger)+len(all_manshuu)+len(hot_motor)+len(awake_motor)}件
+  </div>
+  <div class="footer-note">※本レポートはデータ分析結果であり、的中を保証するものではありません。</div>
 </div>
 
 </body>
