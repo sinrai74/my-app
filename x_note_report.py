@@ -481,12 +481,40 @@ def _build_race_index(data: dict) -> tuple:
 
 
 def _anchor_for(venue, race, brands) -> str:
-    """優先順位: danger > manshuu の順でジャンプ先アンカーを決める"""
+    """互換用: 優先順位 danger > manshuu でジャンプ先アンカーを1つ返す"""
     base = _race_anchor(venue, race)
     if "danger" in brands:
         return base
     if "manshuu" in brands or "hot_high" in brands:
         return base + "-manshuu"
+    return base
+
+
+def _anchor_for_brand(venue, race, brand: str) -> str:
+    """
+    指定ブランド単体のジャンプ先アンカーを返す。
+    danger      → レース詳細カード（危険艇セクション）
+    manshuu     → レース詳細カード（万舟セクション）
+    hot_high    → 高配当期待セクション内の該当リンク
+                  （実体は万舟カードと同じだが、専用アンカーを振って
+                   高配当期待セクションへ直接ジャンプできるようにする）
+    motor_hot   → 激走モーターセクションの先頭（レース単位データがないため）
+    motor_awk   → 覚醒モーターセクションの先頭
+    korogashi   → 転がし候補セクションの先頭
+    """
+    base = _race_anchor(venue, race)
+    if brand == "danger":
+        return base
+    if brand == "manshuu":
+        return base + "-manshuu"
+    if brand == "hot_high":
+        return base + "-manshuu"   # 高配当期待は万舟詳細カードと同じ実体
+    if brand == "motor_hot":
+        return "motor"
+    if brand == "motor_awk":
+        return "awake"
+    if brand == "korogashi":
+        return "korogashi"
     return base
 
 
@@ -514,13 +542,20 @@ def _render_index_section(data: dict) -> str:
 
     rows_html = ""
     for venue, race, brands in sorted_index:
-        anchor = _anchor_for(venue, race, brands)
-        icons  = " ".join(BRAND_ICONS.get(b, "") for b in brands)
+        # 各ブランドアイコンを個別にクリック可能にする
+        # （危険艇＋万舟の両方が付いているレースは、どちらのアイコンを押しても
+        #   対応するセクションへ別々にジャンプできる）
+        icon_links = "".join(
+            f'<a href="#{_anchor_for_brand(venue, race, b)}" '
+            f'class="idx-icon-link" title="{BRAND_NAMES.get(b,b)}">'
+            f'{BRAND_ICONS.get(b,"")}</a>'
+            for b in brands
+        )
         rows_html += f"""
-<a href="#{anchor}" class="idx-row">
+<div class="idx-row">
   <span class="idx-race">{venue}{race}R</span>
-  <span class="idx-icons">{icons}</span>
-</a>"""
+  <span class="idx-icons">{icon_links}</span>
+</div>"""
 
     count_rows = ""
     for key in ["danger", "manshuu", "hot_high", "motor_hot", "motor_awk", "korogashi"]:
@@ -839,11 +874,13 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
 #race-index h2{{border-bottom:none;padding-top:0}}
 .index-grid{{display:flex;flex-direction:column;gap:2px;margin:12px 0 16px}}
 .idx-row{{display:flex;justify-content:space-between;align-items:center;
-  padding:9px 12px;border-radius:6px;background:#1a1a30;
-  text-decoration:none;color:var(--text);transition:background .15s}}
-.idx-row:hover,.idx-row:active{{background:#22224a}}
+  padding:9px 12px;border-radius:6px;background:#1a1a30}}
 .idx-race{{font-weight:bold;font-size:.92em}}
-.idx-icons{{font-size:1em;letter-spacing:2px}}
+.idx-icons{{display:inline-flex;gap:6px}}
+.idx-icon-link{{display:inline-block;font-size:1.1em;text-decoration:none;
+  padding:2px 4px;border-radius:5px;transition:background .15s,transform .1s}}
+.idx-icon-link:hover{{background:#2a2a4a;transform:scale(1.15)}}
+.idx-icon-link:active{{background:#33335a}}
 .index-counts{{border-top:1px solid var(--border);padding-top:12px;
   display:flex;flex-direction:column;gap:6px}}
 .idx-count-row{{display:flex;justify-content:space-between;font-size:.88em;color:#bbb}}
