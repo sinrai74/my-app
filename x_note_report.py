@@ -394,22 +394,32 @@ def _calc_match_index(brands: list[str], raw_scores: dict) -> float:
 
 
 # ════════════════════════════════════════════════════════════
-# 📈 AIコンディション指数（開催場別・要件追加分）
-# ════════════════════════════════════════════════════════════
-
-# ════════════════════════════════════════════════════════════
-# 📈 AIコンディション指数（開催場別・要件追加分）
+# ② AI開催場ヒートマップ／コンディション指数（開催場別）
 # 重みは x_brand_config.VENUE_CONDITION_WEIGHTS を使用
 # ════════════════════════════════════════════════════════════
 
 def calc_venue_conditions(data: dict) -> list[dict]:
     """
-    開催場ごとに「今日はどれだけ面白いか」を1つのスコアにまとめる。
-    危険艇・万舟・転がし・激走・覚醒の各平均/件数を集計し、
-    0-100点のAIコンディション指数として返す。
-    戻り値: [{"venue": "江戸川", "score": 92, "stars": "★★★★★",
-              "danger_avg":, "manshuu_avg":, "korogashi_avg":,
-              "motor_hot": bool, "motor_awk": bool}, ...]  スコア降順
+    開催場ごとに5項目（危険艇・万舟・転がし・激走・覚醒）を個別採点し、
+    さらに総合の「AIコンディション指数」を算出する。
+    要件②: 開催場ヒートマップの土台データ。
+
+    戻り値: [{
+      "venue": "江戸川",
+      "score": 92, "stars": "★★★★★",
+      # 5項目それぞれの 0-100点スコアと★・信号表示
+      "items": {
+        "danger":    {"score": 85, "stars": "★★★★☆", "heat": "🟢", "count": 3},
+        "manshuu":   {"score": 70, "stars": "★★★★☆", "heat": "🟢", "count": 2},
+        "korogashi": {"score": 0,  "stars": "☆☆☆☆☆", "heat": "🔴", "count": 0},
+        "motor_hot": {"score": 75, "stars": "★★★★☆", "heat": "🟢", "count": 1},
+        "motor_awk": {"score": 0,  "stars": "☆☆☆☆☆", "heat": "🔴", "count": 0},
+      },
+      # 互換用（旧コード参照のため残す）
+      "danger_avg":, "manshuu_avg":, "korogashi_avg":,
+      "motor_hot": bool, "motor_awk": bool,
+      "danger_count":, "manshuu_count":,
+    }, ...]  スコア降順
     """
     all_danger  = data.get("all_danger",  data.get("danger_boat1", []))
     all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
@@ -433,14 +443,25 @@ def calc_venue_conditions(data: dict) -> list[dict]:
         d_list = [d.get("score", 0) for d in all_danger  if d.get("venue") == venue]
         m_list = [u.get("score", 0) for u in all_manshuu if u.get("venue") == venue]
         k_list = [s.get("fitness", 0) for s in korogashi_top10 if s.get("venue") == venue]
-        has_hot  = any(m.get("venue") == venue for m in hot_motor)
-        has_awk  = any(a.get("venue") == venue for a in awake_motor)
+        hot_list = [m for m in hot_motor   if m.get("venue") == venue]
+        awk_list = [a for a in awake_motor if a.get("venue") == venue]
+        has_hot  = len(hot_list) > 0
+        has_awk  = len(awk_list) > 0
 
         d_avg = sum(d_list) / len(d_list) if d_list else 0
         m_avg = sum(m_list) / len(m_list) if m_list else 0
         k_avg = sum(k_list) / len(k_list) if k_list else 0
-        hot_s = 75 if has_hot else 0
-        awk_s = 75 if has_awk else 0
+        # 激走/覚醒はレース単位スコアがないため、件数に応じて0-100点を疑似算出
+        hot_s = min(100, 60 + len(hot_list) * 10) if has_hot else 0
+        awk_s = min(100, 60 + len(awk_list) * 10) if has_awk else 0
+
+        items = {
+            "danger":    {"score": round(d_avg, 1),   "stars": _stars(d_avg),   "heat": heat_emoji(d_avg),   "count": len(d_list)},
+            "manshuu":   {"score": round(m_avg, 1),   "stars": _stars(m_avg),   "heat": heat_emoji(m_avg),   "count": len(m_list)},
+            "korogashi": {"score": round(k_avg, 1),   "stars": _stars(k_avg),   "heat": heat_emoji(k_avg),   "count": len(k_list)},
+            "motor_hot": {"score": round(hot_s, 1),   "stars": _stars(hot_s),   "heat": heat_emoji(hot_s),   "count": len(hot_list)},
+            "motor_awk": {"score": round(awk_s, 1),   "stars": _stars(awk_s),   "heat": heat_emoji(awk_s),   "count": len(awk_list)},
+        }
 
         # 掲載されている指標の重みだけで正規化（フェアな比較のため）
         present_weights = []
@@ -461,6 +482,9 @@ def calc_venue_conditions(data: dict) -> list[dict]:
             "venue":         venue,
             "score":         score,
             "stars":         _stars(score),
+            "heat":          heat_emoji(score),
+            "items":         items,
+            # 互換用フィールド（既存コードが参照しているため残す）
             "danger_avg":    round(d_avg, 1) if d_list else None,
             "manshuu_avg":   round(m_avg, 1) if m_list else None,
             "korogashi_avg": round(k_avg, 1) if k_list else None,
@@ -474,36 +498,144 @@ def calc_venue_conditions(data: dict) -> list[dict]:
     return results
 
 
+# ════════════════════════════════════════════════════════════
+# ① 今日のダッシュボード（新聞最初のサマリー）
+# ════════════════════════════════════════════════════════════
+
+def build_dashboard(data: dict, conditions: list) -> dict:
+    """
+    要件①: 新聞冒頭に表示する今日の全体サマリーを集計する。
+    """
+    all_danger  = data.get("all_danger",  data.get("danger_boat1", []))
+    all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
+    hot_motor   = data.get("hot_motor", [])
+    awake_motor = data.get("awakening_motor", [])
+    kdata       = _load_korogashi_cache()
+    korogashi_buy = [s for s in kdata.get("top10", []) if s.get("verdict") == "購入"]
+
+    sorted_index, brand_counts, race_scores = _build_race_index(data)
+
+    venues_analyzed = set()
+    for d in all_danger:  venues_analyzed.add(d.get("venue",""))
+    for u in all_manshuu: venues_analyzed.add(u.get("venue",""))
+    venues_analyzed.discard("")
+
+    races_analyzed = set()
+    for d in all_danger:  races_analyzed.add((d.get("venue",""), d.get("race","")))
+    for u in all_manshuu: races_analyzed.add((u.get("venue",""), u.get("race","")))
+
+    s_danger_count  = sum(1 for d in all_danger  if rank_of(d.get("score",0)) == "S")
+    s_manshuu_count = sum(1 for u in all_manshuu if rank_of(u.get("score",0)) == "S")
+    high_match_count = sum(1 for s in race_scores.values() if s["match_index"] >= 95)
+
+    # 高配当期待件数（動的閾値）
+    cutoff = _hot_high_threshold(all_manshuu)
+    hot_high_count = sum(1 for u in all_manshuu if u.get("score", 0) >= cutoff)
+
+    best_venue  = conditions[0]["venue"] if conditions else None    # 最も期待
+    worst_venue = None   # 最も堅そう（コンディション低い＝荒れにくい）
+    rough_venue = None   # 最も荒れそう（万舟スコア最高）
+
+    if conditions:
+        worst_venue = min(conditions, key=lambda c: c["score"])["venue"]
+        manshuu_sorted = sorted(
+            [c for c in conditions if c.get("manshuu_count", 0) > 0],
+            key=lambda c: -(c.get("manshuu_avg") or 0),
+        )
+        rough_venue = manshuu_sorted[0]["venue"] if manshuu_sorted else best_venue
+
+    return {
+        "venues_analyzed":    len(venues_analyzed),
+        "races_analyzed":     len(races_analyzed),
+        "danger_s_count":     s_danger_count,
+        "manshuu_s_count":    s_manshuu_count,
+        "korogashi_count":    len(korogashi_buy),
+        "hot_high_count":     hot_high_count,
+        "motor_hot_count":    len(hot_motor),
+        "motor_awk_count":    len(awake_motor),
+        "high_match_count":   high_match_count,
+        "best_venue":         best_venue,
+        "rough_venue":        rough_venue,
+        "calm_venue":         worst_venue,
+    }
+
+
+def _render_dashboard_section(data: dict, dashboard: dict) -> str:
+    """① 今日のダッシュボード セクションHTMLを生成する"""
+    d = dashboard
+    venue_html = ""
+    if d["best_venue"]:
+        venue_html += f'<div class="dash-venue-row"><span class="dv-label">⭐ 最も期待</span><span class="dv-venue">{d["best_venue"]}</span></div>'
+    if d["rough_venue"]:
+        venue_html += f'<div class="dash-venue-row"><span class="dv-label">🌊 最も荒れそう</span><span class="dv-venue">{d["rough_venue"]}</span></div>'
+    if d["calm_venue"]:
+        venue_html += f'<div class="dash-venue-row"><span class="dv-label">🛡️ 最も堅そう</span><span class="dv-venue">{d["calm_venue"]}</span></div>'
+
+    return f"""
+<section id="dashboard">
+  <h2>📋 今日のダッシュボード</h2>
+  <div class="dash-grid">
+    <div class="dash-cell"><div class="dc-num">{d['venues_analyzed']}</div><div class="dc-label">解析開催場数</div></div>
+    <div class="dash-cell"><div class="dc-num">{d['races_analyzed']}</div><div class="dc-label">解析レース数</div></div>
+    <div class="dash-cell s"><div class="dc-num">{d['danger_s_count']}</div><div class="dc-label">🚨危険艇S</div></div>
+    <div class="dash-cell s"><div class="dc-num">{d['manshuu_s_count']}</div><div class="dc-label">💰万舟S</div></div>
+    <div class="dash-cell"><div class="dc-num">{d['korogashi_count']}</div><div class="dc-label">🎯転がし候補</div></div>
+    <div class="dash-cell"><div class="dc-num">{d['hot_high_count']}</div><div class="dc-label">🔥高配当期待</div></div>
+    <div class="dash-cell"><div class="dc-num">{d['motor_hot_count']}</div><div class="dc-label">⚡激走モーター</div></div>
+    <div class="dash-cell"><div class="dc-num">{d['motor_awk_count']}</div><div class="dc-label">📈覚醒モーター</div></div>
+    <div class="dash-cell hi"><div class="dc-num">{d['high_match_count']}</div><div class="dc-label">一致指数95+</div></div>
+  </div>
+  <div class="dash-venues">
+    {venue_html}
+  </div>
+</section>"""
+
+
 def _render_condition_section(data: dict) -> str:
-    """📈 本日のAIコンディション指数 セクション（開催場別）"""
+    """
+    ② 本日のAI開催場ヒートマップ セクション（開催場別）
+    要件②: 危険艇・万舟・転がし・激走・覚醒の5項目を一覧表で色分け表示する。
+    """
     conditions = calc_venue_conditions(data)
     if not conditions:
         return ""
 
+    item_keys = ["danger", "manshuu", "korogashi", "motor_hot", "motor_awk"]
+
+    header_cells = "".join(
+        f'<th>{brand_icon(k)}{brand_short(k)}</th>' for k in item_keys
+    )
+
     rows = ""
     for c in conditions:
-        badges = []
-        if c["danger_count"]:  badges.append(f"🚨{c['danger_avg']:.0f}")
-        if c["manshuu_count"]: badges.append(f"💰{c['manshuu_avg']:.0f}")
-        if c["korogashi_avg"] is not None: badges.append(f"🎯{c['korogashi_avg']:.0f}")
-        if c["motor_hot"]: badges.append("⚡")
-        if c["motor_awk"]: badges.append("📈")
-        badge_txt = " ".join(badges)
-
+        cells = ""
+        for k in item_keys:
+            it = c["items"][k]
+            if it["count"] == 0:
+                cells += '<td class="hm-cell empty">－</td>'
+            else:
+                cells += (
+                    f'<td class="hm-cell" title="{it["score"]}点・{it["count"]}件">'
+                    f'<span class="hm-heat">{it["heat"]}</span>'
+                    f'<span class="hm-num">{it["score"]:.0f}</span>'
+                    f'</td>'
+                )
         rows += f"""
-<div class="cond-row">
-  <span class="cond-venue">{c['venue']}</span>
-  <span class="cond-stars">{c['stars']}</span>
-  <span class="cond-score">{c['score']}</span>
-  <span class="cond-badges">{badge_txt}</span>
-</div>"""
+<tr class="hm-row">
+  <td class="hm-venue">{c['venue']}</td>
+  <td class="hm-total"><span class="hm-stars">{c['stars']}</span></td>
+  {cells}
+</tr>"""
 
     return f"""
 <section id="condition">
-  <h2>📈 本日のAIコンディション指数</h2>
-  <div class="section-comment">開催場ごとの今日の面白さを1つのスコアにまとめました。まずはここから読みたい開催場を選んでください。</div>
-  <div class="cond-list">
-    {rows}
+  <h2>📈 本日のAI開催場ヒートマップ</h2>
+  <div class="section-comment">開催場ごとの今日の面白さを5項目で採点しました。🟢が多い開催場ほど見どころが多い一日です。</div>
+  <div class="heatmap-wrap">
+    <table class="heatmap-table">
+      <thead><tr><th>開催場</th><th>総合</th>{header_cells}</tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
   </div>
 </section>"""
 
@@ -943,11 +1075,13 @@ def generate_html(data: dict, output_path: str) -> None:
     manshuu_display = sorted(all_manshuu, key=lambda x: -x.get("score", 0))[:MANSHUU_DISPLAY_LIMIT]
 
     # 新セクション用データ（INDEX/イチオシ/TOP5で共有・全件ベース）
-    race_index_data   = _build_race_index(data)   # (sorted_index, brand_counts, race_scores)
-    venue_conditions   = calc_venue_conditions(data)
-    editor_note        = _generate_editor_note(data, venue_conditions)
-    condition_section  = _render_condition_section(data)
-    ranking_section     = _render_ranking_section(data)
+    race_index_data    = _build_race_index(data)   # (sorted_index, brand_counts, race_scores)
+    venue_conditions    = calc_venue_conditions(data)
+    dashboard_data      = build_dashboard(data, venue_conditions)
+    dashboard_section   = _render_dashboard_section(data, dashboard_data)
+    editor_note         = _generate_editor_note(data, venue_conditions)
+    condition_section   = _render_condition_section(data)
+    ranking_section      = _render_ranking_section(data)
     pickup_section  = _render_pickup_section(data)
     top5_section    = _render_top5_section(data)
     index_section   = _render_index_section(data)
@@ -1136,16 +1270,42 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
   padding:18px;margin-bottom:20px}}
 .editorial h2{{color:#81c784;border-bottom:none;padding-top:0;margin-bottom:10px}}
 .editor-note{{color:#cde;font-size:.95em;line-height:1.7}}
-/* AIコンディション指数 */
+/* ① 今日のダッシュボード */
+#dashboard{{background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:18px;margin-bottom:20px}}
+#dashboard h2{{border-bottom:none;padding-top:0;margin-bottom:14px}}
+.dash-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}}
+@media(min-width:480px){{.dash-grid{{grid-template-columns:repeat(3,1fr)}}}}
+.dash-cell{{background:#1a1a30;border-radius:8px;padding:12px 6px;text-align:center}}
+.dash-cell.s{{border:1px solid var(--s)}}
+.dash-cell.hi{{border:1px solid #ffd54f}}
+.dc-num{{font-size:1.5em;font-weight:bold;color:#fff}}
+.dash-cell.s .dc-num{{color:var(--s)}}
+.dash-cell.hi .dc-num{{color:#ffd54f}}
+.dc-label{{font-size:.72em;color:var(--gray);margin-top:4px}}
+.dash-venues{{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--border);
+  padding-top:12px}}
+.dash-venue-row{{display:flex;justify-content:space-between;align-items:center;
+  background:#1a1a30;border-radius:6px;padding:9px 12px}}
+.dv-label{{color:var(--gray);font-size:.85em}}
+.dv-venue{{font-weight:bold;color:var(--accent)}}
+/* ② AI開催場ヒートマップ */
 #condition{{margin-bottom:20px}}
 #condition h2{{border-bottom:none;padding-top:0}}
-.cond-list{{display:flex;flex-direction:column;gap:6px}}
-.cond-row{{display:flex;align-items:center;gap:10px;background:var(--card);
-  border-radius:8px;padding:11px 14px;border-left:3px solid #ab47bc}}
-.cond-venue{{font-weight:bold;min-width:64px}}
-.cond-stars{{color:#ce93d8;font-size:.95em}}
-.cond-score{{color:var(--accent);font-size:.85em;font-weight:bold;min-width:32px}}
-.cond-badges{{color:var(--gray);font-size:.82em;margin-left:auto}}
+.heatmap-wrap{{overflow-x:auto;-webkit-overflow-scrolling:touch}}
+.heatmap-table{{width:100%;border-collapse:collapse;font-size:.82em;min-width:480px}}
+.heatmap-table th{{background:#1a1a30;color:var(--gray);padding:8px 6px;
+  text-align:center;font-weight:normal;white-space:nowrap}}
+.heatmap-table th:first-child{{text-align:left;padding-left:10px}}
+.hm-row td{{padding:8px 6px;border-bottom:1px solid var(--border);text-align:center}}
+.hm-venue{{font-weight:bold;text-align:left !important;padding-left:10px !important;
+  white-space:nowrap}}
+.hm-total{{min-width:70px}}
+.hm-stars{{color:#ffd54f;font-size:.95em}}
+.hm-cell{{white-space:nowrap}}
+.hm-cell.empty{{color:#3a3a3a}}
+.hm-heat{{margin-right:3px}}
+.hm-num{{color:var(--gray);font-size:.88em}}
 /* AIランキング */
 #ai-ranking{{margin-bottom:20px}}
 #ai-ranking h2{{border-bottom:none;padding-top:0}}
@@ -1291,6 +1451,8 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
     <li><a href="#pickup">⭐ 今日のAI編集部PICK</a></li>
     <li><a href="#top5">🏆 注目レースTOP5</a></li>
     <li><a href="#race-index">📖 レースINDEX</a></li>
+    <li><a href="#dashboard">📋 今日のダッシュボード</a></li>
+    <li><a href="#condition">📈 開催場ヒートマップ</a></li>
     <li><a href="#danger">🚨 AI危険艇速報</a></li>
     <li><a href="#manshuu">💰 AI万舟警報</a></li>
     <li><a href="#hot-high">🔥 AI高配当期待</a></li>
@@ -1302,13 +1464,16 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
   </ul>
 </nav>
 
+<!-- ① 今日のダッシュボード -->
+{dashboard_section}
+
 <!-- ② 今日のAI編集部コメント -->
 <div class="editorial">
   <h2>🤖 AI編集部コメント</h2>
   <div class="editor-note">{editor_note}</div>
 </div>
 
-<!-- ③ AIコンディション指数（開催場別） -->
+<!-- ③ AI開催場ヒートマップ -->
 {condition_section}
 
 <!-- ④ 今日のAIランキング -->
