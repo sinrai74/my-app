@@ -183,6 +183,17 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_verification.py $DRY || echo "検証スクリプト失敗（スキップ）"
 
+      # ── AI実績ページ生成・送信（21:00、検証と同時）────
+      - name: Send - Results Page
+        if: steps.post_type.outputs.type == 'verification' || steps.post_type.outputs.type == 'all'
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+        run: |
+          DRY=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
+          python x_results_page.py $DRY || echo "実績ページ失敗（スキップ）"
+
       # ── noteレポート生成・送信（07:30 = danger直後）──
       - name: Send Note Report
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'

@@ -1258,10 +1258,32 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
   border-top:1px solid var(--border);margin-top:10px}}
 .footer-line{{color:#666;margin-bottom:6px}}
 .footer-meta{{color:#444;font-size:.92em;margin-bottom:6px}}
+.footer-page{{color:#3a3a3a;font-size:.85em;margin-bottom:4px}}
 .footer-note{{color:#3a3a3a;font-size:.85em}}
+/* レース検索（⑪） */
+.search-box{{margin-bottom:16px}}
+.search-box input{{width:100%;padding:12px 14px;border-radius:8px;
+  border:1px solid var(--border);background:var(--card);color:var(--text);
+  font-size:.95em}}
+.search-box input::placeholder{{color:var(--gray)}}
+.search-box input:focus{{outline:none;border-color:var(--accent)}}
+.search-count{{color:var(--accent);font-size:.82em;margin-top:6px;padding-left:4px}}
+/* 目次（⑪） */
+.toc{{background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:16px 18px;margin-bottom:20px}}
+.toc h2{{font-size:1.05em;color:var(--accent);margin-bottom:10px}}
+.toc ul{{list-style:none;display:grid;grid-template-columns:repeat(2,1fr);gap:6px}}
+.toc li a{{color:#bbb;text-decoration:none;font-size:.85em;display:block;
+  padding:6px 8px;border-radius:6px;transition:background .15s}}
+.toc li a:hover{{background:#1e1e3a;color:var(--accent)}}
+/* トップへ戻る（⑪） */
+#back-to-top{{position:fixed;bottom:24px;right:18px;width:44px;height:44px;
+  border-radius:50%;background:var(--accent);color:#0d0d1a;display:none;
+  align-items:center;justify-content:center;text-decoration:none;
+  font-size:1.1em;font-weight:bold;box-shadow:0 2px 10px rgba(0,0,0,.4);z-index:100}}
 </style>
 </head>
-<body>
+<body id="top">
 
 <!-- ① 表紙 -->
 <div class="cover">
@@ -1274,6 +1296,33 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
     <div class="kpi"><div class="kn awake">{len(awake_motor)}</div><div class="kl">覚醒モーター</div></div>
   </div>
 </div>
+
+<!-- ⑪ レース検索 -->
+<div class="search-box">
+  <input type="text" id="race-search" placeholder="🔍 会場名・レース番号で検索（例: 三国10）"
+         oninput="filterRaces(this.value)">
+  <div id="search-result-count" class="search-count"></div>
+</div>
+
+<!-- ⑪ 目次 -->
+<nav class="toc">
+  <h2>📑 目次</h2>
+  <ul>
+    <li><a href="#condition">📈 AIコンディション指数</a></li>
+    <li><a href="#ai-ranking">📊 今日のAIランキング</a></li>
+    <li><a href="#pickup">⭐ 今日のAI編集部PICK</a></li>
+    <li><a href="#top5">🏆 注目レースTOP5</a></li>
+    <li><a href="#race-index">📖 レースINDEX</a></li>
+    <li><a href="#danger">🚨 AI危険艇速報</a></li>
+    <li><a href="#manshuu">💰 AI万舟警報</a></li>
+    <li><a href="#hot-high">🔥 AI高配当期待</a></li>
+    <li><a href="#motor">⚡ AI激走モーター</a></li>
+    <li><a href="#awake">📈 AI覚醒モーター</a></li>
+    <li><a href="#korogashi">🎯 AI転がし候補</a></li>
+    <li><a href="#racer">👤 今日の注目レーサー</a></li>
+    <li><a href="#yesterday">📊 昨日の検証</a></li>
+  </ul>
+</nav>
 
 <!-- ② 今日のAI編集部コメント -->
 <div class="editorial">
@@ -1375,10 +1424,48 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
   <div class="footer-line">AI競艇新聞 | 全レース機械学習分析 | 毎日更新</div>
   <div class="footer-meta">
     生成日時: {date_disp} {now_str}　|　AI Engine v3.0　|
-    総データ件数: {len(all_danger)+len(all_manshuu)+len(hot_motor)+len(awake_motor)}件
+    総データ件数: {len(all_danger)+len(all_manshuu)+len(hot_motor)+len(awake_motor)}件　|
+    対象開催場数: {len(venue_conditions)}場
   </div>
+  <div class="footer-page">1 / 1 ページ</div>
   <div class="footer-note">※本レポートはデータ分析結果であり、的中を保証するものではありません。</div>
 </div>
+
+<!-- ⑪ ページトップへ戻る -->
+<a href="#top" id="back-to-top" title="トップへ戻る">▲</a>
+
+<script>
+function filterRaces(keyword) {{
+  var kw = keyword.trim().toLowerCase();
+  var rows = document.querySelectorAll('.idx-row');
+  var visibleCount = 0;
+  rows.forEach(function(row) {{
+    var raceText = row.querySelector('.idx-race');
+    var text = raceText ? raceText.textContent.toLowerCase() : '';
+    if (kw === '' || text.indexOf(kw) !== -1) {{
+      row.style.display = '';
+      visibleCount++;
+    }} else {{
+      row.style.display = 'none';
+    }}
+  }});
+  var counter = document.getElementById('search-result-count');
+  if (kw === '') {{
+    counter.textContent = '';
+  }} else {{
+    counter.textContent = visibleCount + '件ヒット';
+  }}
+}}
+
+window.addEventListener('scroll', function() {{
+  var btn = document.getElementById('back-to-top');
+  if (window.scrollY > 400) {{
+    btn.style.display = 'flex';
+  }} else {{
+    btn.style.display = 'none';
+  }}
+}});
+</script>
 
 </body>
 </html>"""
@@ -1711,6 +1798,141 @@ def send_note_report(
     except smtplib.SMTPException as e:
         log.error("[送信] 失敗: %s", e)
         return False
+
+
+# ════════════════════════════════════════════════════════════
+# ⑨ X向け投稿生成（ブランドごとの興味喚起テキスト）
+# ════════════════════════════════════════════════════════════
+
+def generate_x_teaser(data: dict) -> str:
+    """
+    AI一致指数95以上のレースを核に、Xで投稿しやすい
+    興味喚起テキストを生成する。「続きは新聞へ」で着地させる。
+    """
+    sorted_index, brand_counts, race_scores = _build_race_index(data)
+    if not race_scores:
+        return "本日はデータ準備中です。\n\n続きは新聞へ📰"
+
+    high_match = sorted(
+        [(k, v) for k, v in race_scores.items() if v["match_index"] >= 95],
+        key=lambda kv: -kv[1]["match_index"],
+    )
+
+    brand_names_jp = {
+        "danger": "危険艇", "manshuu": "万舟", "korogashi": "転がし",
+        "motor_hot": "激走", "motor_awk": "覚醒", "hot_high": "高配当期待",
+    }
+
+    lines = ["━━━━━━━━━━━━━━", ""]
+
+    if high_match:
+        lines.append(f"今日はAI一致指数95以上が{len(high_match)}レースあります。")
+        lines.append("")
+        top_key, top_s = high_match[0]
+        venue, race = top_key
+        brands = next((b for v, r, b in sorted_index if (v, r) == top_key), [])
+        matched = "・".join(brand_names_jp.get(b, b) for b in brands if b in brand_names_jp)
+        lines.append(f"特に{venue}{race}Rは")
+        lines.append(f"{matched}")
+        lines.append(f"の{len(brands)}指標一致。")
+    else:
+        # 一致指数トップのレースを代わりに紹介
+        top_key = max(race_scores, key=lambda k: race_scores[k]["match_index"])
+        top_s   = race_scores[top_key]
+        venue, race = top_key
+        brands = next((b for v, r, b in sorted_index if (v, r) == top_key), [])
+        matched = "・".join(brand_names_jp.get(b, b) for b in brands if b in brand_names_jp)
+        lines.append(f"本日の最有力候補は{venue}{race}R。")
+        lines.append(f"{matched}が一致（一致指数{top_s['match_index']}）。")
+
+    lines += ["", "━━━━━━━━━━━━━━", "", "続きは新聞へ📰", "",
+              "#競艇 #ボートレース #AI予想 #競艇新聞"]
+    return "\n".join(lines)
+
+
+def generate_brand_teaser(data: dict, brand: str) -> str:
+    """指定ブランド単体の興味喚起テキストを生成する"""
+    titles = {
+        "danger":  "🚨 AI危険艇速報",
+        "manshuu": "💰 AI万舟警報",
+        "motor_hot": "⚡ AI激走モーター",
+        "motor_awk": "📈 AI覚醒モーター",
+        "korogashi": "🎯 AI転がし候補",
+    }
+    all_danger  = data.get("all_danger",  data.get("danger_boat1", []))
+    all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
+    hot_motor   = data.get("hot_motor", [])
+    awake_motor = data.get("awakening_motor", [])
+    kdata       = _load_korogashi_cache()
+
+    title = titles.get(brand, brand)
+    lines = ["━━━━━━━━━━━━━━", "", title, ""]
+
+    if brand == "danger":
+        s_count = sum(1 for d in all_danger if d.get("score", 0) >= 80)
+        lines.append(f"本日はSランク{s_count}件を含む{len(all_danger)}レースを抽出。")
+        if all_danger:
+            top = max(all_danger, key=lambda x: x.get("score", 0))
+            lines.append(f"最注目は{top.get('venue','')}{top.get('race','')}R（危険度{top.get('score',0)}）。")
+    elif brand == "manshuu":
+        s_count = sum(1 for u in all_manshuu if u.get("score", 0) >= 80)
+        lines.append(f"本日はSランク{s_count}件を含む{len(all_manshuu)}レースが対象。")
+        if all_manshuu:
+            top = max(all_manshuu, key=lambda x: x.get("score", 0))
+            lines.append(f"最注目は{top.get('venue','')}{top.get('race','')}R（荒れ指数{top.get('score',0)}）。")
+    elif brand == "motor_hot":
+        lines.append(f"本日{len(hot_motor)}件の激走モーターを検出。")
+    elif brand == "motor_awk":
+        lines.append(f"本日{len(awake_motor)}件の覚醒モーターを検出。")
+    elif brand == "korogashi":
+        buy = [s for s in kdata.get("top10", []) if s.get("verdict") == "購入"]
+        lines.append(f"本日の転がし購入候補は{len(buy)}件。")
+
+    lines += ["", "━━━━━━━━━━━━━━", "", "続きは新聞へ📰",
+              "#競艇 #ボートレース #AI予想"]
+    return "\n".join(lines)
+
+
+# ════════════════════════════════════════════════════════════
+# ⑩ インタラクション投稿（アンケート）生成
+# ════════════════════════════════════════════════════════════
+
+def generate_poll_text(data: dict) -> dict:
+    """
+    ⑩ Xアンケート投稿用のテキストを生成する。
+    AI一致指数TOP3＋「その他」の4択。
+    戻り値: {"question": str, "options": [str, str, str, str]}
+    """
+    sorted_index, brand_counts, race_scores = _build_race_index(data)
+    if not race_scores:
+        return {
+            "question": "今日最も気になるレースは？",
+            "options": ["①データ準備中", "②データ準備中", "③データ準備中", "④その他"],
+        }
+
+    ranked = sorted(race_scores.items(), key=lambda kv: -kv[1]["match_index"])[:3]
+    options = []
+    circled = ["①", "②", "③"]
+    for i, (key, s) in enumerate(ranked):
+        venue, race = key
+        options.append(f"{circled[i]}{venue}{race}R")
+    while len(options) < 3:
+        options.append(f"{circled[len(options)]}該当なし")
+    options.append("④その他")
+
+    return {
+        "question": "今日最も気になるレースは？",
+        "options": options,
+    }
+
+
+def format_poll_tweet(data: dict) -> str:
+    """アンケート投稿のX用テキストを整形する"""
+    poll = generate_poll_text(data)
+    lines = [poll["question"], ""]
+    lines.extend(poll["options"])
+    lines += ["", "#競艇 #ボートレース #AI予想"]
+    return "\n".join(lines)
 
 
 # ════════════════════════════════════════════════════════════

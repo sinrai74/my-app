@@ -195,6 +195,89 @@ def aggregate(records: list[dict]) -> dict:
 
 
 # ════════════════════════════════════════════════════════════
+# ⑦ Sランク別成功率の集計
+# ════════════════════════════════════════════════════════════
+
+def _upset_score_to_100(raw_upset_score) -> float:
+    """
+    hit_record.csv の upset_score（0-9.5スケール）を
+    x_note_report.py 側のランク基準（0-100スケール）に変換する。
+    """
+    v = _safe_float(raw_upset_score, 0.0)
+    return min(100.0, v * 10.0)
+
+
+def _rank_of(score_100: float) -> str:
+    if score_100 >= 80: return "S"
+    if score_100 >= 60: return "A"
+    return "B"
+
+
+def aggregate_by_rank(records: list[dict]) -> dict:
+    """
+    ⑦ 危険艇・万舟をSランク／Aランク／Bランク別に成功率集計する。
+    「成功」の定義:
+      - 危険艇判定（1号艇が飛ぶと予想）→ 実際に1号艇以外が1着なら成功
+      - 万舟判定（荒れる予想）→ 実際に払戻が一定額(MANSHUU_PAYOUT)以上なら成功
+    upset_score（0-9.5）を危険艇・万舟共通の荒れ度として扱い、
+    100点換算してランク分けする（hit_record.csv に専用カラムがないための近似）。
+    戻り値:
+      {"danger": {"S": {"total":5,"hit":4,"rate":80.0}, "A": {...}, "B": {...}},
+       "manshuu": {"S": {...}, "A": {...}, "B": {...}}}
+    """
+    notified = [r for r in records if r.get("pred_combo", "")]
+
+    def _empty_rank() -> dict:
+        return {"total": 0, "hit": 0, "rate": 0.0}
+
+    result = {
+        "danger":  {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank()},
+        "manshuu": {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank()},
+    }
+
+    for r in notified:
+        score_100 = _upset_score_to_100(r.get("upset_score"))
+        if score_100 < 40:
+            continue   # 危険艇/万舟の対象外（スコア40未満）
+        rank = _rank_of(score_100)
+
+        # 危険艇判定の成否: 1号艇が飛んだか
+        result_combo = r.get("result_combo", "")
+        if result_combo and "-" in result_combo:
+            first_boat = result_combo.split("-")[0].strip()
+            boat1_flew = (first_boat != "1")
+            result["danger"][rank]["total"] += 1
+            if boat1_flew:
+                result["danger"][rank]["hit"] += 1
+
+        # 万舟判定の成否: 払戻が閾値以上か
+        payout = _safe_float(r.get("payout"))
+        result["manshuu"][rank]["total"] += 1
+        if payout >= MANSHUU_PAYOUT:
+            result["manshuu"][rank]["hit"] += 1
+
+    for category in result.values():
+        for rank_data in category.values():
+            if rank_data["total"] > 0:
+                rank_data["rate"] = round(rank_data["hit"] / rank_data["total"] * 100, 1)
+
+    return result
+
+
+def format_rank_success_text(rank_data: dict, label: str, icon: str) -> str:
+    """⑦ Sランク別成功率をテキスト化する（検証レポート・実績ページ共通）"""
+    lines = [f"{icon} {label}"]
+    for rank in ["S", "A", "B"]:
+        d = rank_data.get(rank, {"total": 0, "hit": 0, "rate": 0.0})
+        if d["total"] == 0:
+            continue
+        lines.append(f"  {rank}: {d['total']}件中{d['hit']}件　{d['rate']}%")
+    if len(lines) == 1:
+        return f"{icon} {label}\n  本日は対象データなし"
+    return "\n".join(lines)
+
+
+# ════════════════════════════════════════════════════════════
 # テキスト生成
 # ════════════════════════════════════════════════════════════
 
@@ -273,12 +356,27 @@ def build_verification_text(agg: dict, date_str: str, records: Optional[list] = 
     if agg["streak_lose"] >= 5:
         lines.append(f"⚠️ 最大{agg['streak_lose']}連敗あり（慎重に）")
 
+    # ⑦ Sランク別成功率
+    if records:
+        rank_data = aggregate_by_rank(records)
+        has_data = any(
+            d["total"] > 0
+            for cat in rank_data.values()
+            for d in cat.values()
+        )
+        if has_data:
+            lines += ["", "━━ ランク別成功率 ━━"]
+            danger_text = format_rank_success_text(rank_data["danger"], "危険艇", "🚨")
+            manshuu_text = format_rank_success_text(rank_data["manshuu"], "万舟", "💰")
+            lines.append(danger_text)
+            lines.append(manshuu_text)
+
     # 外れ公開（信頼性向上）
     if records:
         notified_all = [r for r in records if r.get("pred_combo", "")]
         missed_all   = [r for r in notified_all if _safe_int(r.get("hit")) == 0]
         if missed_all:
-            lines += ["━━ 外れたレース（公開） ━━"]
+            lines += ["", "━━ 外れたレース（公開） ━━"]
             for r in missed_all[:3]:
                 lines.append(
                     f"❌ {r.get('venue','')}{r.get('race','')}R"
