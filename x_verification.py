@@ -27,6 +27,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
+from x_brand_config import rank_of, rank_color, trust_rank_of
+
 log = logging.getLogger("x_verification")
 
 JST      = timezone(timedelta(hours=9))
@@ -207,23 +209,17 @@ def _upset_score_to_100(raw_upset_score) -> float:
     return min(100.0, v * 10.0)
 
 
-def _rank_of(score_100: float) -> str:
-    if score_100 >= 80: return "S"
-    if score_100 >= 60: return "A"
-    return "B"
-
-
 def aggregate_by_rank(records: list[dict]) -> dict:
     """
-    ⑦ 危険艇・万舟をSランク／Aランク／Bランク別に成功率集計する。
+    ⑦⑧ 危険艇・万舟をS/A/B/Cランク別に成功率集計する（x_brand_config.rank_of に統一）。
     「成功」の定義:
       - 危険艇判定（1号艇が飛ぶと予想）→ 実際に1号艇以外が1着なら成功
       - 万舟判定（荒れる予想）→ 実際に払戻が一定額(MANSHUU_PAYOUT)以上なら成功
     upset_score（0-9.5）を危険艇・万舟共通の荒れ度として扱い、
     100点換算してランク分けする（hit_record.csv に専用カラムがないための近似）。
     戻り値:
-      {"danger": {"S": {"total":5,"hit":4,"rate":80.0}, "A": {...}, "B": {...}},
-       "manshuu": {"S": {...}, "A": {...}, "B": {...}}}
+      {"danger": {"S": {"total":5,"hit":4,"rate":80.0}, "A": {...}, "B": {...}, "C": {...}},
+       "manshuu": {"S": {...}, "A": {...}, "B": {...}, "C": {...}}}
     """
     notified = [r for r in records if r.get("pred_combo", "")]
 
@@ -231,15 +227,15 @@ def aggregate_by_rank(records: list[dict]) -> dict:
         return {"total": 0, "hit": 0, "rate": 0.0}
 
     result = {
-        "danger":  {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank()},
-        "manshuu": {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank()},
+        "danger":  {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank(), "C": _empty_rank()},
+        "manshuu": {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank(), "C": _empty_rank()},
     }
 
     for r in notified:
         score_100 = _upset_score_to_100(r.get("upset_score"))
         if score_100 < 40:
             continue   # 危険艇/万舟の対象外（スコア40未満）
-        rank = _rank_of(score_100)
+        rank = rank_of(score_100)
 
         # 危険艇判定の成否: 1号艇が飛んだか
         result_combo = r.get("result_combo", "")
@@ -265,9 +261,9 @@ def aggregate_by_rank(records: list[dict]) -> dict:
 
 
 def format_rank_success_text(rank_data: dict, label: str, icon: str) -> str:
-    """⑦ Sランク別成功率をテキスト化する（検証レポート・実績ページ共通）"""
+    """⑦ ランク別成功率をテキスト化する（検証レポート・実績ページ共通）"""
     lines = [f"{icon} {label}"]
-    for rank in ["S", "A", "B"]:
+    for rank in ["S", "A", "B", "C"]:
         d = rank_data.get(rank, {"total": 0, "hit": 0, "rate": 0.0})
         if d["total"] == 0:
             continue
@@ -275,6 +271,176 @@ def format_rank_success_text(rank_data: dict, label: str, icon: str) -> str:
     if len(lines) == 1:
         return f"{icon} {label}\n  本日は対象データなし"
     return "\n".join(lines)
+
+
+# ════════════════════════════════════════════════════════════
+# ⑭ 期間集計（7日 / 30日 / 累計）
+# ════════════════════════════════════════════════════════════
+
+def load_records_range(days: Optional[int] = None,
+                       end_date: Optional[str] = None) -> list[dict]:
+    """
+    hit_record.csv から指定日数分（end_date を含む過去 days 日間）のレコードを返す。
+    days=None の場合は全期間（累計）を返す。
+    """
+    if not os.path.exists(HIT_CSV):
+        log.warning("[期間集計] %s が見つかりません", HIT_CSV)
+        return []
+
+    end = end_date or _yesterday_jst()
+    end_dt = datetime.strptime(end, "%Y%m%d")
+
+    if days is not None:
+        start_dt = end_dt - timedelta(days=days - 1)
+        start = start_dt.strftime("%Y%m%d")
+    else:
+        start = "00000000"   # 累計
+
+    records: list[dict] = []
+    with open(HIT_CSV, "r", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            row_date = row.get("date", "").replace("-", "")
+            if not row_date:
+                continue
+            if start <= row_date <= end:
+                records.append(row)
+
+    log.info("[期間集計] %s〜%s: %d件読み込み", start, end, len(records))
+    return records
+
+
+def aggregate_period(records: list[dict]) -> dict:
+    """期間（7日/30日/累計）の集計を行う。aggregate() と同等だが期間用ラベル付き"""
+    return aggregate(records)
+
+
+def trend_vs_previous(current_rate: float, previous_rate: float) -> dict:
+    """
+    ⑭ 前日比・7日比・30日比などの増減を算出する。
+    戻り値: {"diff": +5.2, "arrow": "▲" / "▼" / "→", "text": "+5.2pt"}
+    """
+    diff = round(current_rate - previous_rate, 1)
+    if diff > 0.5:
+        arrow = "▲"
+    elif diff < -0.5:
+        arrow = "▼"
+    else:
+        arrow = "→"
+    sign = "+" if diff >= 0 else ""
+    return {"diff": diff, "arrow": arrow, "text": f"{sign}{diff}pt"}
+
+
+# ════════════════════════════════════════════════════════════
+# ⑮ AI信頼度認定（ブランドごとA+/A/B/C）
+# ════════════════════════════════════════════════════════════
+
+def calc_brand_trust(records_30d: list[dict]) -> dict:
+    """
+    ⑮ 過去30日の成功率からブランドごとの信頼度ランク(A+/A/B/C)を判定する。
+    戻り値: {"danger": {"rate": 62.3, "trust": "A", "total": 340},
+              "manshuu": {"rate": 48.1, "trust": "B", "total": 340}}
+    """
+    rank_data = aggregate_by_rank(records_30d)
+    result = {}
+    for category in ["danger", "manshuu"]:
+        cat = rank_data[category]
+        total = sum(d["total"] for d in cat.values())
+        hit   = sum(d["hit"]   for d in cat.values())
+        rate  = round(hit / total * 100, 1) if total > 0 else 0.0
+        result[category] = {
+            "rate":  rate,
+            "trust": trust_rank_of(rate),
+            "total": total,
+            "hit":   hit,
+        }
+    return result
+
+
+# ════════════════════════════════════════════════════════════
+# ⑰ 外れ分析（外れTOP5・原因・改善案）
+# ════════════════════════════════════════════════════════════
+
+def _miss_reason(record: dict) -> str:
+    """外れたレースの簡易原因分析（数値から推定）"""
+    reasons = []
+    upset_score = _safe_float(record.get("upset_score"))
+    confidence  = _safe_float(record.get("confidence"))
+    if upset_score >= 9.0:
+        reasons.append("超荒れ判定だったが番手通りに収束")
+    if confidence < 0.5:
+        reasons.append("信頼度が元々低めだった")
+    odds = _safe_float(record.get("pred_odds"))
+    if odds >= 50:
+        reasons.append("高オッズ帯で確率が低かった")
+    return "・".join(reasons) if reasons else "通常の予測誤差"
+
+
+def analyze_misses(records: list[dict], top_n: int = 5) -> list[dict]:
+    """
+    ⑰ 外れたレースをピックアップし、原因・改善案をまとめる。
+    payout(実際の結果)が低いほど深刻な外れとみなしてソートする。
+    """
+    notified = [r for r in records if r.get("pred_combo", "")]
+    missed   = [r for r in notified if _safe_int(r.get("hit")) == 0]
+
+    # upset_score が高いのに外れた（=最も悔しい外れ）順にソート
+    missed.sort(key=lambda r: -_safe_float(r.get("upset_score")))
+
+    results = []
+    for r in missed[:top_n]:
+        results.append({
+            "venue":   r.get("venue", ""),
+            "race":    r.get("race", ""),
+            "pred":    r.get("pred_combo", ""),
+            "result":  r.get("result_combo", ""),
+            "upset_score": _safe_float(r.get("upset_score")),
+            "reason":  _miss_reason(r),
+        })
+    return {
+        "total_missed": len(missed),
+        "top_misses":   results,
+    }
+
+
+# ════════════════════════════════════════════════════════════
+# ⑱ AI総評（毎日150文字程度）
+# ════════════════════════════════════════════════════════════
+
+def generate_daily_review(agg: dict, rank_data: dict, miss_analysis: dict) -> str:
+    """
+    ⑱ 今日の出来・改善点・明日の注目を150文字程度でまとめる。
+    """
+    parts = []
+
+    if agg["total_notified"] == 0:
+        return "本日は対象レースがありませんでした。明日も全レースを分析します。"
+
+    # 今日の出来
+    if agg["hit_rate"] >= 60:
+        parts.append(f"本日は的中率{agg['hit_rate']}%と好調でした")
+    elif agg["hit_rate"] >= 40:
+        parts.append(f"本日は的中率{agg['hit_rate']}%と平均的な一日でした")
+    else:
+        parts.append(f"本日は的中率{agg['hit_rate']}%とやや低調でした")
+
+    if agg["total_profit"] >= 0:
+        parts.append(f"収支は+{agg['total_profit']:,}円")
+    else:
+        parts.append(f"収支は{agg['total_profit']:,}円")
+
+    # 改善点
+    s_danger = rank_data.get("danger", {}).get("S", {})
+    if s_danger.get("total", 0) >= 3 and s_danger.get("rate", 0) < 50:
+        parts.append("Sランク危険艇の精度に改善余地あり")
+
+    if miss_analysis.get("total_missed", 0) >= 5:
+        parts.append(f"外れは{miss_analysis['total_missed']}件発生")
+
+    # 明日への一言
+    parts.append("明日も全レースを分析し精度向上に努めます")
+
+    text = "。".join(parts) + "。"
+    return text[:200]   # 念のため上限カット
 
 
 # ════════════════════════════════════════════════════════════

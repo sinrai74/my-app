@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-x_results_page.py  ── ⑧ AI実績ページ 生成・送信
+x_results_page.py  ── ⑭ AI実績ページ 完全刷新版
 
-毎日21時、各ブランド（危険艇・万舟・転がし・激走・覚醒）ごとの
-成功率・的中率・改善点コメントをまとめたHTMLページを生成し、
-メール添付で送信する。
+今日 / 7日 / 30日 / 累計 の4期間でブランド別成功率を集計し、
+⑮AI信頼度・⑯改善ログ・⑰外れ分析・⑱AI総評を統合したHTMLページを
+生成・メール送信する。
 
 Usage:
-    python x_results_page.py              # 今日の実績ページを生成
+    python x_results_page.py              # 前日分の実績ページを生成
     python x_results_page.py --date 20260628
     python x_results_page.py --dry-run    # 送信せず保存のみ
 """
@@ -26,12 +26,17 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
-from x_verification import (
-    load_today_records,
-    aggregate,
-    aggregate_by_rank,
-    _yesterday_jst,
+from x_brand_config import (
+    BRANDS, brand_icon, brand_name, AI_VERSION, SYSTEM_NAME,
+    rank_color, trust_rank_of,
 )
+from x_verification import (
+    load_today_records, load_records_range,
+    aggregate, aggregate_by_rank,
+    calc_brand_trust, analyze_misses, generate_daily_review,
+    trend_vs_previous, _yesterday_jst,
+)
+from x_improvement_log import format_log_html, format_log_text
 
 log = logging.getLogger("x_results")
 
@@ -40,32 +45,114 @@ MAIL_TO = "bigkirinuki@gmail.com"
 
 
 # ════════════════════════════════════════════════════════════
-# 改善点コメント生成
+# 期間別データ集計
 # ════════════════════════════════════════════════════════════
 
-def _improvement_comment_danger(rank_data: dict, agg: dict) -> str:
-    s = rank_data.get("S", {})
-    a = rank_data.get("A", {})
-    if s.get("total", 0) >= 3 and s.get("rate", 0) < 60:
-        return "Sランクの的中率が想定より低め。展示タイムの重み付けを見直す予定です。"
-    if a.get("total", 0) >= 3 and a.get("rate", 0) > s.get("rate", 0):
-        return "Aランクの方がSランクより成績が良い傾向。閾値の再調整を検討中です。"
-    if agg.get("boat1_flew_rate", 0) >= 70:
-        return "1号艇のイン逃げ失敗率が高水準で推移。判定ロジックは順調です。"
-    return "順調にデータが蓄積されています。"
+def collect_all_periods(end_date: str) -> dict:
+    """
+    ⑭ 今日/7日/30日/累計の4期間すべてを集計してまとめて返す。
+    """
+    records_1d  = load_today_records(end_date)
+    records_7d  = load_records_range(days=7,  end_date=end_date)
+    records_30d = load_records_range(days=30, end_date=end_date)
+    records_all = load_records_range(days=None, end_date=end_date)
+
+    periods = {}
+    for label, records in [
+        ("today", records_1d), ("d7", records_7d),
+        ("d30", records_30d), ("all", records_all),
+    ]:
+        agg = aggregate(records)
+        rank_data = aggregate_by_rank(records)
+        periods[label] = {
+            "records": records,
+            "agg": agg,
+            "rank_data": rank_data,
+        }
+
+    return periods
 
 
-def _improvement_comment_manshuu(rank_data: dict, agg: dict) -> str:
-    s = rank_data.get("S", {})
-    if s.get("total", 0) >= 3 and s.get("rate", 0) >= 50:
-        return "Sランクの万舟的中率が良好。荒れ指数の精度は高い状態です。"
-    if agg.get("manshuu_count", 0) == 0:
-        return "本日は万舟該当なし。低調な日でした。"
-    return "万舟発生件数を継続的に検証中です。"
+# ════════════════════════════════════════════════════════════
+# HTML生成パーツ
+# ════════════════════════════════════════════════════════════
+
+def _rank_bar_html(rank_data_cat: dict) -> str:
+    """S/A/B/Cランクのバー表示HTML"""
+    rows = ""
+    for rank in ["S", "A", "B", "C"]:
+        d = rank_data_cat.get(rank, {"total": 0, "hit": 0, "rate": 0.0})
+        if d["total"] == 0:
+            continue
+        color = rank_color(rank)
+        rows += f"""
+<div class="rank-bar-row">
+  <span class="rank-badge" style="background:{color}">{rank}</span>
+  <span class="rank-detail">{d['total']}件中{d['hit']}件的中</span>
+  <div class="rank-bar-bg"><div class="rank-bar-fill" style="width:{d['rate']}%;background:{color}"></div></div>
+  <span class="rank-rate">{d['rate']}%</span>
+</div>"""
+    return rows or '<p class="no-data">対象データなし</p>'
 
 
-def _improvement_comment_generic(label: str) -> str:
-    return f"{label}は実績データ蓄積中です。結果照合の仕組みを準備中のため、今後反映していきます。"
+def _period_summary_html(label: str, period_data: dict) -> str:
+    """期間タブ1つ分のサマリーHTML（今日/7日/30日/累計共通）"""
+    agg = period_data["agg"]
+    rank_data = period_data["rank_data"]
+
+    if agg["total_notified"] == 0:
+        return f'<div class="period-panel" data-period="{label}"><p class="no-data">対象データなし</p></div>'
+
+    profit_mark = "✅" if agg["total_profit"] >= 0 else "❌"
+
+    return f"""
+<div class="period-panel" data-period="{label}">
+  <div class="period-kpi-grid">
+    <div class="pk-cell"><div class="pk-num">{agg['total_notified']}</div><div class="pk-label">通知数</div></div>
+    <div class="pk-cell"><div class="pk-num">{agg['hit_rate']}%</div><div class="pk-label">的中率</div></div>
+    <div class="pk-cell"><div class="pk-num">{profit_mark}{agg['total_profit']:+,}</div><div class="pk-label">損益(円)</div></div>
+    <div class="pk-cell"><div class="pk-num">{agg['roi']:+.1f}%</div><div class="pk-label">ROI</div></div>
+  </div>
+  <div class="period-brand">
+    <h3>🚨 危険艇</h3>
+    {_rank_bar_html(rank_data['danger'])}
+  </div>
+  <div class="period-brand">
+    <h3>💰 万舟</h3>
+    {_rank_bar_html(rank_data['manshuu'])}
+  </div>
+</div>"""
+
+
+def _trust_badge_html(trust: dict) -> str:
+    """⑮ AI信頼度バッジHTML"""
+    color_map = {"A+": "#ef5350", "A": "#ffa726", "B": "#ffee58", "C": "#42a5f5"}
+    rows = ""
+    for category, label, icon in [("danger", "危険艇", "🚨"), ("manshuu", "万舟", "💰")]:
+        t = trust.get(category, {"rate": 0, "trust": "C", "total": 0})
+        color = color_map.get(t["trust"], "#999")
+        rows += f"""
+<div class="trust-row">
+  <span class="trust-icon">{icon}</span>
+  <span class="trust-label">{label}</span>
+  <span class="trust-badge" style="background:{color}">{t['trust']}</span>
+  <span class="trust-detail">{t['rate']}%（{t['total']}件・30日実績）</span>
+</div>"""
+    return rows
+
+
+def _miss_analysis_html(miss: dict) -> str:
+    """⑰ 外れ分析HTML"""
+    if not miss["top_misses"]:
+        return '<p class="no-data">外れデータなし</p>'
+    rows = ""
+    for m in miss["top_misses"]:
+        rows += f"""
+<div class="miss-row">
+  <div class="miss-race">{m['venue']}{m['race']}R　予想{m['pred']} → 結果{m['result']}</div>
+  <div class="miss-reason">原因: {m['reason']}</div>
+</div>"""
+    return f'<div class="miss-list">{rows}</div><p class="miss-total">本日の外れ総数: {miss["total_missed"]}件</p>'
 
 
 # ════════════════════════════════════════════════════════════
@@ -73,41 +160,28 @@ def _improvement_comment_generic(label: str) -> str:
 # ════════════════════════════════════════════════════════════
 
 def generate_results_html(date_str: str, output_path: str) -> dict:
-    """
-    実績ページHTMLを生成し、生成に使ったサマリーdictを返す
-    （メール本文・テキスト版にも再利用するため）
-    """
-    records   = load_today_records(date_str)
-    agg       = aggregate(records)
-    rank_data = aggregate_by_rank(records) if records else {
-        "danger": {"S": {"total":0,"hit":0,"rate":0.0}, "A": {"total":0,"hit":0,"rate":0.0}, "B": {"total":0,"hit":0,"rate":0.0}},
-        "manshuu": {"S": {"total":0,"hit":0,"rate":0.0}, "A": {"total":0,"hit":0,"rate":0.0}, "B": {"total":0,"hit":0,"rate":0.0}},
-    }
+    """実績ページHTMLを生成し、サマリーdictを返す"""
+    periods = collect_all_periods(date_str)
+    miss_analysis = analyze_misses(periods["today"]["records"])
+    trust = calc_brand_trust(periods["d30"]["records"])
+    daily_review = generate_daily_review(
+        periods["today"]["agg"], periods["today"]["rank_data"], miss_analysis,
+    )
 
     date_disp = f"{date_str[4:6]}/{date_str[6:8]}"
     now_str   = datetime.now(JST).strftime("%H:%M")
 
-    def rank_table(rank_data_cat: dict) -> str:
-        rows = ""
-        for rank in ["S", "A", "B"]:
-            d = rank_data_cat.get(rank, {"total": 0, "hit": 0, "rate": 0.0})
-            if d["total"] == 0:
-                continue
-            color = {"S": "#ef5350", "A": "#ffa726", "B": "#66bb6a"}[rank]
-            rows += f"""
-<div class="rank-bar-row">
-  <span class="rank-badge" style="background:{color}">{rank}</span>
-  <span class="rank-detail">{d['total']}件中{d['hit']}件的中</span>
-  <div class="rank-bar-bg"><div class="rank-bar-fill" style="width:{d['rate']}%;background:{color}"></div></div>
-  <span class="rank-rate">{d['rate']}%</span>
-</div>"""
-        return rows or '<p class="no-data">本日は対象データなし</p>'
+    # 前日比・7日比トレンド
+    today_rate = periods["today"]["agg"]["hit_rate"]
+    d7_rate    = periods["d7"]["agg"]["hit_rate"]
+    d30_rate   = periods["d30"]["agg"]["hit_rate"]
+    trend_7d   = trend_vs_previous(today_rate, d7_rate)
+    trend_30d  = trend_vs_previous(today_rate, d30_rate)
 
-    danger_table  = rank_table(rank_data["danger"])
-    manshuu_table = rank_table(rank_data["manshuu"])
-
-    danger_comment  = _improvement_comment_danger(rank_data["danger"], agg)
-    manshuu_comment = _improvement_comment_manshuu(rank_data["manshuu"], agg)
+    period_tabs_html = "".join(
+        _period_summary_html(label, periods[label])
+        for label in ["today", "d7", "d30", "all"]
+    )
 
     html = f"""<!DOCTYPE html>
 <html lang="ja">
@@ -124,21 +198,67 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
   padding:24px 16px;margin-bottom:20px;background:var(--card)}}
 .header h1{{font-size:1.8em;color:var(--accent)}}
 .header .meta{{color:var(--gray);margin-top:6px;font-size:.85em}}
-.brand-section{{background:var(--card);border:1px solid var(--border);border-radius:10px;
-  padding:18px;margin-bottom:16px}}
-.brand-section h2{{font-size:1.15em;margin-bottom:12px;padding-bottom:10px;
-  border-bottom:1px solid var(--border)}}
-.rank-bar-row{{display:flex;align-items:center;gap:10px;margin-bottom:8px}}
-.rank-badge{{width:24px;height:24px;border-radius:6px;color:#fff;font-weight:bold;
-  display:flex;align-items:center;justify-content:center;font-size:.85em;flex-shrink:0}}
-.rank-detail{{font-size:.82em;color:var(--gray);min-width:110px}}
-.rank-bar-bg{{flex:1;background:#252540;border-radius:4px;height:14px;overflow:hidden}}
+/* AI総評 */
+.review-box{{background:#0e1e0e;border:1px solid #2a4a2a;border-radius:10px;
+  padding:16px;margin-bottom:20px}}
+.review-box h2{{color:#81c784;font-size:1.05em;margin-bottom:8px}}
+.review-text{{color:#cde;font-size:.92em;line-height:1.7}}
+/* タブ切り替え */
+.tab-bar{{display:flex;gap:6px;margin-bottom:14px}}
+.tab-btn{{flex:1;background:var(--card);border:1px solid var(--border);border-radius:8px;
+  padding:10px 4px;text-align:center;color:var(--gray);font-size:.85em;cursor:pointer}}
+.tab-btn.active{{background:var(--accent);color:#0d0d1a;font-weight:bold;border-color:var(--accent)}}
+.period-panel{{display:none;background:var(--card);border:1px solid var(--border);
+  border-radius:10px;padding:16px;margin-bottom:20px}}
+.period-panel.active{{display:block}}
+.period-kpi-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:16px}}
+.pk-cell{{background:#1a1a30;border-radius:6px;padding:10px 4px;text-align:center}}
+.pk-num{{font-size:1.15em;font-weight:bold;color:#fff}}
+.pk-label{{font-size:.68em;color:var(--gray);margin-top:3px}}
+.period-brand{{margin-bottom:14px}}
+.period-brand h3{{font-size:.95em;color:var(--accent);margin-bottom:8px}}
+/* ランクバー */
+.rank-bar-row{{display:flex;align-items:center;gap:8px;margin-bottom:6px}}
+.rank-badge{{width:22px;height:22px;border-radius:5px;color:#fff;font-weight:bold;
+  display:flex;align-items:center;justify-content:center;font-size:.78em;flex-shrink:0}}
+.rank-detail{{font-size:.76em;color:var(--gray);min-width:100px}}
+.rank-bar-bg{{flex:1;background:#252540;border-radius:4px;height:12px;overflow:hidden}}
 .rank-bar-fill{{height:100%;border-radius:4px}}
-.rank-rate{{font-size:.85em;font-weight:bold;min-width:42px;text-align:right}}
-.brand-comment{{background:#14142a;border-left:3px solid var(--accent);
-  border-radius:6px;padding:10px 14px;margin-top:12px;color:#bbb;font-size:.85em}}
+.rank-rate{{font-size:.8em;font-weight:bold;min-width:38px;text-align:right}}
+/* 信頼度 */
+.trust-section{{background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:16px;margin-bottom:20px}}
+.trust-section h2{{font-size:1.05em;color:var(--accent);margin-bottom:12px}}
+.trust-row{{display:flex;align-items:center;gap:10px;margin-bottom:8px}}
+.trust-icon{{font-size:1.1em}}
+.trust-label{{min-width:48px;font-size:.88em}}
+.trust-badge{{width:32px;height:24px;border-radius:5px;color:#fff;font-weight:bold;
+  display:flex;align-items:center;justify-content:center;font-size:.82em}}
+.trust-detail{{color:var(--gray);font-size:.78em}}
+/* 外れ分析 */
+.miss-section{{background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:16px;margin-bottom:20px}}
+.miss-section h2{{font-size:1.05em;color:#ff8a80;margin-bottom:12px}}
+.miss-row{{background:#1a1a30;border-radius:6px;padding:10px 12px;margin-bottom:8px}}
+.miss-race{{font-size:.88em;color:#fff;margin-bottom:4px}}
+.miss-reason{{font-size:.78em;color:var(--gray)}}
+.miss-total{{color:var(--gray);font-size:.82em;margin-top:8px}}
+/* 改善ログ */
+.log-section{{background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:16px;margin-bottom:20px}}
+.log-section h2{{font-size:1.05em;color:#ce93d8;margin-bottom:12px}}
+.log-entry{{background:#1a1a30;border-radius:6px;padding:10px 12px;margin-bottom:8px;
+  border-left:3px solid #ab47bc}}
+.log-header{{display:flex;justify-content:space-between;margin-bottom:4px}}
+.log-version{{color:#ce93d8;font-weight:bold;font-size:.85em}}
+.log-date{{color:var(--gray);font-size:.78em}}
+.log-content{{color:#ddd;font-size:.88em;margin-bottom:3px}}
+.log-reason{{color:var(--gray);font-size:.78em}}
+.log-rate{{color:#81c784;font-size:.8em;display:block;margin-top:4px}}
 .no-data{{color:var(--gray);font-size:.88em;padding:8px 0}}
-.footer{{text-align:center;color:#444;font-size:.78em;padding:20px 0}}
+.footer{{text-align:center;color:#444;font-size:.78em;padding:20px 0;
+  border-top:1px solid var(--border);margin-top:10px}}
+.footer-meta{{color:#3a3a3a;font-size:.85em;margin-top:6px}}
 </style>
 </head>
 <body>
@@ -148,40 +268,58 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
   <div class="meta">{date_disp}分　生成: {now_str}</div>
 </div>
 
-<div class="brand-section">
-  <h2>🚨 危険艇速報</h2>
-  {danger_table}
-  <div class="brand-comment">💬 {danger_comment}</div>
+<!-- ⑱ AI総評 -->
+<div class="review-box">
+  <h2>🤖 AI総評</h2>
+  <div class="review-text">{daily_review}</div>
 </div>
 
-<div class="brand-section">
-  <h2>💰 万舟警報</h2>
-  {manshuu_table}
-  <div class="brand-comment">💬 {manshuu_comment}</div>
+<!-- ⑭ 期間タブ -->
+<div class="tab-bar">
+  <div class="tab-btn active" data-tab="today">今日</div>
+  <div class="tab-btn" data-tab="d7">7日</div>
+  <div class="tab-btn" data-tab="d30">30日</div>
+  <div class="tab-btn" data-tab="all">累計</div>
+</div>
+<div id="period-panels">
+{period_tabs_html}
 </div>
 
-<div class="brand-section">
-  <h2>🎯 転がし候補</h2>
-  <p class="no-data">結果照合の仕組みを準備中です</p>
-  <div class="brand-comment">💬 {_improvement_comment_generic("転がし候補")}</div>
+<!-- ⑮ AI信頼度 -->
+<div class="trust-section">
+  <h2>🏅 AI信頼度（30日実績）</h2>
+  {_trust_badge_html(trust)}
 </div>
 
-<div class="brand-section">
-  <h2>⚡ 激走モーター</h2>
-  <p class="no-data">結果照合の仕組みを準備中です</p>
-  <div class="brand-comment">💬 {_improvement_comment_generic("激走モーター")}</div>
+<!-- ⑰ 外れ分析 -->
+<div class="miss-section">
+  <h2>📉 外れ分析（本日）</h2>
+  {_miss_analysis_html(miss_analysis)}
 </div>
 
-<div class="brand-section">
-  <h2>📈 覚醒モーター</h2>
-  <p class="no-data">結果照合の仕組みを準備中です</p>
-  <div class="brand-comment">💬 {_improvement_comment_generic("覚醒モーター")}</div>
+<!-- ⑯ 改善ログ -->
+<div class="log-section">
+  <h2>🔧 AI改善ログ</h2>
+  {format_log_html(limit=5)}
 </div>
 
 <div class="footer">
-  AI競艇新聞 実績ページ | 全レース機械学習分析<br>
-  ※本ページはデータ分析結果であり、的中を保証するものではありません。
+  AI競艇データメディア | 実績ページ | {SYSTEM_NAME}
+  <div class="footer-meta">AI Version: {AI_VERSION}　|　対象日: {date_disp}</div>
 </div>
+
+<script>
+document.querySelectorAll('.tab-btn').forEach(function(btn) {{
+  btn.addEventListener('click', function() {{
+    var tab = btn.getAttribute('data-tab');
+    document.querySelectorAll('.tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+    document.querySelectorAll('.period-panel').forEach(function(p) {{ p.classList.remove('active'); }});
+    btn.classList.add('active');
+    document.querySelector('.period-panel[data-period="' + tab + '"]').classList.add('active');
+  }});
+}});
+document.querySelector('.period-panel[data-period="today"]').classList.add('active');
+</script>
 
 </body>
 </html>"""
@@ -190,7 +328,14 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
         f.write(html)
     log.info("[実績] HTML保存: %s", output_path)
 
-    return {"agg": agg, "rank_data": rank_data}
+    return {
+        "periods": periods,
+        "trust": trust,
+        "miss_analysis": miss_analysis,
+        "daily_review": daily_review,
+        "trend_7d": trend_7d,
+        "trend_30d": trend_30d,
+    }
 
 
 # ════════════════════════════════════════════════════════════
@@ -202,14 +347,17 @@ def send_results_page(html_path: str, date_str: str, summary: dict,
     date_disp = f"{date_str[4:6]}/{date_str[6:8]}"
     subject   = f"📊 AI実績ページ {date_disp}"
 
-    rank_data = summary.get("rank_data", {})
-    danger_s  = rank_data.get("danger", {}).get("S", {})
-    manshuu_s = rank_data.get("manshuu", {}).get("S", {})
+    today_agg = summary["periods"]["today"]["agg"]
+    trust     = summary["trust"]
 
     body = (
         f"AI実績ページ {date_disp} を添付します。\n\n"
-        f"危険艇Sランク: {danger_s.get('total',0)}件中{danger_s.get('hit',0)}件的中（{danger_s.get('rate',0)}%）\n"
-        f"万舟Sランク: {manshuu_s.get('total',0)}件中{manshuu_s.get('hit',0)}件的中（{manshuu_s.get('rate',0)}%）\n\n"
+        f"【AI総評】\n{summary['daily_review']}\n\n"
+        f"今日の的中率: {today_agg['hit_rate']}%\n"
+        f"7日トレンド: {summary['trend_7d']['arrow']} {summary['trend_7d']['text']}\n"
+        f"30日トレンド: {summary['trend_30d']['arrow']} {summary['trend_30d']['text']}\n\n"
+        f"危険艇信頼度: {trust['danger']['trust']}（{trust['danger']['rate']}%）\n"
+        f"万舟信頼度: {trust['manshuu']['trust']}（{trust['manshuu']['rate']}%）\n\n"
         "詳細は添付のHTMLをご確認ください。\n"
     )
 

@@ -1930,6 +1930,153 @@ def generate_pdf(html_path: str, pdf_path: str) -> bool:
 
 
 # ════════════════════════════════════════════════════════════
+# ⑬ note用Markdown生成（目次付き）
+# ════════════════════════════════════════════════════════════
+
+def generate_markdown(data: dict, output_path: str) -> None:
+    """
+    ⑬ note貼り付け用のMarkdown版を生成する。
+    HTML版と同じデータソースを使い、目次付きのテキスト形式で出力する。
+    """
+    date_str  = data.get("date", "")
+    date_disp = f"{date_str[4:6]}/{date_str[6:8]}" if len(date_str) >= 8 else ""
+
+    all_danger  = data.get("all_danger",  data.get("danger_boat1", []))
+    all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
+    hot_motor   = data.get("hot_motor", [])
+    awake_motor = data.get("awakening_motor", [])
+
+    danger_display  = sorted(all_danger,  key=lambda x: -x.get("score", 0))[:20]
+    manshuu_display = sorted(all_manshuu, key=lambda x: -x.get("score", 0))[:10]
+
+    venue_conditions = calc_venue_conditions(data)
+    dashboard = build_dashboard(data, venue_conditions)
+    editor_note = _generate_editor_note(data, venue_conditions)
+
+    lines = [
+        f"# 📰 AI競艇新聞 {date_disp}",
+        "",
+        f"*{SYSTEM_NAME} | AI Version: {AI_VERSION}*",
+        "",
+        "## 📑 目次",
+        "",
+        "- [今日のダッシュボード](#dashboard)",
+        "- [AI編集部コメント](#comment)",
+        "- [開催場ヒートマップ](#heatmap)",
+        "- [危険な1号艇](#danger)",
+        "- [万舟警報](#manshuu)",
+        "- [激走モーター](#motor-hot)",
+        "- [覚醒モーター](#motor-awk)",
+        "",
+        "---",
+        "",
+        "## <a id=\"dashboard\"></a>📋 今日のダッシュボード",
+        "",
+        f"- 解析開催場数: **{dashboard['venues_analyzed']}場**",
+        f"- 解析レース数: **{dashboard['races_analyzed']}レース**",
+        f"- 危険艇Sランク: **{dashboard['danger_s_count']}件**",
+        f"- 万舟Sランク: **{dashboard['manshuu_s_count']}件**",
+        f"- 転がし候補: **{dashboard['korogashi_count']}件**",
+        f"- 高配当期待: **{dashboard['hot_high_count']}件**",
+    ]
+    if dashboard["best_venue"]:
+        lines.append(f"- ⭐ 最も期待: **{dashboard['best_venue']}**")
+    if dashboard["rough_venue"]:
+        lines.append(f"- 🌊 最も荒れそう: **{dashboard['rough_venue']}**")
+    if dashboard["calm_venue"]:
+        lines.append(f"- 🛡️ 最も堅そう: **{dashboard['calm_venue']}**")
+
+    lines += [
+        "",
+        "---",
+        "",
+        "## <a id=\"comment\"></a>🤖 AI編集部コメント",
+        "",
+        editor_note,
+        "",
+        "---",
+        "",
+        "## <a id=\"heatmap\"></a>📈 開催場ヒートマップ",
+        "",
+        "| 開催場 | 総合 | 🚨危険艇 | 💰万舟 | 🎯転がし | ⚡激走 | 📈覚醒 |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for c in venue_conditions:
+        items = c["items"]
+        def _cell(k):
+            it = items[k]
+            return f"{it['heat']}{it['score']:.0f}" if it["count"] > 0 else "－"
+        lines.append(
+            f"| {c['venue']} | {c['stars']} | {_cell('danger')} | {_cell('manshuu')} | "
+            f"{_cell('korogashi')} | {_cell('motor_hot')} | {_cell('motor_awk')} |"
+        )
+
+    lines += [
+        "",
+        "---",
+        "",
+        f"## <a id=\"danger\"></a>🚨 AI危険艇速報　掲載{len(danger_display)}件（全{len(all_danger)}件中）",
+        "",
+        _section_comment_danger(all_danger),
+        "",
+    ]
+    for d in danger_display:
+        rank = rank_of(d.get("score", 0))
+        lines.append(f"### {rank}ランク {d.get('venue','')}{d.get('race','')}R　{d.get('racer','?')}")
+        lines.append(f"- 理由: {d.get('reason','')}")
+        lines.append("")
+
+    lines += [
+        "---",
+        "",
+        f"## <a id=\"manshuu\"></a>💰 AI万舟警報　掲載{len(manshuu_display)}件（全{len(all_manshuu)}件中）",
+        "",
+        _section_comment_manshuu(all_manshuu),
+        "",
+    ]
+    for u in manshuu_display:
+        rank = rank_of(u.get("score", 0))
+        lines.append(f"### {rank}ランク {u.get('venue','')}{u.get('race','')}R")
+        lines.append(f"- 注目: {u.get('key_racer','')}")
+        lines.append(f"- 理由: {u.get('key_reason','').replace(chr(0x1F525)+' ', '')}")
+        lines.append("")
+
+    lines += [
+        "---",
+        "",
+        f"## <a id=\"motor-hot\"></a>⚡ AI激走モーター　全{len(hot_motor)}件",
+        "",
+        _section_comment_motor(hot_motor, "激走モーター"),
+        "",
+    ]
+    for m in hot_motor:
+        lines.append(f"- {m.get('venue','')} {m.get('motor_no','')}号機（直近5走: {m.get('recent5','---')}）")
+
+    lines += [
+        "",
+        "---",
+        "",
+        f"## <a id=\"motor-awk\"></a>📈 AI覚醒モーター　全{len(awake_motor)}件",
+        "",
+        _section_comment_motor(awake_motor, "覚醒モーター"),
+        "",
+    ]
+    for a in awake_motor:
+        lines.append(f"- {a.get('venue','')} {a.get('motor_no','')}号機（直近10走: {a.get('recent10','---')}）")
+
+    lines += [
+        "",
+        "---",
+        "",
+        "*本レポートはデータ分析結果であり、的中を保証するものではありません。*",
+    ]
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    log.info("[Markdown] 保存: %s", output_path)
+
+
+# ════════════════════════════════════════════════════════════
 # メール送信
 # ════════════════════════════════════════════════════════════
 
@@ -1939,6 +2086,7 @@ def send_note_report(
     csv_paths: list[str],
     date_str: str,
     dry_run: bool = False,
+    md_path: Optional[str] = None,
 ) -> bool:
     date_disp = f"{date_str[4:6]}/{date_str[6:8]}"
     subject   = f"📰 AI競艇新聞 {date_disp}（note用）"
@@ -1947,6 +2095,7 @@ def send_note_report(
         "【添付ファイル一覧】\n"
         f"  note.html     ← noteエディタにコピペ\n"
         f"  newspaper.pdf ← 印刷・保存用PDF\n"
+        f"  note.md       ← Markdown版（目次付き）\n"
         f"  danger.csv    ← 危険な1号艇 全データ\n"
         f"  manshuu.csv   ← 万舟警報 全データ\n"
         f"  motor.csv     ← 激走モーター データ\n"
@@ -1964,6 +2113,7 @@ def send_note_report(
         print(body)
         files = [html_path]
         if pdf_path: files.append(pdf_path)
+        if md_path:  files.append(md_path)
         files.extend(csv_paths)
         print(f"添付: {files}")
         print("=" * 60)
@@ -1984,6 +2134,8 @@ def send_note_report(
     attach_files = [(html_path, "text", "html")]
     if pdf_path and os.path.exists(pdf_path):
         attach_files.append((pdf_path, "application", "pdf"))
+    if md_path and os.path.exists(md_path):
+        attach_files.append((md_path, "text", "markdown"))
     for p in csv_paths:
         if os.path.exists(p):
             attach_files.append((p, "text", "csv"))
@@ -2059,59 +2211,145 @@ def generate_x_teaser(data: dict) -> str:
     return "\n".join(lines)
 
 
-def generate_brand_teaser(data: dict, brand: str) -> str:
-    """指定ブランド単体の興味喚起テキストを生成する"""
-    titles = {
-        "danger":  "🚨 AI危険艇速報",
-        "manshuu": "💰 AI万舟警報",
-        "motor_hot": "⚡ AI激走モーター",
-        "motor_awk": "📈 AI覚醒モーター",
-        "korogashi": "🎯 AI転がし候補",
-    }
+def _brand_summary_facts(data: dict, brand: str) -> dict:
+    """ブランドの要約事実（件数・最注目レース等）をまとめて返す内部ヘルパー"""
     all_danger  = data.get("all_danger",  data.get("danger_boat1", []))
     all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
     hot_motor   = data.get("hot_motor", [])
     awake_motor = data.get("awakening_motor", [])
     kdata       = _load_korogashi_cache()
 
-    title = titles.get(brand, brand)
-    lines = ["━━━━━━━━━━━━━━", "", title, ""]
+    facts = {"brand": brand, "count": 0, "s_count": 0, "top": None}
 
     if brand == "danger":
-        s_count = sum(1 for d in all_danger if d.get("score", 0) >= 80)
-        lines.append(f"本日はSランク{s_count}件を含む{len(all_danger)}レースを抽出。")
+        facts["count"]   = len(all_danger)
+        facts["s_count"] = sum(1 for d in all_danger if rank_of(d.get("score",0)) == "S")
         if all_danger:
-            top = max(all_danger, key=lambda x: x.get("score", 0))
-            lines.append(f"最注目は{top.get('venue','')}{top.get('race','')}R（危険度{top.get('score',0)}）。")
+            facts["top"] = max(all_danger, key=lambda x: x.get("score", 0))
     elif brand == "manshuu":
-        s_count = sum(1 for u in all_manshuu if u.get("score", 0) >= 80)
-        lines.append(f"本日はSランク{s_count}件を含む{len(all_manshuu)}レースが対象。")
+        facts["count"]   = len(all_manshuu)
+        facts["s_count"] = sum(1 for u in all_manshuu if rank_of(u.get("score",0)) == "S")
         if all_manshuu:
-            top = max(all_manshuu, key=lambda x: x.get("score", 0))
-            lines.append(f"最注目は{top.get('venue','')}{top.get('race','')}R（荒れ指数{top.get('score',0)}）。")
+            facts["top"] = max(all_manshuu, key=lambda x: x.get("score", 0))
     elif brand == "motor_hot":
-        lines.append(f"本日{len(hot_motor)}件の激走モーターを検出。")
+        facts["count"] = len(hot_motor)
     elif brand == "motor_awk":
-        lines.append(f"本日{len(awake_motor)}件の覚醒モーターを検出。")
+        facts["count"] = len(awake_motor)
     elif brand == "korogashi":
         buy = [s for s in kdata.get("top10", []) if s.get("verdict") == "購入"]
-        lines.append(f"本日の転がし購入候補は{len(buy)}件。")
+        facts["count"] = len(buy)
+        if buy:
+            facts["top"] = buy[0]
 
-    lines += ["", "━━━━━━━━━━━━━━", "", "続きは新聞へ📰",
-              "#競艇 #ボートレース #AI予想"]
-    return "\n".join(lines)
+    return facts
+
+
+def generate_brand_teaser(data: dict, brand: str, style: str = "normal") -> str:
+    """
+    ⑪ 指定ブランドの興味喚起テキストを生成する。
+    style: "normal"(通常) / "buzz"(バズ狙い) / "quote"(引用用) / "reply"(返信用)
+    """
+    facts = _brand_summary_facts(data, brand)
+    icon  = brand_icon(brand)
+    name  = brand_name(brand)
+    top   = facts["top"]
+
+    top_venue = top.get("venue","") if top else ""
+    top_race  = top.get("race","")  if top else ""
+    top_score = top.get("score", top.get("fitness", 0)) if top else 0
+
+    if style == "normal":
+        lines = ["━━━━━━━━━━━━━━", "", f"{icon} {name}", ""]
+        lines.append(f"本日はSランク{facts['s_count']}件を含む{facts['count']}件を抽出。" if facts["s_count"] else f"本日{facts['count']}件を検出。")
+        if top:
+            lines.append(f"最注目は{top_venue}{top_race}R（スコア{top_score}）。")
+        lines += ["", "━━━━━━━━━━━━━━", "", "続きは新聞へ📰",
+                  "#競艇 #ボートレース #AI予想"]
+        return "\n".join(lines)
+
+    elif style == "buzz":
+        # 数字をフックにした「クリックしたくなる」文章＋質問
+        lines = [f"{icon} 今日の{name}、"]
+        if facts["s_count"] >= 3:
+            lines[0] += f"Sランクが{facts['s_count']}件も…"
+        elif top:
+            lines[0] += f"{top_venue}{top_race}Rがヤバい。"
+        else:
+            lines[0] += f"{facts['count']}件を検出。"
+        lines.append("")
+        if top:
+            lines.append(f"スコア{top_score}は今月でも上位クラス。")
+        lines.append("")
+        lines.append("あなたはどのレースが気になりますか？👀")
+        lines.append("")
+        lines.append("#競艇 #ボートレース #AI予想")
+        return "\n".join(lines)
+
+    elif style == "quote":
+        # 引用リツイート用（短文、新聞リンクの引用を想定）
+        if top:
+            return (
+                f"{icon} {top_venue}{top_race}R、AIスコア{top_score}。\n"
+                f"{name}の本日No.1はこのレース。\n"
+                "詳細は新聞で📰"
+            )
+        return f"{icon} 本日の{name}は{facts['count']}件。詳細は新聞で📰"
+
+    elif style == "reply":
+        # 返信・リプライ用（短く、フレンドリー）
+        if top:
+            return f"今日だと{top_venue}{top_race}Rが{name}の本命です！スコア{top_score}でした🙆"
+        return f"今日は{name}が{facts['count']}件出てます！よければ新聞もチェックしてみてください📰"
+
+    return generate_brand_teaser(data, brand, style="normal")
+
+
+def generate_brand_teasers_all_styles(data: dict, brand: str) -> dict:
+    """⑪ 1ブランドにつき4種類（通常/バズ/引用/返信）すべてを生成する"""
+    return {
+        "normal": generate_brand_teaser(data, brand, "normal"),
+        "buzz":   generate_brand_teaser(data, brand, "buzz"),
+        "quote":  generate_brand_teaser(data, brand, "quote"),
+        "reply":  generate_brand_teaser(data, brand, "reply"),
+    }
 
 
 # ════════════════════════════════════════════════════════════
 # ⑩ インタラクション投稿（アンケート）生成
 # ════════════════════════════════════════════════════════════
 
-def generate_poll_text(data: dict) -> dict:
+def generate_poll_text(data: dict, variant: str = "race") -> dict:
     """
-    ⑩ Xアンケート投稿用のテキストを生成する。
-    AI一致指数TOP3＋「その他」の4択。
+    ⑫ Xアンケート投稿用のテキストを生成する。
+    variant: "race"(一致指数TOP3レース) / "venue"(コンディションTOP3開催場) / "korogashi"(転がし候補)
     戻り値: {"question": str, "options": [str, str, str, str]}
     """
+    circled = ["①", "②", "③"]
+
+    if variant == "venue":
+        conditions = calc_venue_conditions(data)
+        if not conditions:
+            return {"question": "今日最も期待する開催場は？",
+                    "options": ["①データ準備中", "②データ準備中", "③データ準備中", "④その他"]}
+        options = [f"{circled[i]}{c['venue']}" for i, c in enumerate(conditions[:3])]
+        while len(options) < 3:
+            options.append(f"{circled[len(options)]}該当なし")
+        options.append("④その他")
+        return {"question": "今日最も期待する開催場は？", "options": options}
+
+    if variant == "korogashi":
+        kdata = _load_korogashi_cache()
+        buy = [s for s in kdata.get("top10", []) if s.get("verdict") in ("購入", "注意")][:3]
+        if not buy:
+            return {"question": "今日の転がしチャレンジ、どのレースが気になる？",
+                    "options": ["①データ準備中", "②データ準備中", "③データ準備中", "④見送りでいい"]}
+        options = [f"{circled[i]}{s.get('venue','')}{s.get('race','')}R" for i, s in enumerate(buy)]
+        while len(options) < 3:
+            options.append(f"{circled[len(options)]}該当なし")
+        options.append("④見送りでいい")
+        return {"question": "今日の転がしチャレンジ、どのレースが気になる？", "options": options}
+
+    # デフォルト: variant == "race"
     sorted_index, brand_counts, race_scores = _build_race_index(data)
     if not race_scores:
         return {
@@ -2121,7 +2359,6 @@ def generate_poll_text(data: dict) -> dict:
 
     ranked = sorted(race_scores.items(), key=lambda kv: -kv[1]["match_index"])[:3]
     options = []
-    circled = ["①", "②", "③"]
     for i, (key, s) in enumerate(ranked):
         venue, race = key
         options.append(f"{circled[i]}{venue}{race}R")
@@ -2135,9 +2372,9 @@ def generate_poll_text(data: dict) -> dict:
     }
 
 
-def format_poll_tweet(data: dict) -> str:
+def format_poll_tweet(data: dict, variant: str = "race") -> str:
     """アンケート投稿のX用テキストを整形する"""
-    poll = generate_poll_text(data)
+    poll = generate_poll_text(data, variant=variant)
     lines = [poll["question"], ""]
     lines.extend(poll["options"])
     lines += ["", "#競艇 #ボートレース #AI予想"]
@@ -2172,8 +2409,10 @@ def main() -> None:
     date_str  = args.date or data.get("date", datetime.now(JST).strftime("%Y%m%d"))
     html_path = "note.html"
     pdf_path  = "newspaper.pdf"
+    md_path   = "note.md"
 
     generate_html(data, html_path)
+    generate_markdown(data, md_path)
 
     csv_paths = generate_csvs(data)
 
@@ -2185,7 +2424,7 @@ def main() -> None:
         pdf_path = None
 
     ok = send_note_report(html_path, pdf_path, csv_paths,
-                          date_str, dry_run=args.dry_run)
+                          date_str, dry_run=args.dry_run, md_path=md_path)
     sys.exit(0 if ok else 1)
 
 
