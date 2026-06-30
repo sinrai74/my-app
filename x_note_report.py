@@ -192,24 +192,28 @@ def _generate_editor_note(data: dict, conditions: list) -> str:
 def _section_comment_danger(all_danger: list) -> str:
     if not all_danger:
         return "本日は対象レースがありません。"
-    s_count = sum(1 for d in all_danger if d.get("score", 0) >= 80)
+    s_count = sum(1 for d in all_danger if rank_of(d.get("score", 0)) == "S")
+    a_count = sum(1 for d in all_danger if rank_of(d.get("score", 0)) == "A")
+    avg_score = sum(d.get("score", 0) for d in all_danger) / len(all_danger)
     venues  = list(dict.fromkeys(d.get("venue","") for d in all_danger[:5]))
     venue_txt = "・".join(venues[:3]) if venues else ""
-    lines = [f"本日は危険艇Sランクが{s_count}件あります。"] if s_count else [f"本日は危険艇候補が{len(all_danger)}件あります。"]
+
+    lines = [f"本日は危険艇{len(all_danger)}件（Sランク{s_count}件・Aランク{a_count}件）を抽出。平均危険度は{avg_score:.1f}点です。"]
     if venue_txt:
-        lines.append(f"{venue_txt}で1号艇の信頼度低下が目立ちます。2〜4号艇に注目です。")
+        lines.append(f"{venue_txt}で1号艇の信頼度低下が目立ち、2〜4号艇に注目です。")
     return " ".join(lines)
 
 
 def _section_comment_manshuu(all_manshuu: list) -> str:
     if not all_manshuu:
         return "本日は対象レースがありません。"
-    s_count = sum(1 for u in all_manshuu if u.get("score", 0) >= 80)
+    s_count = sum(1 for u in all_manshuu if rank_of(u.get("score", 0)) == "S")
+    a_count = sum(1 for u in all_manshuu if rank_of(u.get("score", 0)) == "A")
+    avg_score = sum(u.get("score", 0) for u in all_manshuu) / len(all_manshuu)
     venues  = list(dict.fromkeys(u.get("venue","") for u in all_manshuu[:5]))
     venue_txt = "・".join(venues[:3]) if venues else ""
-    lines = [f"本日は万舟候補が{len(all_manshuu)}件あります。"]
-    if s_count:
-        lines.append(f"うちSランクは{s_count}件。")
+
+    lines = [f"本日は万舟候補{len(all_manshuu)}件（Sランク{s_count}件・Aランク{a_count}件）。平均荒れ指数は{avg_score:.1f}点です。"]
     if venue_txt:
         lines.append(f"特に{venue_txt}で高配当期待値が高くなっています。")
     return " ".join(lines)
@@ -654,6 +658,64 @@ def _hot_high_threshold(manshuu_list: list) -> float:
     cutoff = scores[n - 1]
     # 全件が同スコア帯などで閾値が低すぎる場合は固定値と高い方を採用
     return max(cutoff, min(HOT_HIGH_THRESHOLD, scores[0]))
+
+
+# ════════════════════════════════════════════════════════════
+# ⑦ ブランドページ統一テンプレート（掲載条件・注意点）
+# ════════════════════════════════════════════════════════════
+# 各ブランドの「掲載条件」「注意点」を一元管理する。
+# 新しいブランドを追加する場合はここに1エントリ追加するだけでよい。
+
+BRAND_CRITERIA: dict[str, dict] = {
+    "danger": {
+        "condition": "危険度スコア40点以上の1号艇を抽出（展示・ST・モーター・等級・勝率・相手関係の6指標で算出）",
+        "caution":   "展示タイム未確定の早い時間帯は判定の確度が下がる場合があります。最新の展示情報は締切直前にご確認ください。",
+    },
+    "manshuu": {
+        "condition": "荒れ指数40点以上のレースを抽出（イン信頼度・実力接近度・ST分散・モーター格差・展示差・気象の6指標で算出）",
+        "caution":   "荒れ指数はあくまで統計的傾向であり、決まり手や進入の急変までは予測できません。",
+    },
+    "hot_high": {
+        "condition": "万舟警報の中でも荒れ指数が上位30%（または80点以上）のレースのみを抽出",
+        "caution":   "高配当期待は的中率より払戻額の大きさに焦点を当てた指標です。点数を絞った勝負には不向きな場合があります。",
+    },
+    "motor_hot": {
+        "condition": "直近5走の公式2連率を上回るモーターを検出（モーター履歴データが10走以上蓄積された会場のみ対象）",
+        "caution":   "整備状況やコース替わりにより、当日の調子が履歴と異なるケースがあります。",
+    },
+    "motor_awk": {
+        "condition": "直近10走の2連率が、それ以前10走から大きく上昇しているモーターを検出（20走以上の履歴が必要）",
+        "caution":   "覚醒は一時的な好調の場合もあり、継続性を保証するものではありません。",
+    },
+    "korogashi": {
+        "condition": "2〜4号艇を中心に、展示・ST・モーター・直近成績・コース勝率・イン信頼度・相手関係・期待値・気象の9指標で転がし適性を算出（適性70未満は見送り）",
+        "caution":   "転がし企画は連敗リスクを伴います。無理のない範囲でお楽しみください。",
+    },
+    "racer": {
+        "condition": "本日の危険艇判定上位5名を、勝率・モーター・直近成績の観点でピックアップ",
+        "caution":   "選手のコンディションは直前情報でも変動します。",
+    },
+}
+
+
+def _render_brand_header(brand_key: str, count_label: str, comment: str) -> str:
+    """
+    要件⑦: 全ブランド共通のページヘッダー（タイトル・AIコメント・掲載条件・注意点）を生成する。
+    各ブランドセクションの先頭で呼び出す。
+    """
+    icon = brand_icon(brand_key)
+    name = brand_name(brand_key)
+    criteria = BRAND_CRITERIA.get(brand_key, {})
+    condition = criteria.get("condition", "")
+    caution   = criteria.get("caution", "")
+
+    return f"""
+  <h2>{icon} {name}　{count_label}</h2>
+  <div class="section-comment">{comment}</div>
+  <div class="brand-meta">
+    <div class="bm-row"><span class="bm-label">📋 掲載条件</span><span class="bm-text">{condition}</span></div>
+    <div class="bm-row caution"><span class="bm-label">⚠️ 注意点</span><span class="bm-text">{caution}</span></div>
+  </div>"""
 
 
 def _race_anchor(venue: str, race) -> str:
@@ -1337,6 +1399,14 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
 .section-comment{{background:#14142a;border-left:3px solid var(--accent);
   border-radius:6px;padding:10px 14px;margin-bottom:14px;
   color:#bbb;font-size:.87em;line-height:1.6}}
+/* ⑦ ブランド共通: 掲載条件・注意点 */
+.brand-meta{{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}}
+.bm-row{{display:flex;gap:8px;background:#14142a;border-radius:6px;
+  padding:8px 12px;font-size:.8em;line-height:1.5}}
+.bm-row.caution{{background:#1e1810}}
+.bm-label{{color:var(--gray);white-space:nowrap;flex-shrink:0}}
+.bm-row.caution .bm-label{{color:#ffb74d}}
+.bm-text{{color:#999}}
 /* 高配当期待・転がしリンク */
 .hp-link,.kr-link{{display:block;background:var(--card);border-radius:6px;
   padding:10px 14px;margin-bottom:6px;color:var(--text);text-decoration:none;
@@ -1490,43 +1560,37 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 
 <!-- ⑧ 危険な1号艇 -->
 <section id="danger">
-  <h2>🚨 AI危険艇速報　掲載{len(danger_display)}件（全{len(all_danger)}件中）</h2>
-  <div class="section-comment">{_section_comment_danger(all_danger)}</div>
+  {_render_brand_header("danger", f"掲載{len(danger_display)}件（全{len(all_danger)}件中）", _section_comment_danger(all_danger))}
   {danger_rows()}
 </section>
 
 <!-- ⑦ 万舟警報 -->
 <section id="manshuu">
-  <h2>💰 AI万舟警報　掲載{len(manshuu_display)}件（全{len(all_manshuu)}件中）</h2>
-  <div class="section-comment">{_section_comment_manshuu(all_manshuu)}</div>
+  {_render_brand_header("manshuu", f"掲載{len(manshuu_display)}件（全{len(all_manshuu)}件中）", _section_comment_manshuu(all_manshuu))}
   {manshuu_rows()}
 </section>
 
 <!-- ⑧ 高配当期待 -->
 <section id="hot-high">
-  <h2>🔥 AI高配当期待　{len(high_payout)}レース</h2>
-  <div class="section-comment">{_section_comment_hot_high(manshuu_display)}</div>
+  {_render_brand_header("hot_high", f"{len(high_payout)}レース", _section_comment_hot_high(manshuu_display))}
   {''.join(f'<a href="#{_race_anchor(u.get("venue",""), u.get("race",""))}-manshuu" class="hp-link">{u.get("venue","")}{u.get("race","")}R　荒れ指数{u.get("score",0)}</a>' for u in high_payout) or '<p class="no-data">本日は対象レースなし</p>'}
 </section>
 
 <!-- ⑨ 激走モーター -->
 <section id="motor">
-  <h2>⚡ AI激走モーター　全{len(hot_motor)}件</h2>
-  <div class="section-comment">{_section_comment_motor(hot_motor, "激走モーター")}</div>
+  {_render_brand_header("motor_hot", f"全{len(hot_motor)}件", _section_comment_motor(hot_motor, "激走モーター"))}
   {motor_table(hot_motor, hot_cols)}
 </section>
 
 <!-- ⑩ 覚醒モーター -->
 <section id="awake">
-  <h2>📈 AI覚醒モーター　全{len(awake_motor)}件</h2>
-  <div class="section-comment">{_section_comment_motor(awake_motor, "覚醒モーター")}</div>
+  {_render_brand_header("motor_awk", f"全{len(awake_motor)}件", _section_comment_motor(awake_motor, "覚醒モーター"))}
   {motor_table(awake_motor, awake_cols)}
 </section>
 
 <!-- ⑪ 転がし候補 -->
 <section id="korogashi">
-  <h2>🎯 AI転がし候補</h2>
-  <div class="section-comment">{_section_comment_korogashi(korogashi_data)}</div>
+  {_render_brand_header("korogashi", "", _section_comment_korogashi(korogashi_data))}
   {''.join(
       f'<a href="#" class="kr-link">{s.get("venue","")}{s.get("race","")}R　'
       f'{s.get("lane","")}号艇 {s.get("racer_name","")}　適性{s.get("fitness","")}点　[{s.get("verdict","")}]</a>'
@@ -1536,8 +1600,7 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 
 <!-- ⑫ 今日の注目レーサー -->
 <section id="racer">
-  <h2>👤 今日の注目レーサー</h2>
-  <div class="section-comment">勝率・モーター・直近成績から本日特に注目すべき選手をピックアップしています。</div>
+  {_render_brand_header("racer", "", "勝率・モーター・直近成績から本日特に注目すべき選手をピックアップしています。")}
   {''.join(
       f'<div class="race-card a"><div class="rc-header">'
       f'<strong class="rc-name">{d.get("racer","?")}</strong>'
