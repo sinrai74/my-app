@@ -22,6 +22,7 @@ import argparse
 import csv
 import json
 import logging
+import math
 import os
 import smtplib
 import sys
@@ -157,13 +158,14 @@ def _section_comment_manshuu(all_manshuu: list) -> str:
     return " ".join(lines)
 
 
-def _section_comment_hot_high(all_manshuu: list) -> str:
-    high = [u for u in all_manshuu if u.get("score", 0) >= HOT_HIGH_THRESHOLD]
+def _section_comment_hot_high(manshuu_list: list) -> str:
+    cutoff = _hot_high_threshold(manshuu_list)
+    high = [u for u in manshuu_list if u.get("score", 0) >= cutoff]
     if not high:
         return "本日は高配当期待レースがありません。"
     venues = list(dict.fromkeys(u.get("venue","") for u in high[:5]))
     venue_txt = "・".join(venues[:3])
-    return f"荒れ指数{HOT_HIGH_THRESHOLD}以上の高配当期待レースが{len(high)}件。{venue_txt}は特に要チェックです。"
+    return f"荒れ指数{cutoff:.0f}以上の高配当期待レースが{len(high)}件。{venue_txt}は特に要チェックです。"
 
 
 def _section_comment_motor(hot_motor: list, label: str) -> str:
@@ -326,7 +328,24 @@ OVERALL_WEIGHTS = {
     "hot_high":  0.05,
 }
 
-HOT_HIGH_THRESHOLD = 80   # 万舟Sランク＝高配当期待の閾値
+HOT_HIGH_THRESHOLD = 80   # 万舟Sランク＝高配当期待の閾値（フォールバック用固定値）
+HOT_HIGH_RATIO     = 0.3 # 万舟TOP10のうち上位30%を高配当期待とする
+
+
+def _hot_high_threshold(manshuu_list: list) -> float:
+    """
+    万舟リストから高配当期待の動的閾値を算出する。
+    上位 HOT_HIGH_RATIO 件のスコアを基準にする（最低3件は確保）。
+    データが少ない・分散がない場合は HOT_HIGH_THRESHOLD にフォールバック。
+    """
+    if not manshuu_list:
+        return HOT_HIGH_THRESHOLD
+    scores = sorted((u.get("score", 0) for u in manshuu_list), reverse=True)
+    n = max(3, math.ceil(len(scores) * HOT_HIGH_RATIO))
+    n = min(n, len(scores))
+    cutoff = scores[n - 1]
+    # 全件が同スコア帯などで閾値が低すぎる場合は固定値と高い方を採用
+    return max(cutoff, min(HOT_HIGH_THRESHOLD, scores[0]))
 
 
 def _race_anchor(venue: str, race) -> str:
@@ -654,15 +673,23 @@ def generate_html(data: dict, output_path: str) -> None:
     awake_motor = data.get("awakening_motor", [])
     editorial   = _generate_editorial(data)
 
-    # 新セクション用データ（INDEX/イチオシ/TOP5で共有）
+    # 新聞本文に「掲載」するレース数は見やすさのため上限を設ける。
+    # INDEX/イチオシ/TOP5/CSVは all_danger / all_manshuu（全件）を使い続ける。
+    DANGER_DISPLAY_LIMIT  = 20
+    MANSHUU_DISPLAY_LIMIT = 10
+    danger_display  = sorted(all_danger,  key=lambda x: -x.get("score", 0))[:DANGER_DISPLAY_LIMIT]
+    manshuu_display = sorted(all_manshuu, key=lambda x: -x.get("score", 0))[:MANSHUU_DISPLAY_LIMIT]
+
+    # 新セクション用データ（INDEX/イチオシ/TOP5で共有・全件ベース）
     race_index_data = _build_race_index(data)   # (sorted_index, brand_counts, race_scores)
     pickup_section  = _render_pickup_section(data)
     top5_section    = _render_top5_section(data)
     index_section   = _render_index_section(data)
 
-    # 転がし候補データ（高配当期待・転がしセクション用）
-    korogashi_data  = _load_korogashi_cache()
-    high_payout     = [u for u in all_manshuu if u.get("score", 0) >= HOT_HIGH_THRESHOLD]
+    # 転がし候補データ・高配当期待（動的閾値、新聞表示分のmanshuu_displayベース）
+    korogashi_data    = _load_korogashi_cache()
+    hot_high_cutoff   = _hot_high_threshold(manshuu_display)
+    high_payout       = [u for u in manshuu_display if u.get("score", 0) >= hot_high_cutoff]
 
     s_d = len([d for d in all_danger  if d.get("score",0) >= 80])
     a_d = len([d for d in all_danger  if 60 <= d.get("score",0) < 80])
@@ -676,7 +703,7 @@ def generate_html(data: dict, output_path: str) -> None:
 
     def danger_rows():
         rows = ""
-        for d in all_danger:
+        for d in danger_display:
             score = d.get("score", 0)
             comment = _race_comment(d)
             bd = d.get("breakdown", {})
@@ -715,7 +742,7 @@ def generate_html(data: dict, output_path: str) -> None:
 
     def manshuu_rows():
         rows = ""
-        for u in all_manshuu:
+        for u in manshuu_display:
             score = u.get("score", 0)
             rank_cls = "s" if score >= 80 else "a" if score >= 60 else "b"
             reasons = u.get("key_reason","").split(" / ")
@@ -957,23 +984,23 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 
 <!-- ⑥ 危険な1号艇 -->
 <section id="danger">
-  <h2>🚨 AI危険艇速報　全{len(all_danger)}レース</h2>
+  <h2>🚨 AI危険艇速報　掲載{len(danger_display)}件（全{len(all_danger)}件中）</h2>
   <div class="section-comment">{_section_comment_danger(all_danger)}</div>
   {danger_rows()}
 </section>
 
 <!-- ⑦ 万舟警報 -->
 <section id="manshuu">
-  <h2>💰 AI万舟警報　全{len(all_manshuu)}レース</h2>
+  <h2>💰 AI万舟警報　掲載{len(manshuu_display)}件（全{len(all_manshuu)}件中）</h2>
   <div class="section-comment">{_section_comment_manshuu(all_manshuu)}</div>
   {manshuu_rows()}
 </section>
 
 <!-- ⑧ 高配当期待 -->
 <section id="hot-high">
-  <h2>🔥 AI高配当期待　全{len(high_payout)}レース</h2>
-  <div class="section-comment">{_section_comment_hot_high(all_manshuu)}</div>
-  {''.join(f'<a href="#" class="hp-link">{u.get("venue","")}{u.get("race","")}R  荒れ指数{u.get("score",0)}</a>' for u in high_payout)}
+  <h2>🔥 AI高配当期待　{len(high_payout)}レース</h2>
+  <div class="section-comment">{_section_comment_hot_high(manshuu_display)}</div>
+  {''.join(f'<a href="#{_race_anchor(u.get("venue",""), u.get("race",""))}-manshuu" class="hp-link">{u.get("venue","")}{u.get("race","")}R　荒れ指数{u.get("score",0)}</a>' for u in high_payout) or '<p class="no-data">本日は対象レースなし</p>'}
 </section>
 
 <!-- ⑨ 激走モーター -->
@@ -1230,22 +1257,28 @@ def generate_pdf(html_path: str, pdf_path: str) -> bool:
 
         # ── 高さ計算（描画なしで一巡）───────────────────────
         # ヘッダー: 100
-        # 危険 セクションタイトル: 58、各行: 64
-        # 万舟 セクションタイトル: 58、各行: 64
+        # 危険 セクションタイトル: 58、各行: 64（表示上限20件）
+        # 万舟 セクションタイトル: 58、各行: 64（表示上限10件）
         # 激走 セクションタイトル: 58、各行: 48
         # 覚醒 セクションタイトル: 58、各行: 48
         # フッター: 60、余白: 30
 
+        _danger_count_disp  = min(len(all_danger), 20)
+        _manshuu_count_disp = min(len(all_manshuu), 10)
+
         total_h = (
             100 + 20 +
-            58 + len(all_danger)  * 64 + 20 +
-            58 + len(all_manshuu) * 64 + 20 +
+            58 + _danger_count_disp  * 64 + 20 +
+            58 + _manshuu_count_disp * 64 + 20 +
             58 + len(hot_motor)   * 48 + 20 +
             58 + len(awake_motor) * 48 + 60
         )
         total_h = max(1600, total_h)
 
-        # ── 実際に描画 ────────────────────────────────────────
+        # ── 実際に描画（表示は新聞本文と同じ上限を適用） ─────
+        _danger_disp  = sorted(all_danger,  key=lambda x: -x.get("score", 0))[:20]
+        _manshuu_disp = sorted(all_manshuu, key=lambda x: -x.get("score", 0))[:10]
+
         img  = Image.new("RGB", (W, total_h), C_BG)
         draw = ImageDraw.Draw(img)
 
@@ -1253,13 +1286,13 @@ def generate_pdf(html_path: str, pdf_path: str) -> bool:
         draw_header(draw)
         add_gap(20)
 
-        draw_section_title(draw, f"⚠ 危険な1号艇  全{len(all_danger)}レース", C_S)
-        for d in all_danger:
+        draw_section_title(draw, f"⚠ 危険な1号艇  掲載{len(_danger_disp)}件（全{len(all_danger)}件中）", C_S)
+        for d in _danger_disp:
             draw_danger_row(draw, d)
         add_gap(20)
 
-        draw_section_title(draw, f"¥ 万舟警報  全{len(all_manshuu)}レース", C_A)
-        for u in all_manshuu:
+        draw_section_title(draw, f"¥ 万舟警報  掲載{len(_manshuu_disp)}件（全{len(all_manshuu)}件中）", C_A)
+        for u in _manshuu_disp:
             draw_manshuu_row(draw, u)
         add_gap(20)
 
