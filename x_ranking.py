@@ -70,8 +70,15 @@ def _yesterday_jst() -> str:
 
 
 def _boat_motor_no(boat_raw: dict) -> Optional[int]:
-    """出走表の boat 辞書からモーター番号を取得する"""
-    val = boat_raw.get("motor_number") or boat_raw.get("racer_motor_number")
+    """出走表の boat 辞書からモーター番号を取得する。
+    BoatraceOpenAPI v2 では "racer_assigned_motor_number" が正式フィールド名。
+    旧フィールド名（motor_number / racer_motor_number）も互換のため残す。
+    """
+    val = (
+        boat_raw.get("racer_assigned_motor_number")  # v2 正式フィールド名
+        or boat_raw.get("motor_number")              # 旧フィールド名（互換）
+        or boat_raw.get("racer_motor_number")        # 旧フィールド名（互換）
+    )
     try:
         return int(val) if val is not None else None
     except (ValueError, TypeError):
