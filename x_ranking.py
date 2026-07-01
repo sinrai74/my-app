@@ -221,15 +221,47 @@ def update_motor_history(race_date: str) -> int:
         log.info("[履歴] 追記レコードなし: %s", race_date)
         return 0
 
+    # ── 重複防止 ──────────────────────────────────────────────
+    # hot/awakening スケジュールでも --update-history が呼ばれるため、
+    # 同一日付が複数回追記されないよう既存の date+venue_num+motor_no+race_number
+    # を確認してスキップする。
+    existing_keys: set[tuple] = set()
     file_exists = os.path.exists(MOTOR_HISTORY)
+    if file_exists:
+        try:
+            with open(MOTOR_HISTORY, "r", encoding="utf-8") as _ef:
+                for _row in csv.DictReader(_ef):
+                    existing_keys.add((
+                        _row.get("date", ""),
+                        str(_row.get("venue_num", "")),
+                        str(_row.get("motor_no", "")),
+                        str(_row.get("race_number", "")),
+                    ))
+        except Exception:
+            pass
+
+    new_rows = [
+        r for r in rows
+        if (
+            str(r.get("date", "")),
+            str(r.get("venue_num", "")),
+            str(r.get("motor_no", "")),
+            str(r.get("race_number", "")),
+        ) not in existing_keys
+    ]
+
+    if not new_rows:
+        log.info("[履歴] 追記スキップ（全件既記録済み）: %s", race_date)
+        return 0
+
     with open(MOTOR_HISTORY, "a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=MOTOR_HISTORY_FIELDS)
         if not file_exists:
             writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(new_rows)
 
-    log.info("[履歴] 追記: %d件 (%s)", len(rows), race_date)
-    return len(rows)
+    log.info("[履歴] 追記: %d件 (%s)（%d件スキップ）", len(new_rows), race_date, len(rows) - len(new_rows))
+    return len(new_rows)
 
 
 # ════════════════════════════════════════════════════════════

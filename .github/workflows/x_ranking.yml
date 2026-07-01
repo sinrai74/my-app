@@ -90,8 +90,10 @@ jobs:
           echo "投稿種類: $TYPE"
 
       # ── 前日モーター履歴を蓄積 ──────────────────────────
+      # 激走・覚醒スコアは motor_history.csv の蓄積データが必要。
+      # danger/hot/awakening/all すべてで実行する（検証のみ不要）。
       - name: Update motor history
-        if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
+        if: steps.post_type.outputs.type != 'verification'
         run: |
           DATE_ARG=""
           if [ -n "${{ github.event.inputs.date }}" ]; then
