@@ -95,8 +95,11 @@ def _rank_bar_html(rank_data_cat: dict) -> str:
     return rows or '<p class="no-data">対象データなし</p>'
 
 
-def _period_summary_html(label: str, period_data: dict) -> str:
-    """期間タブ1つ分のサマリーHTML（今日/7日/30日/累計共通）"""
+def _period_summary_html(label: str, period_data: dict, cumulative_rank_data: dict) -> str:
+    """
+    期間タブ1つ分のサマリーHTML（今日/7日/30日/累計共通）。
+    各ブランドについて「その期間の成功率」と「累計の成功率」を並記する。
+    """
     agg = period_data["agg"]
     rank_data = period_data["rank_data"]
 
@@ -104,6 +107,37 @@ def _period_summary_html(label: str, period_data: dict) -> str:
         return f'<div class="period-panel" data-period="{label}"><p class="no-data">対象データなし</p></div>'
 
     profit_mark = "✅" if agg["total_profit"] >= 0 else "❌"
+
+    def _brand_block(category: str, title: str) -> str:
+        cat_data = rank_data.get(category, {})
+        total = sum(d["total"] for d in cat_data.values())
+        hit   = sum(d["hit"]   for d in cat_data.values())
+        period_rate = round(hit / total * 100, 1) if total > 0 else 0.0
+
+        cum = cumulative_rank_data.get(category, {})
+        cum_total = sum(d["total"] for d in cum.values())
+        cum_hit   = sum(d["hit"]   for d in cum.values())
+        cum_rate  = round(cum_hit / cum_total * 100, 1) if cum_total > 0 else 0.0
+
+        return f"""
+<div class="period-brand">
+  <h3>{title}</h3>
+  <div class="period-vs-cumulative">
+    <span class="pvc-period">この期間: {period_rate}%（{total}件中{hit}件）</span>
+    <span class="pvc-cumulative">累計: {cum_rate}%（{cum_total}件中{cum_hit}件）</span>
+  </div>
+  <details class="rank-detail-toggle">
+    <summary>ランク別内訳（S/A/B/C）</summary>
+    {_rank_bar_html(cat_data)}
+  </details>
+</div>"""
+
+    blocks = "".join([
+        _brand_block("danger",    "🚨 危険艇"),
+        _brand_block("manshuu",   "💰 万舟"),
+        _brand_block("hot_high",  "🔥 高配当"),
+        _brand_block("korogashi", "🎯 中穴"),
+    ])
 
     return f"""
 <div class="period-panel" data-period="{label}">
@@ -113,14 +147,7 @@ def _period_summary_html(label: str, period_data: dict) -> str:
     <div class="pk-cell"><div class="pk-num">{profit_mark}{agg['total_profit']:+,}</div><div class="pk-label">損益(円)</div></div>
     <div class="pk-cell"><div class="pk-num">{agg['roi']:+.1f}%</div><div class="pk-label">ROI</div></div>
   </div>
-  <div class="period-brand">
-    <h3>🚨 危険艇</h3>
-    {_rank_bar_html(rank_data['danger'])}
-  </div>
-  <div class="period-brand">
-    <h3>💰 万舟</h3>
-    {_rank_bar_html(rank_data['manshuu'])}
-  </div>
+  {blocks}
 </div>"""
 
 
@@ -128,8 +155,15 @@ def _trust_badge_html(trust: dict) -> str:
     """⑮ AI信頼度バッジHTML"""
     color_map = {"A+": "#ef5350", "A": "#ffa726", "B": "#ffee58", "C": "#42a5f5"}
     rows = ""
-    for category, label, icon in [("danger", "危険艇", "🚨"), ("manshuu", "万舟", "💰")]:
+    for category, label, icon in [
+        ("danger", "危険艇", "🚨"),
+        ("manshuu", "万舟", "💰"),
+        ("hot_high", "高配当", "🔥"),
+        ("korogashi", "中穴", "🎯"),
+    ]:
         t = trust.get(category, {"rate": 0, "trust": "C", "total": 0})
+        if t["total"] == 0:
+            continue
         color = color_map.get(t["trust"], "#999")
         rows += f"""
 <div class="trust-row">
@@ -138,7 +172,7 @@ def _trust_badge_html(trust: dict) -> str:
   <span class="trust-badge" style="background:{color}">{t['trust']}</span>
   <span class="trust-detail">{t['rate']}%（{t['total']}件・30日実績）</span>
 </div>"""
-    return rows
+    return rows or '<p class="no-data">対象データなし</p>'
 
 
 def _miss_analysis_html(miss: dict) -> str:
@@ -179,7 +213,7 @@ def generate_results_html(date_str: str, output_path: str) -> dict:
     trend_30d  = trend_vs_previous(today_rate, d30_rate)
 
     period_tabs_html = "".join(
-        _period_summary_html(label, periods[label])
+        _period_summary_html(label, periods[label], periods["all"]["rank_data"])
         for label in ["today", "d7", "d30", "all"]
     )
 
@@ -203,20 +237,53 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
   padding:16px;margin-bottom:20px}}
 .review-box h2{{color:#81c784;font-size:1.05em;margin-bottom:8px}}
 .review-text{{color:#cde;font-size:.92em;line-height:1.7}}
-/* タブ切り替え */
+/* タブ切り替え（CSS単体で動くラジオ+ラベル方式。JSがあれば併用して同期させる） */
+.tab-radio{{position:absolute;opacity:0;pointer-events:none;width:0;height:0}}
 .tab-bar{{display:flex;gap:6px;margin-bottom:14px}}
 .tab-btn{{flex:1;background:var(--card);border:1px solid var(--border);border-radius:8px;
-  padding:10px 4px;text-align:center;color:var(--gray);font-size:.85em;cursor:pointer}}
+  padding:10px 4px;text-align:center;color:var(--gray);font-size:.85em;cursor:pointer;
+  user-select:none}}
+.tab-radio:checked + .tab-btn{{background:var(--accent);color:#0d0d1a;font-weight:bold;border-color:var(--accent)}}
 .tab-btn.active{{background:var(--accent);color:#0d0d1a;font-weight:bold;border-color:var(--accent)}}
+/* ラジオ(#tab-xxx)がcheckedのとき、対応するlabel[for=tab-xxx]をハイライトする。
+   ラジオとlabelの間に.tab-barが挟まるため、~結合子でlabelを直接指定する
+   （+結合子は直後の要素にしか届かないため使えない）。 */
+#tab-today:checked ~ .tab-bar label[for="tab-today"],
+#tab-d7:checked    ~ .tab-bar label[for="tab-d7"],
+#tab-d30:checked   ~ .tab-bar label[for="tab-d30"],
+#tab-all:checked   ~ .tab-bar label[for="tab-all"]{{
+  background:var(--accent);color:#0d0d1a;font-weight:bold;border-color:var(--accent);
+}}
 .period-panel{{display:none;background:var(--card);border:1px solid var(--border);
   border-radius:10px;padding:16px;margin-bottom:20px}}
 .period-panel.active{{display:block}}
+/* ラジオが checked のとき、対応する data-period のパネルだけを表示する。
+   ラジオ→パネルの間に他要素が挟まるため、隣接兄弟(~)結合子で #period-panels 内の
+   該当パネルを individually ターゲットする。 */
+#tab-today:checked ~ #period-panels .period-panel[data-period="today"],
+#tab-d7:checked    ~ #period-panels .period-panel[data-period="d7"],
+#tab-d30:checked   ~ #period-panels .period-panel[data-period="d30"],
+#tab-all:checked   ~ #period-panels .period-panel[data-period="all"]{{display:block}}
+/* ラジオが1つでもcheckedなら、JS用の.activeクラスによる表示指定より
+   ラジオ駆動の表示を優先させたいので、非対象パネルは明示的に隠す */
+#tab-today:checked ~ #period-panels .period-panel:not([data-period="today"]),
+#tab-d7:checked    ~ #period-panels .period-panel:not([data-period="d7"]),
+#tab-d30:checked   ~ #period-panels .period-panel:not([data-period="d30"]),
+#tab-all:checked   ~ #period-panels .period-panel:not([data-period="all"]){{display:none}}
 .period-kpi-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:16px}}
 .pk-cell{{background:#1a1a30;border-radius:6px;padding:10px 4px;text-align:center}}
 .pk-num{{font-size:1.15em;font-weight:bold;color:#fff}}
 .pk-label{{font-size:.68em;color:var(--gray);margin-top:3px}}
 .period-brand{{margin-bottom:14px}}
 .period-brand h3{{font-size:.95em;color:var(--accent);margin-bottom:8px}}
+.period-vs-cumulative{{display:flex;justify-content:space-between;gap:8px;
+  font-size:.76em;color:var(--gray);margin-bottom:6px;flex-wrap:wrap}}
+.pvc-period{{color:#cfe;font-weight:bold}}
+.pvc-cumulative{{color:var(--gray)}}
+.rank-detail-toggle summary{{cursor:pointer;font-size:.78em;color:var(--accent);
+  padding:4px 0;user-select:none}}
+.rank-detail-toggle summary::-webkit-details-marker{{color:var(--accent)}}
+.rank-detail-toggle[open] summary{{margin-bottom:6px}}
 /* ランクバー */
 .rank-bar-row{{display:flex;align-items:center;gap:8px;margin-bottom:6px}}
 .rank-badge{{width:22px;height:22px;border-radius:5px;color:#fff;font-weight:bold;
@@ -274,12 +341,19 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
   <div class="review-text">{daily_review}</div>
 </div>
 
-<!-- ⑭ 期間タブ -->
+<!-- ⑭ 期間タブ（ラジオ+ラベルでCSS単体でも切替可能。JSがあれば併用同期）
+     ラジオは #period-panels と同じ階層の兄弟に置き、~結合子でパネルを参照する。
+     ラベルの見た目強調は隣接の.tab-radio:checked+.tab-btnではなく、
+     JSでの.activeクラス同期、および:checkedの兄弟参照(下記CSS)で行う。 -->
+<input type="radio" name="period-tab" id="tab-today" class="tab-radio" checked>
+<input type="radio" name="period-tab" id="tab-d7"    class="tab-radio">
+<input type="radio" name="period-tab" id="tab-d30"   class="tab-radio">
+<input type="radio" name="period-tab" id="tab-all"   class="tab-radio">
 <div class="tab-bar">
-  <div class="tab-btn active" data-tab="today">今日</div>
-  <div class="tab-btn" data-tab="d7">7日</div>
-  <div class="tab-btn" data-tab="d30">30日</div>
-  <div class="tab-btn" data-tab="all">累計</div>
+  <label class="tab-btn active" data-tab="today" for="tab-today">今日</label>
+  <label class="tab-btn" data-tab="d7" for="tab-d7">7日</label>
+  <label class="tab-btn" data-tab="d30" for="tab-d30">30日</label>
+  <label class="tab-btn" data-tab="all" for="tab-all">累計</label>
 </div>
 <div id="period-panels">
 {period_tabs_html}
@@ -315,7 +389,10 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {{
     document.querySelectorAll('.tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
     document.querySelectorAll('.period-panel').forEach(function(p) {{ p.classList.remove('active'); }});
     btn.classList.add('active');
-    document.querySelector('.period-panel[data-period="' + tab + '"]').classList.add('active');
+    var panel = document.querySelector('.period-panel[data-period="' + tab + '"]');
+    if (panel) {{ panel.classList.add('active'); }}
+    var radio = document.getElementById('tab-' + tab);
+    if (radio) {{ radio.checked = true; }}
   }});
 }});
 document.querySelector('.period-panel[data-period="today"]').classList.add('active');

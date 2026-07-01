@@ -27,7 +27,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
-from x_brand_config import rank_of, rank_color, trust_rank_of
+from x_brand_config import rank_of, rank_color, trust_rank_of, SUCCESS_PAYOUT_THRESHOLDS
 
 log = logging.getLogger("x_verification")
 
@@ -35,8 +35,9 @@ JST      = timezone(timedelta(hours=9))
 MAIL_TO  = "bigkirinuki@gmail.com"
 HIT_CSV  = "hit_record.csv"
 
-# 万舟の定義：払戻3万円以上
-MANSHUU_PAYOUT = 30000
+# 万舟の定義：payout(円) が SUCCESS_PAYOUT_THRESHOLDS["manshuu"] を超えたら成功
+# （x_brand_config を唯一の基準とし、ここではエイリアスとして参照する）
+MANSHUU_PAYOUT = SUCCESS_PAYOUT_THRESHOLDS["manshuu"]
 
 # upset_score の理論上限（0-9.5スケール）。100点換算の分母に使う。
 UPSET_SCORE_MAX = 9.5
@@ -54,11 +55,39 @@ def _yesterday_jst() -> str:
     return (datetime.now(JST) - timedelta(days=1)).strftime("%Y%m%d")
 
 
+def _dedup_records(records: list[dict]) -> list[dict]:
+    """
+    hit_record.csv の重複行を除去して返す。
+    date + venue_num + race + pred_combo を一意キーとし、
+    同一キーが複数ある場合は最初に現れたレコードを採用する。
+    （スクリプトの多重実行や書き込みバグで同一行が大量に重複する
+    事例に対応するための安全装置）
+    """
+    seen: dict[tuple, dict] = {}
+    for r in records:
+        key = (
+            r.get("date", ""),
+            r.get("venue_num", ""),
+            r.get("race", ""),
+            r.get("pred_combo", ""),
+        )
+        if key not in seen:
+            seen[key] = r
+    deduped = list(seen.values())
+    if len(deduped) < len(records):
+        log.warning(
+            "[重複除去] %d件 → %d件（%d件を除去）",
+            len(records), len(deduped), len(records) - len(deduped),
+        )
+    return deduped
+
+
 def load_today_records(target_date: Optional[str] = None) -> list[dict]:
     """
     hit_record.csv から指定日のレコードを返す。
     target_date 省略時は「前日」を対象にする。
     （当日分の pred_combo は翌朝の照合まで埋まらないため）
+    重複行は自動除去する（_dedup_records 参照）。
     """
     date_str = target_date or _yesterday_jst()
     if not os.path.exists(HIT_CSV):
@@ -72,6 +101,7 @@ def load_today_records(target_date: Optional[str] = None) -> list[dict]:
             if row_date == date_str:
                 records.append(row)
 
+    records = _dedup_records(records)
     log.info("[検証] %s: %d件読み込み", date_str, len(records))
     return records
 
@@ -92,6 +122,38 @@ def _safe_int(val, default: int = 0) -> int:
         return int(float(val)) if val not in (None, "", "None") else default
     except (ValueError, TypeError):
         return default
+
+
+def _key_racer_in_result(record: dict) -> Optional[bool]:
+    """
+    ㉕ 万舟警報のプラスアルファ指標: 注目選手(key_racer)が実際の3連単(result_combo)の
+    枠番に含まれていたかを判定する。
+    hit_record.csv に "key_racer" 列（号艇番号を想定）が無い場合は判定不能として
+    None を返す（＝集計対象から自動的に除外される。列が追加されればそのまま動く）。
+    """
+    key_racer = (record.get("key_racer") or "").strip()
+    if not key_racer:
+        return None
+    result_combo = record.get("result_combo", "")
+    if not (result_combo and "-" in result_combo):
+        return None
+    lanes = [x.strip() for x in result_combo.split("-")]
+    return key_racer in lanes
+
+
+def aggregate_key_racer_hit_rate(records: list[dict]) -> dict:
+    """
+    ㉕ 万舟レースのうち、注目選手(key_racer)が3連単に入っていた割合を集計する。
+    hit_record.csv に key_racer 列がまだ無い間は total=0 を返す（安全に空表示になる）。
+    戻り値: {"total": int, "hit": int, "rate": float}
+    """
+    notified = [r for r in records if r.get("pred_combo", "")]
+    judged = [_key_racer_in_result(r) for r in notified]
+    judged = [j for j in judged if j is not None]
+    total = len(judged)
+    hit = sum(1 for j in judged if j)
+    rate = round(hit / total * 100, 1) if total > 0 else 0.0
+    return {"total": total, "hit": hit, "rate": rate}
 
 
 def aggregate(records: list[dict]) -> dict:
@@ -138,17 +200,21 @@ def aggregate(records: list[dict]) -> dict:
                 boat1_flew += 1
     boat1_flew_rate = (boat1_flew / boat1_total * 100) if boat1_total > 0 else 0.0
 
-    # 万舟（払戻3万以上）
+    # 万舟（payout が SUCCESS_PAYOUT_THRESHOLDS["manshuu"] 円を超えたら成功）
     manshuu_races: list[dict] = []
     for r in notified:
         payout = _safe_float(r.get("payout"))
-        if payout >= MANSHUU_PAYOUT:
+        if payout > MANSHUU_PAYOUT:
             manshuu_races.append({
                 "venue":  r.get("venue", ""),
                 "race":   r.get("race", ""),
                 "combo":  r.get("result_combo", ""),
                 "payout": int(payout),
                 "hit":    _safe_int(r.get("hit")),
+                # 注目選手(key_racer)が実際の3連単(result_combo)に含まれていたか。
+                # hit_record.csv に key_racer 列がまだ存在しないため、
+                # 列が追加されるまでは常に None（判定対象外）を返す。
+                "key_racer_hit": _key_racer_in_result(r),
             })
 
     # 最高払戻レース
@@ -218,33 +284,37 @@ def _upset_score_to_100(raw_upset_score) -> float:
 
 def aggregate_by_rank(records: list[dict]) -> dict:
     """
-    ⑦⑧ 危険艇・万舟をS/A/B/Cランク別に成功率集計する（x_brand_config.rank_of に統一）。
+    ⑦⑧ 危険艇・万舟・高配当・中穴をS/A/B/Cランク別に成功率集計する
+    （ランク判定は x_brand_config.rank_of に統一）。
     「成功」の定義:
-      - 危険艇判定（1号艇が飛ぶと予想）→ 実際に1号艇以外が1着なら成功
-      - 万舟判定（荒れる予想）→ 実際に払戻が一定額(MANSHUU_PAYOUT)以上なら成功
-    upset_score（0-9.5）を危険艇・万舟共通の荒れ度として扱い、
-    100点換算してランク分けする（hit_record.csv に専用カラムがないための近似）。
+      - 危険艇（1号艇が飛ぶと予想）→ 実際に1号艇以外が1着なら成功
+      - 万舟（payout > 10,000円）→ 実際の払戻がその額を超えたら成功
+      - 高配当（payout > 5,000円）→ 同上
+      - 中穴（payout > 2,700円）→ 同上
+      （閾値は SUCCESS_PAYOUT_THRESHOLDS を唯一の基準とする）
+    upset_score（0-9.5）を荒れ度の近似値として扱い、100点換算してランク分けする
+    （hit_record.csv に専用のランクカラムがないための近似）。
     戻り値:
-      {"danger": {"S": {"total":5,"hit":4,"rate":80.0}, "A": {...}, "B": {...}, "C": {...}},
-       "manshuu": {"S": {...}, "A": {...}, "B": {...}, "C": {...}}}
+      {"danger": {"S": {...}, "A": {...}, "B": {...}, "C": {...}},
+       "manshuu": {...}, "hot_high": {...}, "korogashi": {...}}
     """
     notified = [r for r in records if r.get("pred_combo", "")]
 
     def _empty_rank() -> dict:
         return {"total": 0, "hit": 0, "rate": 0.0}
 
-    result = {
-        "danger":  {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank(), "C": _empty_rank()},
-        "manshuu": {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank(), "C": _empty_rank()},
-    }
+    payout_categories = list(SUCCESS_PAYOUT_THRESHOLDS.keys())  # manshuu, hot_high, korogashi
+    result = {"danger": {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank(), "C": _empty_rank()}}
+    for cat in payout_categories:
+        result[cat] = {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank(), "C": _empty_rank()}
 
     for r in notified:
         score_100 = _upset_score_to_100(r.get("upset_score"))
         if score_100 < 40:
-            continue   # 危険艇/万舟の対象外（スコア40未満）
+            continue   # 対象外（スコア40未満）
         rank = rank_of(score_100)
 
-        # 危険艇・万舟とも、結果(result_combo)が確定したレコードのみ母数に入れる
+        # 各カテゴリとも、結果(result_combo)が確定したレコードのみ母数に入れる
         # （result_combo 欠損レコードで母数がカテゴリ間でずれるのを防ぐ）
         result_combo = r.get("result_combo", "")
         if not (result_combo and "-" in result_combo):
@@ -257,11 +327,13 @@ def aggregate_by_rank(records: list[dict]) -> dict:
         if boat1_flew:
             result["danger"][rank]["hit"] += 1
 
-        # 万舟判定の成否: 払戻が閾値以上か
+        # 万舟・高配当・中穴: 払戻が各カテゴリの閾値を超えたら成功
         payout = _safe_float(r.get("payout"))
-        result["manshuu"][rank]["total"] += 1
-        if payout >= MANSHUU_PAYOUT:
-            result["manshuu"][rank]["hit"] += 1
+        for cat in payout_categories:
+            threshold = SUCCESS_PAYOUT_THRESHOLDS[cat]
+            result[cat][rank]["total"] += 1
+            if payout > threshold:
+                result[cat][rank]["hit"] += 1
 
     for category in result.values():
         for rank_data in category.values():
@@ -316,6 +388,7 @@ def load_records_range(days: Optional[int] = None,
             if start <= row_date <= end:
                 records.append(row)
 
+    records = _dedup_records(records)
     log.info("[期間集計] %s〜%s: %d件読み込み", start, end, len(records))
     return records
 
@@ -348,12 +421,14 @@ def trend_vs_previous(current_rate: float, previous_rate: float) -> dict:
 def calc_brand_trust(records_30d: list[dict]) -> dict:
     """
     ⑮ 過去30日の成功率からブランドごとの信頼度ランク(A+/A/B/C)を判定する。
+    危険艇・万舟・高配当・中穴の4カテゴリを対象とする。
     戻り値: {"danger": {"rate": 62.3, "trust": "A", "total": 340},
-              "manshuu": {"rate": 48.1, "trust": "B", "total": 340}}
+              "manshuu": {"rate": 48.1, "trust": "B", "total": 340},
+              "hot_high": {...}, "korogashi": {...}}
     """
     rank_data = aggregate_by_rank(records_30d)
     result = {}
-    for category in ["danger", "manshuu"]:
+    for category in ["danger", "manshuu", "hot_high", "korogashi"]:
         cat = rank_data[category]
         total = sum(d["total"] for d in cat.values())
         hit   = sum(d["hit"]   for d in cat.values())
