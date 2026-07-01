@@ -2172,7 +2172,59 @@ def _evaluate_bets(
         t["uncertainty"]  = round(entropy_norm, 3)
         t["formation_break"] = formation_break
 
-    return top
+    # ════════════════════════════════════════════════════════
+    # BuyScore エンジンに渡してスコアリング・見送り判定を行う
+    # x_buyscore.py が存在しない場合は従来動作にフォールバックする
+    # ════════════════════════════════════════════════════════
+    try:
+        from x_buyscore import apply_buyscore
+
+        # AI一致指数（0〜100）。本来は新聞側の _calc_match_index（掲載ブランド数
+        # ベース）が正確だが、_evaluate_bets 時点では未確定のため upset_score から
+        # 近似する。近似値であることを context に明示し、見送り判定で考慮させる。
+        match_index = upset_score * 10.5   # 0〜9.5 → 0〜約100 の近似
+        match_index_approx = True
+
+        # 市場とAIのオッズ乖離率
+        # AIが高評価する艇（モデル1位）を市場がどれだけ過小評価しているかを
+        # 「市場順位 − モデル順位」で測る。正の値ほどAI優位（バリュー）。
+        # 単勝確率と三連単オッズは単位が異なるため、順位ベースで比較する。
+        market_gap = 0.0
+        if ml_probs and lane_avg_odds:
+            model_rank_map = {lane: i + 1 for i, (lane, _) in
+                              enumerate(sorted(ml_probs.items(), key=lambda x: -x[1]))}
+            market_rank_map = {lane: i + 1 for i, (lane, _) in
+                               enumerate(sorted(lane_avg_odds.items(), key=lambda x: x[1]))}
+            best_lane = max(ml_probs, key=ml_probs.get)
+            if best_lane in model_rank_map and best_lane in market_rank_map:
+                # 順位差を -1.0〜+1.0 に正規化（6艇なので最大差5）
+                rank_diff = market_rank_map[best_lane] - model_rank_map[best_lane]
+                market_gap = round(rank_diff / 5.0, 3)
+
+        context = {
+            "match_index":    match_index,
+            "match_index_approx": match_index_approx,
+            "race_type":      race_type,
+            "has_exhibition": has_exhibition,
+            "market_gap":     market_gap,
+            "upset_score":    upset_score,
+            "ex_rank_1st":    min(ex_rank, key=ex_rank.get) if ex_rank else 0,
+        }
+
+        result = apply_buyscore(top, context)
+
+        # 見送りなら空リストを返す（既存の send 判定と互換）
+        if result["passthrough"]:
+            log.info("[BuyScore] 見送り: %s", result["passthrough_reason"])
+            return []
+
+        # 買い目リストをそのまま返す（既存キーは維持されている）
+        return result["buy"]
+
+    except ImportError:
+        # x_buyscore.py がない場合は従来通り top をそのまま返す
+        log.debug("[BuyScore] x_buyscore.py 未導入 → 従来動作")
+        return top
 
 
 def _get_bet_multiplier() -> float:

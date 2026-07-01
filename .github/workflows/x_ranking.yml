@@ -186,6 +186,7 @@ jobs:
           DRY=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_verification.py $DATE_ARG $DRY || echo "検証スクリプト失敗（スキップ）"
+          python x_buyscore_tuner.py || echo "BuyScoreチューニング失敗（スキップ）"
 
       # ── AI実績ページ生成・送信（21:00、検証と同時）────
       - name: Send - Results Page
@@ -230,7 +231,10 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add motor_history.csv ranking_cache.json 2>/dev/null || true
-          [ -f manshuu_sent.json ] && git add manshuu_sent.json || true
+          [ -f manshuu_sent.json ]       && git add manshuu_sent.json       || true
+          [ -f buyscore_log.jsonl ]      && git add buyscore_log.jsonl      || true
+          [ -f buyscore_analysis.json ]  && git add buyscore_analysis.json  || true
+          [ -f buyscore_config.json ]    && git add buyscore_config.json    || true
           git diff --cached --quiet || git commit -m "auto: update history $(date +%Y%m%d-%H%M)"
           git push origin main || echo "push失敗"
         env:
