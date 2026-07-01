@@ -229,7 +229,8 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add motor_history.csv ranking_cache.json manshuu_sent.json || true
+          git add motor_history.csv ranking_cache.json 2>/dev/null || true
+          [ -f manshuu_sent.json ] && git add manshuu_sent.json || true
           git diff --cached --quiet || git commit -m "auto: update history $(date +%Y%m%d-%H%M)"
           git push origin main || echo "push失敗"
         env:
