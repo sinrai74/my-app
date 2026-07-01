@@ -4376,12 +4376,47 @@ def _check_yesterday_results(today_date: str) -> None:
             "wind_speed","wind_dir","wave",
             "result_combo","payout","hit","profit","n_bets","cost",
         ]
+
+        # ── 重複書き込み防止 ──────────────────────────────────────
+        # _check_yesterday_results() は run() から15分ごとに呼ばれるため、
+        # 重複チェックなしで追記すると同一レコードが際限なく増殖する。
+        # date + venue_num + race + pred_combo を一意キーとして、
+        # CSVに既に存在する行はスキップする。
+        existing_keys: set[tuple] = set()
+        if os.path.exists(csv_file):
+            try:
+                with open(csv_file, "r", encoding="utf-8") as _ef:
+                    for _row in csv.DictReader(_ef):
+                        existing_keys.add((
+                            _row.get("date",""),
+                            str(_row.get("venue_num","")),
+                            str(_row.get("race","")),
+                            _row.get("pred_combo",""),
+                        ))
+            except Exception:
+                pass
+
+        new_records = [
+            r for r in records
+            if (
+                str(r.get("date","")),
+                str(r.get("venue_num","")),
+                str(r.get("race","")),
+                str(r.get("pred_combo","")),
+            ) not in existing_keys
+        ]
+
+        if not new_records:
+            log.debug("[hit_record] 新規レコードなし（全件既記録済み）")
+            return
+
         write_header = not os.path.exists(csv_file)
         with open(csv_file, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             if write_header:
                 writer.writeheader()
-            writer.writerows(records)
+            writer.writerows(new_records)
+        log.info("[hit_record] %d件追記（%d件はスキップ）", len(new_records), len(records) - len(new_records))
 
         # ── キャリブレーション簡易分析 ───────────────────────────
         _run_calibration_check(csv_file)
