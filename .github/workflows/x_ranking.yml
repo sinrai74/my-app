@@ -4,13 +4,13 @@ on:
   schedule:
     # ─────────────────────────────────────────────────────
     # UTC → JST +9h
-    #   UTC 22:00 = JST 07:00  → 危険な1号艇 + note競艇新聞
+    #   UTC 21:15 = JST 06:15  → 危険な1号艇 + note競艇新聞（遅延30〜60分を考慮し早めに起動）
     #   UTC 02:00 = JST 11:00  → 激走モーター
     #   UTC 07:00 = JST 16:00  → 覚醒モーター（条件付き）
     #   UTC 12:00 = JST 21:00  → 検証レポート
     #   UTC 12:00 日曜 = JST 21:00  → 週次レポート
     # ─────────────────────────────────────────────────────
-    - cron: '0 22 * * *'     # JST 07:00 危険な1号艇
+    - cron: '15 21 * * *'    # JST 06:15 危険な1号艇（遅延考慮）
     - cron: '0 2 * * *'     # JST 11:00 激走モーター
     - cron: '0 7 * * *'     # JST 16:00 覚醒モーター
     - cron: '0 12 * * *'     # JST 21:00 検証
@@ -72,7 +72,7 @@ jobs:
           SCHEDULE="${{ github.event.schedule }}"
           if [ -n "$INPUT" ] && [ "$INPUT" != "all" ]; then
             TYPE="$INPUT"
-          elif [ "$SCHEDULE" = "0 22 * * *" ]; then
+          elif [ "$SCHEDULE" = "15 21 * * *" ]; then
             TYPE="danger"
           elif [ "$SCHEDULE" = "0 2 * * *" ] || [ "$SCHEDULE" = "0  2 * * *" ]; then
             TYPE="hot"
