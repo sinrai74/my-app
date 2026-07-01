@@ -151,54 +151,84 @@ def _draw_footer(draw, font_small) -> None:
 def generate_danger_image(data: dict, output_path: str) -> None:
     from PIL import Image, ImageDraw
 
-    img  = Image.new("RGB", (IMG_W, IMG_H), C_BG)
+    # TOP3は★付き2行、4位以降は1行
+    TOP_ROWS   = 3
+    ROW_H_TALL = 72   # TOP3の行高さ（2行分）
+    ROW_H_SLIM = 46   # 4位以降の行高さ（1行）
+    IMG_H2 = HEADER_H + ROW_H_TALL * TOP_ROWS + ROW_H_SLIM * 7 + FOOTER_H + 8
+
+    img  = Image.new("RGB", (IMG_W, IMG_H2), C_BG)
     draw = ImageDraw.Draw(img)
 
     font_hd   = _get_font(36, bold=True)
     font_sub  = _get_font(22)
-    font_row  = _get_font(26, bold=True)
-    font_rsn  = _get_font(20)
+    font_row  = _get_font(24, bold=True)
+    font_rsn  = _get_font(18)
+    font_star = _get_font(17)
     font_ft   = _get_font(18)
 
     date_str = f"{data['date'][4:6]}/{data['date'][6:8]}"
-    _draw_header(draw, "⚠️ 本日の危険な1号艇 TOP10", date_str, font_hd, font_sub)
+    _draw_header(draw, "本日の危険な1号艇 TOP10", date_str, font_hd, font_sub,
+                 accent_color=C_RED)
 
     items = data.get("danger_boat1", [])
     y = HEADER_H + 4
 
     for i, d in enumerate(items[:10]):
-        bg = C_ROW_ODD if i % 2 == 0 else C_ROW_EVEN
-        _draw_rect(draw, 0, y, IMG_W, ROW_H, bg)
+        is_top3  = (i < TOP_ROWS)
+        row_h    = ROW_H_TALL if is_top3 else ROW_H_SLIM
+        bg       = C_ROW_ODD if i % 2 == 0 else C_ROW_EVEN
+        _draw_rect(draw, 0, y, IMG_W, row_h, bg)
 
-        score = d.get("score", 0)
-        sc    = _score_color(score)
-
-        # 順位
-        draw.text((12, y + 10), f"{i+1:>2}", font=font_row, fill=C_GRAY)
-        # ランクバー + ランク文字
-        bar_w = int(score / 100 * 60)
-        _draw_rect(draw, 50, y + 14, bar_w, 18, sc)
+        score    = d.get("score", 0)
+        sc       = _score_color(score)
         rank_str = "S" if score >= 80 else "A" if score >= 60 else "B"
-        draw.text((120, y + 10), rank_str, font=font_row, fill=sc)
-        # 場所・レース番号
-        draw.text((155, y + 10), f"{d.get('venue','')}{d.get('race','')}R", font=font_row, fill=C_WHITE)
-        # 選手名
-        draw.text((370, y + 10), d.get("racer", "?"), font=font_row, fill=C_WHITE)
-        # 理由
-        draw.text((610, y + 14), d.get("reason", ""), font=font_rsn, fill=C_YELLOW)
 
-        y += ROW_H
+        # ── 1行目 ────────────────────────────────────────
+        y1 = y + (6 if is_top3 else 10)
+        draw.text((12,  y1), f"{i+1:>2}",  font=font_row, fill=C_GRAY)
+        bar_w = int(score / 100 * 55)
+        _draw_rect(draw, 48, y1 + 4, bar_w, 16, sc)
+        draw.text((112, y1), rank_str, font=font_row, fill=sc)
+        draw.text((148, y1),
+                  f"{d.get('venue','')}{d.get('race','')}R",
+                  font=font_row, fill=C_WHITE)
+        draw.text((360, y1), d.get("racer", "?"), font=font_row, fill=C_WHITE)
 
-    # 残りをグレーで埋める
-    remaining = 10 - len(items)
-    for j in range(remaining):
+        # ── 2行目: TOP3のみ ★ + 理由 ──────────────────
+        if is_top3:
+            stars = d.get("stars", {})
+            y2 = y + 40
+            if stars:
+                star_text = (
+                    f"ST {stars.get('ST','')}"
+                    f"  機力 {stars.get('機力','')}"
+                    f"  近況 {stars.get('近況','')}"
+                    f"  相手 {stars.get('相手','')}"
+                )
+                draw.text((22, y2), star_text, font=font_star, fill=(180, 180, 255))
+            else:
+                reason = d.get("reason", "")
+                draw.text((22, y2), reason, font=font_rsn, fill=C_YELLOW)
+        else:
+            # 4位以降は理由を1行目の右に表示
+            reason = d.get("reason", "")
+            if len(reason) > 30:
+                reason = reason[:28] + "…"
+            draw.text((560, y1), reason, font=font_rsn, fill=C_YELLOW)
+
+        y += row_h
+
+    # 残り枠
+    for j in range(10 - len(items)):
         bg = C_ROW_ODD if (len(items) + j) % 2 == 0 else C_ROW_EVEN
-        _draw_rect(draw, 0, y, IMG_W, ROW_H, bg)
-        draw.text((12, y + 10), f"{len(items)+j+1:>2}", font=font_row, fill=(60, 60, 60))
+        _draw_rect(draw, 0, y, IMG_W, ROW_H_SLIM, bg)
+        draw.text((12, y + 10), f"{len(items)+j+1:>2}",
+                  font=font_row, fill=(60, 60, 60))
         draw.text((175, y + 10), "---", font=font_row, fill=(60, 60, 60))
-        y += ROW_H
+        y += ROW_H_SLIM
 
-    _draw_footer(draw, font_ft)
+    _draw_rect(draw, 0, y, IMG_W, FOOTER_H, C_FOOTER)
     img.save(output_path)
     log.info("[画像] 保存: %s", output_path)
 
