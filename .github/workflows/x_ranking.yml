@@ -1,12 +1,12 @@
 name: X Ranking Post
 
-on:
+'on':
   schedule:
-    - cron: '15 21 * * *'
-    - cron: '0 1 * * *'
-    - cron: '0 6 * * *'
-    - cron: '0 12 * * *'
-    - cron: '0 12 * * 0'
+    - cron: '15 19 * * *'
+    - cron: '0 23 * * *'
+    - cron: '0 4 * * *'
+    - cron: '0 11 * * *'
+    - cron: '0 11 * * 0'
   workflow_dispatch:
     inputs:
       post_type:
@@ -180,9 +180,10 @@ jobs:
           python x_verification.py $DATE_ARG $DRY || echo "検証スクリプト失敗（スキップ）"
           python x_buyscore_tuner.py || echo "BuyScoreチューニング失敗（スキップ）"
 
-      # ── AI実績ページ生成・送信（21:00、検証と同時）────
+      # ── AI実績ページ生成・送信（朝の危険艇と同時）────
+      # 前日の実績を朝にまとめて確認できるよう、danger送信と同タイミングで実行する
       - name: Send - Results Page
-        if: steps.post_type.outputs.type == 'verification' || steps.post_type.outputs.type == 'all'
+        if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
