@@ -604,6 +604,21 @@ def send_results_page(html_path: str, date_str: str, summary: dict,
     today_agg = summary["periods"]["today"]["agg"]
     trust     = summary["trust"]
 
+    # X投稿候補テキストを生成
+    try:
+        from x_post_text import results_post
+        danger_trust = trust.get("danger", {})
+        x_post_block = results_post(
+            date_str    = date_str,
+            hit_rate    = today_agg.get("hit_rate", 0.0),
+            danger_hit  = danger_trust.get("hit",   0),
+            danger_total= danger_trust.get("total", 0),
+            profit      = today_agg.get("total_profit", 0),
+        )
+    except Exception as e:
+        log.warning("[X投稿] 生成失敗: %s", e)
+        x_post_block = ""
+
     body = (
         f"AI実績ページ {date_disp} を添付します。\n\n"
         f"【AI総評】\n{summary['daily_review']}\n\n"
@@ -613,7 +628,7 @@ def send_results_page(html_path: str, date_str: str, summary: dict,
         f"危険艇信頼度: {trust['danger']['trust']}（{trust['danger']['rate']}%）\n"
         f"万舟信頼度: {trust['manshuu']['trust']}（{trust['manshuu']['rate']}%）\n\n"
         "詳細は添付のHTMLをご確認ください。\n"
-    )
+    ) + x_post_block
 
     if dry_run:
         print("=" * 60)

@@ -302,7 +302,38 @@ def post_from_ranking(
             sections.append(FORMATTERS[t](data))
     body = sep.join(sections)
     body += "\n\n" + "=" * 50
-    body += "\n【X投稿用】上記をXにコピペしてください。画像は添付ファイルを使用してください。"
+
+    # ── X投稿候補ブロックを追加 ──────────────────────────────
+    try:
+        from x_post_text import danger_post, manshuu_post
+
+        # 危険艇データ
+        danger_items  = data.get("danger_boat1", [])
+        manshuu_items = data.get("manshuu_alert", [])
+
+        s_count   = sum(1 for d in danger_items if d.get("score", 0) >= 80)
+        top_danger_venue = danger_items[0].get("venue", "") if danger_items else ""
+        top_danger_race  = str(danger_items[0].get("race", "")) if danger_items else ""
+        top_manshuu_venue = manshuu_items[0].get("venue", "") if manshuu_items else ""
+        top_manshuu_race  = str(manshuu_items[0].get("race", "")) if manshuu_items else ""
+        top_manshuu_match = int(manshuu_items[0].get("score", 0)) if manshuu_items else 0
+
+        if "danger" in target_types:
+            body += danger_post(
+                s_count   = s_count,
+                top_venue = top_danger_venue,
+                top_race  = top_danger_race,
+            )
+        if "manshuu" in target_types:
+            body += manshuu_post(
+                count     = len(manshuu_items),
+                top_venue = top_manshuu_venue,
+                top_race  = top_manshuu_race,
+                top_match = top_manshuu_match,
+            )
+    except Exception as _e:
+        log.warning("[X投稿] 生成失敗: %s", _e)
+        body += "\n【X投稿用】上記をXにコピペしてください。"
 
     # ── 添付画像を収集 ───────────────────────────────────────
     image_paths: list[str] = []

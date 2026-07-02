@@ -189,6 +189,82 @@ def _generate_editor_note(data: dict, conditions: list) -> str:
 # 各ブランドセクション冒頭のAIコメント生成
 # ════════════════════════════════════════════════════════════
 
+def _course_st_html(danger_entry: dict) -> str:
+    """
+    危険艇カード内のコース別ST表示HTML。
+    ・1号艇の1コースST平均と6艇中の順位をサマリー表示
+    ・詳細（全6艇の1コースST比較）は <details> で折りたたみ
+    fanファイルデータがなければ空文字を返す（後方互換）。
+    """
+    boat1_1c_st   = danger_entry.get("boat1_1c_st")
+    boat1_1c_rank = danger_entry.get("boat1_1c_rank")
+    boat1_1c_nyuko = danger_entry.get("boat1_1c_nyuko", 0)
+    boats_cs = danger_entry.get("boats_course_st", [])
+
+    if boat1_1c_st is None and not boats_cs:
+        return ""  # データなし
+
+    # サマリー行
+    summary = ""
+    if boat1_1c_st is not None and boat1_1c_rank is not None:
+        total_with_data = sum(1 for b in boats_cs if b.get("course_nyuko", [0]*6)[0] > 0)
+        rank_color = "#ef5350" if boat1_1c_rank <= 2 else "#ffa726" if boat1_1c_rank <= 4 else "#42a5f5"
+        summary = (
+            f'<div class="cs-summary">'
+            f'1号艇1コースST: <span class="cs-st">{boat1_1c_st:.2f}</span>　'
+            f'全{total_with_data}艇中 <span class="cs-rank" style="color:{rank_color}">'
+            f'<b>{boat1_1c_rank}位</b></span>（前期 {boat1_1c_nyuko}回進入）'
+            f'</div>'
+        )
+    elif boats_cs:
+        summary = '<div class="cs-summary">コース別ST（前期実績）</div>'
+
+    # 詳細テーブル（全6艇の1コースST比較・速い順）
+    detail_rows = ""
+    st_list = []
+    for b in boats_cs:
+        nyuko_list = b.get("course_nyuko", [0]*6)
+        st_list_b  = b.get("course_st",   [0.0]*6)
+        nyuko_1c = nyuko_list[0] if nyuko_list else 0
+        st_1c    = st_list_b[0]  if st_list_b  else 0.0
+        if nyuko_1c > 0:
+            st_list.append((b.get("lane", 0), b.get("name", ""), st_1c, nyuko_1c,
+                             st_list_b, nyuko_list))
+
+    # 1コースST昇順（速い順）でソート
+    st_list.sort(key=lambda x: x[2])
+    for rank_i, (lane, name, st_1c, nyuko_1c, all_st, all_nyuko) in enumerate(st_list, 1):
+        # 担当コース(lane)のSTも表示
+        lane_idx = lane - 1
+        st_lane  = all_st[lane_idx]  if lane_idx < len(all_st)   and all_nyuko[lane_idx] > 0 else None
+        ny_lane  = all_nyuko[lane_idx] if lane_idx < len(all_nyuko) else 0
+        highlight = ' style="background:#1a2a1a;"' if lane == 1 else ""
+        lane_st_text = f'　{lane}コース:{st_lane:.2f}({ny_lane}回)' if st_lane and lane != 1 else ""
+        detail_rows += (
+            f'<tr{highlight}>'
+            f'<td>{rank_i}位</td>'
+            f'<td>{lane}号艇 {name}</td>'
+            f'<td><b>{st_1c:.2f}</b>（{nyuko_1c}回）</td>'
+            f'<td style="color:#888;font-size:.85em;">{lane_st_text}</td>'
+            f'</tr>'
+        )
+
+    if not detail_rows:
+        return summary
+
+    detail_html = (
+        f'<details class="cs-detail">'
+        f'<summary>全艇1コースST比較（速い順）</summary>'
+        f'<table class="cs-table">'
+        f'<thead><tr><th>順位</th><th>選手</th><th>1コースST(進入回)</th><th>担当コースST</th></tr></thead>'
+        f'<tbody>{detail_rows}</tbody>'
+        f'</table>'
+        f'</details>'
+    )
+
+    return f'<div class="course-st-block">{summary}{detail_html}</div>'
+
+
 def _section_comment_danger(all_danger: list) -> str:
     if not all_danger:
         return "本日は対象レースがありません。"
@@ -1198,6 +1274,7 @@ def generate_html(data: dict, output_path: str) -> None:
   <div class="rc-reason">{d.get('reason','')}</div>
   <div class="rc-comment">💬 {comment}</div>
   <div class="breakdown">{bars}</div>
+  {_course_st_html(d)}
 </div>"""
         return rows
 
@@ -1434,6 +1511,15 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 .rc-racer{{color:var(--gray);font-size:.88em}}
 .rc-reason{{color:#bbb;font-size:.85em;margin:4px 0}}
 .rc-comment{{color:var(--accent);font-size:.85em;margin-top:4px}}
+.course-st-block{{margin-top:10px;border-top:1px solid #333;padding-top:8px}}
+.cs-summary{{font-size:.85em;color:#cde;margin-bottom:4px}}
+.cs-st{{font-weight:bold;color:#fff}}
+.cs-rank{{font-size:1.05em}}
+.cs-detail summary{{cursor:pointer;font-size:.78em;color:var(--accent);padding:3px 0;user-select:none}}
+.cs-detail[open] summary{{margin-bottom:6px}}
+.cs-table{{width:100%;border-collapse:collapse;font-size:.78em;margin-top:4px}}
+.cs-table th,.cs-table td{{padding:3px 6px;border-bottom:1px solid #333;text-align:left}}
+.cs-table thead th{{color:var(--gray);font-weight:normal}}
 .mr{{color:#bbb;font-size:.85em;margin:3px 0}}
 /* スコアバー */
 .breakdown{{margin-top:8px;display:grid;grid-template-columns:repeat(3,1fr);gap:4px}}
@@ -2087,9 +2173,30 @@ def send_note_report(
     date_str: str,
     dry_run: bool = False,
     md_path: Optional[str] = None,
+    data: Optional[dict] = None,
 ) -> bool:
     date_disp = f"{date_str[4:6]}/{date_str[6:8]}"
     subject   = f"📰 AI競艇新聞 {date_disp}（note用）"
+
+    # X投稿候補テキストを生成
+    try:
+        from x_post_text import newspaper_post
+        danger_count  = len(data.get("all_danger",  [])) if data else 0
+        manshuu_count = len(data.get("all_manshuu", [])) if data else 0
+        top_venue = top_race = ""
+        top_match = 0
+        if data:
+            sorted_index, _, race_scores = _build_race_index(data)
+            if sorted_index:
+                top_key = sorted_index[0]
+                top_venue = top_key[0]
+                top_race  = str(top_key[1])
+                top_match = int(race_scores.get(top_key, {}).get("match_index", 0))
+        x_post_block = newspaper_post(danger_count, manshuu_count, top_venue, top_race, top_match)
+    except Exception as e:
+        log.warning("[X投稿] 生成失敗: %s", e)
+        x_post_block = ""
+
     body = (
         f"AI競艇新聞 {date_disp} を生成しました。\n\n"
         "【添付ファイル一覧】\n"
@@ -2105,7 +2212,7 @@ def send_note_report(
         "  2. Ctrl+A → Ctrl+C でコピー\n"
         "  3. noteエディタに貼り付け\n"
         "  4. newspaper.pdf を記事末尾に添付\n"
-    )
+    ) + x_post_block
 
     if dry_run:
         print("=" * 60)
@@ -2484,7 +2591,7 @@ def main() -> None:
         pdf_path = None
 
     ok = send_note_report(html_path, pdf_path, csv_paths,
-                          date_str, dry_run=args.dry_run, md_path=md_path)
+                          date_str, dry_run=args.dry_run, md_path=md_path, data=data)
     sys.exit(0 if ok else 1)
 
 
