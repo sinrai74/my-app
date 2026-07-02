@@ -149,11 +149,25 @@ class BoatInfo:
     name:      str       = "不明"
     win_rate:  float     = 0.0   # 全国勝率
     motor:     float     = 0.0   # モーター2連率
-    avg_st:    float     = 0.18  # 平均スタートタイミング
+    avg_st:    float     = 0.18  # 平均スタートタイミング（全コース合算）
     ex_time:   Optional[float] = None   # 展示タイム（直前情報）
     ex_st:     Optional[float] = None   # 展示ST（直前情報）
     tilt:      Optional[float] = None   # チルト角
     racer_class: str     = ""    # 等級（A1/A2/B1/B2）
+    racer_id:  str       = ""    # 登録番号（fanファイル照合用）
+    # コース別平均ST（fanファイルから取得、index 0=1コース〜5=6コース）
+    # 0.0はデータなし（そのコースの進入実績がない）
+    course_st:   list    = None  # 各コースの平均ST [0.17, 0.19, ...]
+    course_nyuko: list   = None  # 各コースの進入回数 [46, 28, ...]
+    course_rank:  list   = None  # 各コースのST順位平均 [1.8, 2.7, ...]
+
+    def __post_init__(self):
+        if self.course_st is None:
+            self.course_st = [0.0] * 6
+        if self.course_nyuko is None:
+            self.course_nyuko = [0] * 6
+        if self.course_rank is None:
+            self.course_rank = [0.0] * 6
 
 
 @dataclass
@@ -567,6 +581,198 @@ def _scrape_beforeinfo(race_no: int, venue_code: int, race_date: str) -> dict:
     return entry.get("boats", {})
 
 
+# ════════════════════════════════════════════════════════════
+# fanファイル パーサー（公式仕様書に基づくコース別ST取得）
+# ════════════════════════════════════════════════════════════
+
+import glob as _glob
+
+_FAN_CACHE: dict[str, dict[str, dict]] = {}  # {filename: {racer_id: data}}
+
+
+def _get_fan_file() -> str:
+    """最新のfanファイルを返す（fan2607.txt → fan2606.txt の順で探す）"""
+    files = sorted(_glob.glob("fan*.txt"), reverse=True)
+    return files[0] if files else ""
+
+
+def _load_fan_file(filepath: str) -> dict[str, dict]:
+    """
+    fanファイルをパースして {登録番号: コース別STデータ} の辞書を返す。
+    公式仕様書に基づくバイトオフセット:
+      byte 0-3:   登録番号
+      byte 58-61: 全国勝率（確認用）
+      byte 79-81: 全国平均ST（3桁、例: 016 → 0.16）
+      byte 82〜:  コース別データ（1コース=13byte × 6コース）
+                  各コース: 進入回数(3)+複勝率(4)+ST平均(3)+ST順位(3)
+    """
+    if filepath in _FAN_CACHE:
+        return _FAN_CACHE[filepath]
+
+    result: dict[str, dict] = {}
+    try:
+        with open(filepath, "rb") as f:
+            raw_all = f.read()
+    except OSError as e:
+        log.warning("[fan] ファイル読み込み失敗: %s", e)
+        return result
+
+    for line_raw in raw_all.split(b"\n"):
+        line_raw = line_raw.rstrip(b"\r")
+        if len(line_raw) < 160:  # コース別データが揃う最小長
+            continue
+        try:
+            racer_id = line_raw[0:4].decode("ascii").strip()
+            if not racer_id.isdigit():
+                continue
+
+            # 全国平均ST（確認用）
+            avg_st_raw = line_raw[79:82].decode("ascii", errors="replace")
+            avg_st_global = int(avg_st_raw) / 100 if avg_st_raw.isdigit() else 0.18
+
+            # コース別データ（1〜6コース）
+            course_st    = [0.0] * 6
+            course_nyuko = [0]   * 6
+            course_rank  = [0.0] * 6
+
+            for c in range(6):
+                base = 82 + c * 13
+                if base + 13 > len(line_raw):
+                    break
+                nyuko_raw   = line_raw[base:base+3].decode("ascii", errors="replace")
+                st_raw      = line_raw[base+7:base+10].decode("ascii", errors="replace")
+                rank_raw    = line_raw[base+10:base+13].decode("ascii", errors="replace")
+
+                if nyuko_raw.isdigit() and st_raw.isdigit() and rank_raw.isdigit():
+                    nyuko = int(nyuko_raw)
+                    st    = int(st_raw) / 100   # 015 → 0.15
+                    rank  = int(rank_raw) / 100  # 240 → 2.40
+                    course_st[c]    = st if nyuko > 0 else 0.0
+                    course_nyuko[c] = nyuko
+                    course_rank[c]  = rank if nyuko > 0 else 0.0
+
+            result[racer_id] = {
+                "avg_st_global": avg_st_global,
+                "course_st":     course_st,
+                "course_nyuko":  course_nyuko,
+                "course_rank":   course_rank,
+            }
+        except Exception:
+            continue
+
+    _FAN_CACHE[filepath] = result
+    log.info("[fan] %s: %d選手ロード", filepath, len(result))
+    return result
+
+
+def get_course_st(racer_id: str) -> dict:
+    """
+    登録番号からコース別STデータを取得する。
+    fanファイルがなければ空データを返す（graceful degradation）。
+    """
+    fan_file = _get_fan_file()
+    if not fan_file:
+        return {}
+    fan_data = _load_fan_file(fan_file)
+    return fan_data.get(str(racer_id), {})
+
+
+def format_course_st_table(boats: list) -> str:
+    """
+    全選手のコース別ST一覧テキストを生成する（新聞・メール向け）。
+    各選手について「担当コース(lane)でのST平均」と「6コース中の順位」を表示する。
+
+    表示例:
+    ┌─ コース別ST（参考:前期）─────────────────
+    │ 1号艇 山口剛 [1コースST 0.17 / 全6コース中1位]
+    │ 2号艇 田村美 [1コースST 0.18 / 全6コース中2位]  ← 1コース実績で比較
+    └──────────────────────────────────────────
+    """
+    if not boats:
+        return ""
+
+    fan_file = _get_fan_file()
+    if not fan_file:
+        return ""  # fanファイルなし → 非表示
+
+    lines_out = ["【コース別ST参考（前期実績）】"]
+    has_data = False
+
+    for boat in sorted(boats, key=lambda b: b.lane):
+        # その選手の lane コース（進入予定コース）のST平均を表示
+        # ただし出走表上の lane と実際の進入コースは異なる場合があるため
+        # 全6コースのSTを表示して比較できるようにする
+        lane_idx = boat.lane - 1  # 0-indexed
+
+        if not boat.racer_id or not any(v > 0 for v in boat.course_st):
+            continue
+
+        has_data = True
+
+        # 1コース固定でのST（「1コースST」比較が要望なので全選手1コースSTも表示）
+        st_1c = boat.course_st[0] if boat.course_nyuko[0] > 0 else None
+        st_lane = boat.course_st[lane_idx] if boat.course_nyuko[lane_idx] > 0 else None
+
+        # 全選手の1コースSTをリストアップして順位を計算
+        parts = [f"{boat.lane}号艇 {boat.name}"]
+        if st_lane is not None:
+            parts.append(f"{boat.lane}コースST:{st_lane:.2f}")
+        if st_1c is not None and boat.lane != 1:
+            parts.append(f"(1コース:{st_1c:.2f})")
+        if boat.course_nyuko[lane_idx] > 0:
+            parts.append(f"進入{boat.course_nyuko[lane_idx]}回")
+
+        lines_out.append("  " + "  ".join(parts))
+
+    if not has_data:
+        return ""
+
+    return "\n".join(lines_out)
+
+
+def format_course_st_ranking(boats: list) -> str:
+    """
+    6コース中の順位形式で表示するバージョン。
+    各選手の担当コース(lane)のST平均を比較し、速い順に順位付けする。
+    「6艇中何位か」をパッと見てわかる形式。
+
+    出力例:
+    【今日の1コースST速さ比較（前期実績）】
+    1位 3号艇 田村美  1コースST 0.15（進入46回）
+    2位 1号艇 山口剛  1コースST 0.17（進入38回）
+    ...
+    """
+    if not boats:
+        return ""
+
+    fan_file = _get_fan_file()
+    if not fan_file:
+        return ""
+
+    # 全選手の1コースSTを収集（1コース固定で比較）
+    st_data = []
+    for boat in boats:
+        if not boat.racer_id:
+            continue
+        st_1c = boat.course_st[0]
+        nyuko_1c = boat.course_nyuko[0]
+        if nyuko_1c > 0:
+            st_data.append((boat.lane, boat.name, st_1c, nyuko_1c))
+
+    if not st_data:
+        return ""
+
+    # ST昇順（速い順）でソート
+    st_data.sort(key=lambda x: x[2])
+
+    lines_out = ["【1コースST速さ（前期実績・全選手比較）】"]
+    for rank, (lane, name, st, nyuko) in enumerate(st_data, 1):
+        bar = "●" * min(5, round(st * 20))  # ST 0.15 → 3個, 0.20 → 4個
+        lines_out.append(f"  {rank}位 {lane}号艇 {name:4s}  ST:{st:.2f}  {bar}  （1コース進入{nyuko}回）")
+
+    return "\n".join(lines_out)
+
+
 def fetch_programs(race_date: str) -> list[dict]:
     """出走表を取得して programs リストを返す。失敗時は []。"""
     url = f"{PROGRAMS_URL}/{race_date[:4]}/{race_date}.json"
@@ -611,21 +817,46 @@ def fetch_previews(race_date: str) -> list[dict]:
 # ════════════════════════════════════════════════════════════
 
 def _extract_boats_from_program(program: dict) -> list[BoatInfo]:
-    """出走表エントリから BoatInfo リストを作成する。"""
+    """
+    出走表エントリから BoatInfo リストを作成する。
+    fanファイルが存在する場合、登録番号でコース別ST・進入回数を補完する。
+    """
+    # fanファイルをロード（存在しなければ空辞書）
+    fan_file = _get_fan_file()
+    fan_data = _load_fan_file(fan_file) if fan_file else {}
+
     boats: list[BoatInfo] = []
     for b in program.get("boats", []):
         if not isinstance(b, dict):
             continue
-        lane = b.get("racer_boat_number") or b.get("racer_number")
+        lane = b.get("racer_boat_number")
         if not lane:
             continue
+
+        # 登録番号: BoatraceOpenAPI v2 では "racer_number" が登録番号（4桁）。
+        # （racer_boat_number は艇番1-6、racer_number は選手登録番号で別物）
+        racer_id_raw = str(b.get("racer_number") or "")
+        racer_id = racer_id_raw.strip()
+
+        # fanファイルからコース別ST取得
+        fan_entry = fan_data.get(racer_id, {}) if racer_id else {}
+        course_st    = fan_entry.get("course_st",    [0.0] * 6)
+        course_nyuko = fan_entry.get("course_nyuko", [0]   * 6)
+        course_rank  = fan_entry.get("course_rank",  [0.0] * 6)
+
+        api_avg_st = float(b.get("racer_average_start_timing") or 0.18)
+
         boats.append(BoatInfo(
-            lane         = int(lane),
-            name         = b.get("racer_name", f"{lane}号艇"),
-            win_rate     = float(b.get("racer_national_top_1_percent") or 0),
-            motor        = float(b.get("racer_assigned_motor_top_2_percent") or 0),
-            avg_st       = float(b.get("racer_average_start_timing") or 0.18),
-            racer_class  = str(b.get("racer_class") or b.get("racer_grade") or ""),
+            lane          = int(lane),
+            name          = b.get("racer_name", f"{lane}号艇"),
+            win_rate      = float(b.get("racer_national_top_1_percent") or 0),
+            motor         = float(b.get("racer_assigned_motor_top_2_percent") or 0),
+            avg_st        = api_avg_st,
+            racer_class   = str(b.get("racer_class") or b.get("racer_grade") or ""),
+            racer_id      = racer_id,
+            course_st     = course_st,
+            course_nyuko  = course_nyuko,
+            course_rank   = course_rank,
         ))
     return sorted(boats, key=lambda x: x.lane)
 
@@ -4339,22 +4570,6 @@ def _check_yesterday_results(today_date: str) -> None:
                 except Exception:
                     pass
 
-            # ── ブランド判定 ──────────────────────────────────────
-            # 新聞掲載ブランド別の成功率を計算するため、
-            # このレースがどのブランドに該当するかを upset_score と
-            # payout から判定してフラグを立てる。
-            # 成功条件は x_brand_config.SUCCESS_PAYOUT_THRESHOLDS と同じ基準。
-            _upset = float(pd_data.get("upset_score") or 0)
-            _pay   = float(payout or 0)
-            _brands_list = []
-            if _upset >= 4.8:                 _brands_list.append("danger")
-            if _pay > 10000:                  _brands_list.append("manshuu")
-            if _pay > 5000:                   _brands_list.append("hot_high")
-            if _pay > 2700:                   _brands_list.append("korogashi")
-            # ブランドが1つもない場合は upset_score が低い通常レースとして danger に分類
-            if not _brands_list and _upset >= 0:
-                _brands_list.append("danger")
-
             records.append({
                 "date":        yesterday,
                 "venue":       pd_data.get("venue", VENUE_NAMES.get(int(venue_num), f"場{venue_num}")),
@@ -4378,7 +4593,6 @@ def _check_yesterday_results(today_date: str) -> None:
                 "profit":      profit,
                 "n_bets":      n_bets,
                 "cost":        cost,
-                "brands":      ",".join(_brands_list),
             })
 
         if not records:
@@ -4392,7 +4606,6 @@ def _check_yesterday_results(today_date: str) -> None:
             "pred_combo","pred_prob","pred_ev","pred_odds","upset_score",
             "wind_speed","wind_dir","wave",
             "result_combo","payout","hit","profit","n_bets","cost",
-            "brands",   # カンマ区切りブランドリスト: danger,manshuu,hot_high,korogashi
         ]
 
         # ── 重複書き込み防止 ──────────────────────────────────────
