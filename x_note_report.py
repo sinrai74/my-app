@@ -380,9 +380,7 @@ def _calc_match_index(brands: list[str], raw_scores: dict) -> float:
     """
     ① AI一致指数を算出する（加点方式・100点満点）。
     各ブランドの掲載で配点を加算し、そのブランドのスコアが
-    Sランクなら MATCH_INDEX_RANK_BONUS_S、Aランクなら MATCH_INDEX_RANK_BONUS_A
-    のボーナスを掛ける。ランク判定は x_brand_config.rank_of に統一する
-    （閾値 S=80 / A=65 / B=50 / C=0 は RANK_THRESHOLDS が唯一の基準）。
+    Sランク(80+)なら1.15倍、Aランク(60+)なら1.05倍のボーナスを掛ける。
     激走/覚醒は会場単位データのため、掲載されていれば満額加点する。
     """
     total = 0.0
@@ -391,12 +389,10 @@ def _calc_match_index(brands: list[str], raw_scores: dict) -> float:
         if base == 0:
             continue
         score = raw_scores.get(b)
-        if score is not None:
-            rank = rank_of(score)
-            if rank == "S":
-                base *= MATCH_INDEX_RANK_BONUS_S
-            elif rank == "A":
-                base *= MATCH_INDEX_RANK_BONUS_A
+        if score is not None and score >= 80:
+            base *= MATCH_INDEX_RANK_BONUS_S
+        elif score is not None and score >= 60:
+            base *= MATCH_INDEX_RANK_BONUS_A
         total += base
     return round(min(100, total), 1)
 
@@ -2389,6 +2385,63 @@ def format_poll_tweet(data: dict, variant: str = "race") -> str:
 # エントリポイント
 # ════════════════════════════════════════════════════════════
 
+def _save_daily_stats(data: dict, date_str: str) -> None:
+    """
+    新聞生成時に掲載ブランド別の件数・レース一覧を daily_stats.json に保存する。
+    x_results_page.py が「掲載X件中、実際にY件」を集計するために使用する。
+
+    保存形式（日付別に累積追記）:
+    {
+      "20260701": {
+        "danger":  {"count": 20, "races": [{"venue_num":4,"race":12}, ...]},
+        "manshuu": {"count": 20, "races": [...], "top10": [最初の10件]},
+      },
+      ...
+    }
+    """
+    all_danger  = data.get("all_danger",  data.get("danger_boat1",  []))
+    all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
+
+    def _race_key(item: dict) -> dict:
+        return {"venue_num": item.get("venue_num", 0), "race": item.get("race", 0)}
+
+    stats = {
+        "danger": {
+            "count": len(all_danger),
+            "races": [_race_key(d) for d in all_danger],
+        },
+        "manshuu": {
+            "count": len(all_manshuu),
+            "races": [_race_key(u) for u in all_manshuu],
+            # 万舟の的中検証は上位10件のみ（掲載上位10件）
+            "top10": [_race_key(u) for u in all_manshuu[:10]],
+        },
+    }
+
+    daily_stats_file = "daily_stats.json"
+    existing = {}
+    if os.path.exists(daily_stats_file):
+        try:
+            with open(daily_stats_file, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            existing = {}
+
+    existing[date_str] = stats
+
+    # 過去90日分だけ保持（古いデータを削除してファイルが肥大化しないように）
+    cutoff = (datetime.now(JST) - timedelta(days=90)).strftime("%Y%m%d")
+    existing = {k: v for k, v in existing.items() if k >= cutoff}
+
+    try:
+        with open(daily_stats_file, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+        log.info("[daily_stats] 保存: %s 危険艇%d件 万舟%d件",
+                 date_str, len(all_danger), len(all_manshuu))
+    except Exception as e:
+        log.warning("[daily_stats] 保存失敗: %s", e)
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -2417,6 +2470,9 @@ def main() -> None:
 
     generate_html(data, html_path)
     generate_markdown(data, md_path)
+
+    # ── daily_stats.json を保存（実績ページの「掲載X件中Y件」集計に使う）────
+    _save_daily_stats(data, date_str)
 
     csv_paths = generate_csvs(data)
 
