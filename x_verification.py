@@ -286,14 +286,19 @@ def aggregate_by_rank(records: list[dict]) -> dict:
     """
     ⑦⑧ 危険艇・万舟・高配当・中穴をS/A/B/Cランク別に成功率集計する
     （ランク判定は x_brand_config.rank_of に統一）。
+
+    【ブランド判定の優先順位】
+    hit_record.csv に "brands" 列がある（新方式）:
+      → その列の値（例: "danger,manshuu"）をそのまま使う。
+        新聞掲載ブランドを notify_arashi.py が書き込んだ正確な値。
+    "brands" 列がない（旧データ・互換モード）:
+      → upset_score と payout から従来通り近似判定する。
+
     「成功」の定義:
-      - 危険艇（1号艇が飛ぶと予想）→ 実際に1号艇以外が1着なら成功
-      - 万舟（payout > 10,000円）→ 実際の払戻がその額を超えたら成功
-      - 高配当（payout > 5,000円）→ 同上
-      - 中穴（payout > 2,700円）→ 同上
-      （閾値は SUCCESS_PAYOUT_THRESHOLDS を唯一の基準とする）
-    upset_score（0-9.5）を荒れ度の近似値として扱い、100点換算してランク分けする
-    （hit_record.csv に専用のランクカラムがないための近似）。
+      - 危険艇: 実際に1号艇以外が1着なら成功
+      - 万舟:   payout > 10,000円なら成功
+      - 高配当: payout > 5,000円なら成功
+      - 中穴:   payout > 2,700円なら成功
     戻り値:
       {"danger": {"S": {...}, "A": {...}, "B": {...}, "C": {...}},
        "manshuu": {...}, "hot_high": {...}, "korogashi": {...}}
@@ -303,37 +308,53 @@ def aggregate_by_rank(records: list[dict]) -> dict:
     def _empty_rank() -> dict:
         return {"total": 0, "hit": 0, "rate": 0.0}
 
-    payout_categories = list(SUCCESS_PAYOUT_THRESHOLDS.keys())  # manshuu, hot_high, korogashi
-    result = {"danger": {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank(), "C": _empty_rank()}}
-    for cat in payout_categories:
-        result[cat] = {"S": _empty_rank(), "A": _empty_rank(), "B": _empty_rank(), "C": _empty_rank()}
+    all_categories = ["danger", "manshuu", "hot_high", "korogashi"]
+    result = {cat: {"S": _empty_rank(), "A": _empty_rank(),
+                    "B": _empty_rank(), "C": _empty_rank()}
+              for cat in all_categories}
 
     for r in notified:
-        score_100 = _upset_score_to_100(r.get("upset_score"))
-        if score_100 < 40:
-            continue   # 対象外（スコア40未満）
-        rank = rank_of(score_100)
-
-        # 各カテゴリとも、結果(result_combo)が確定したレコードのみ母数に入れる
-        # （result_combo 欠損レコードで母数がカテゴリ間でずれるのを防ぐ）
         result_combo = r.get("result_combo", "")
         if not (result_combo and "-" in result_combo):
             continue
 
-        # 危険艇判定の成否: 1号艇が飛んだか
-        first_boat = result_combo.split("-")[0].strip()
-        boat1_flew = (first_boat != "1")
-        result["danger"][rank]["total"] += 1
-        if boat1_flew:
-            result["danger"][rank]["hit"] += 1
-
-        # 万舟・高配当・中穴: 払戻が各カテゴリの閾値を超えたら成功
+        score_100 = _upset_score_to_100(r.get("upset_score"))
+        rank = rank_of(score_100)
         payout = _safe_float(r.get("payout"))
-        for cat in payout_categories:
-            threshold = SUCCESS_PAYOUT_THRESHOLDS[cat]
-            result[cat][rank]["total"] += 1
-            if payout > threshold:
-                result[cat][rank]["hit"] += 1
+        first_boat = result_combo.split("-")[0].strip()
+
+        # ── ブランド判定 ──────────────────────────────────────
+        brands_str = r.get("brands", "")
+        if brands_str:
+            # 新方式: brands 列から直接取得
+            brands = [b.strip() for b in brands_str.split(",") if b.strip()]
+        else:
+            # 旧データ互換: upset_score と payout から近似
+            brands = []
+            if score_100 >= 40:
+                brands.append("danger")
+            if payout > SUCCESS_PAYOUT_THRESHOLDS["manshuu"]:
+                brands.append("manshuu")
+            if payout > SUCCESS_PAYOUT_THRESHOLDS["hot_high"]:
+                brands.append("hot_high")
+            if payout > SUCCESS_PAYOUT_THRESHOLDS["korogashi"]:
+                brands.append("korogashi")
+            if not brands:
+                continue  # どのブランドにも該当しない旧データはスキップ
+
+        # ── ブランドごとに成否を集計 ──────────────────────────
+        for brand in brands:
+            if brand not in result:
+                continue
+            result[brand][rank]["total"] += 1
+
+            if brand == "danger":
+                if first_boat != "1":
+                    result[brand][rank]["hit"] += 1
+            else:
+                threshold = SUCCESS_PAYOUT_THRESHOLDS.get(brand, 0)
+                if payout > threshold:
+                    result[brand][rank]["hit"] += 1
 
     for category in result.values():
         for rank_data in category.values():
