@@ -29,7 +29,7 @@ name: X Ranking Post
 jobs:
   post:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
 
     steps:
       - name: Checkout repository
@@ -95,12 +95,50 @@ jobs:
           python x_ranking.py --update-history $DATE_ARG || echo "履歴更新失敗（続行）"
 
       # ── ランキング生成（検証以外は常に実行）────────────
+      # cronを前倒ししているため、当日の出走表がBoatraceOpenAPI側に
+      # まだ反映されていない場合がある。生成結果の date と実際のレース
+      # 件数を確認し、不一致・空データなら最大2回、10分間隔でリトライする。
       - name: Generate rankings
         if: steps.post_type.outputs.type != 'verification'
         run: |
-          DATE_ARG=""
-          [ -n "${{ github.event.inputs.date }}" ] && DATE_ARG="--date ${{ github.event.inputs.date }}"
-          python x_ranking.py --generate $DATE_ARG
+          EXPECTED_DATE="${{ github.event.inputs.date }}"
+          if [ -z "$EXPECTED_DATE" ]; then
+            EXPECTED_DATE=$(TZ=Asia/Tokyo date +%Y%m%d)
+          fi
+
+          cat > _check_ranking_date.py << 'CHECKEOF'
+          import json, sys
+          expected = sys.argv[1]
+          try:
+              d = json.load(open("ranking_cache.json", encoding="utf-8"))
+              date_ok = d.get("date") == expected
+              total = (len(d.get("all_danger", d.get("danger_boat1", [])))
+                       + len(d.get("all_manshuu", d.get("manshuu_alert", []))))
+              print("OK" if (date_ok and total > 0) else "RETRY")
+          except Exception:
+              print("RETRY")
+          CHECKEOF
+
+          MAX_RETRY=2
+          RETRY_WAIT=600
+          for i in $(seq 1 $MAX_RETRY); do
+            python x_ranking.py --generate --date "$EXPECTED_DATE"
+            CHECK=$(python3 _check_ranking_date.py "$EXPECTED_DATE")
+
+            if [ "$CHECK" = "OK" ]; then
+              echo "[検証] ranking_cache.json は $EXPECTED_DATE のデータとして正常"
+              break
+            fi
+
+            if [ "$i" -lt "$MAX_RETRY" ]; then
+              echo "[警告] 期待日付($EXPECTED_DATE)のデータ未反映 or 空。${RETRY_WAIT}秒後にリトライ ($i/$MAX_RETRY)"
+              sleep $RETRY_WAIT
+            else
+              echo "[警告] リトライ上限到達。取得できたデータのまま続行します（開催なしの可能性）"
+            fi
+          done
+
+          rm -f _check_ranking_date.py
 
       # ── 画像生成 ───────────────────────────────────────
       - name: Generate images
