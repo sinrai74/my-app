@@ -30,6 +30,13 @@ from typing import Optional
 
 import requests
 
+# 【朝刊AI】previews由来データを使わない新スコアリングエンジン
+from x_asahi_scoring import (
+    calculate_upset_score_v2,
+    calc_danger_score_v2,
+    get_model_version as _asahi_model_version,
+)
+
 # ════════════════════════════════════════════════════════════
 # ロギング設定
 # ════════════════════════════════════════════════════════════
@@ -240,6 +247,11 @@ def _load_ml_model():
 
 
 def _predict_win_prob(boats: list) -> dict[int, float]:
+    """
+    【朝刊AI】previews由来の展示タイム・展示STは特徴量から除外する。
+    model_all.pkl の特徴量セットに展示タイム・展示ST列があっても
+    常に NaN（欠損）として扱い、中央値補完のみで対応する。
+    """
     if not _load_ml_model():
         return {}
     try:
@@ -253,10 +265,8 @@ def _predict_win_prob(boats: list) -> dict[int, float]:
             row["当地勝率"] = getattr(b, "local_win", np.nan)
             row["全国2率"]  = getattr(b, "win_rate2", np.nan)
             row["当地2率"]  = getattr(b, "local_win2", np.nan)
-            if b.ex_time:
-                row["展示タイム"] = b.ex_time if "展示タイム" in _ML_FEATURE_COLS else np.nan
-            if b.ex_st:
-                row["展示ST"] = b.ex_st if "展示ST" in _ML_FEATURE_COLS else np.nan
+            # 展示タイム・展示STは【朝刊AI】ポリシーにより特徴量から除外
+            # （row[...]への代入自体を行わず、np.nan(欠損)のまま中央値補完させる）
             rows.append(row)
         df = pd.DataFrame(rows)
         for col in ["全国勝率","全国2率","当地勝率","当地2率","モーター2率"]:
@@ -861,13 +871,58 @@ def _extract_boats_from_program(program: dict) -> list[BoatInfo]:
     return sorted(boats, key=lambda x: x.lane)
 
 
+def _extract_preview_raw(preview: dict) -> dict:
+    """
+    【朝刊AI・教師データ用】previewから展示・気象の生データを抽出する。
+    この結果は予想には使わず、hit_record.csv 等への保存を通じて
+    Phase2 の特徴量重要度学習・精度検証にのみ用いる。
+    """
+    boats_raw: dict[int, dict] = {}
+    boats_dict = preview.get("boats", {})
+    pb_list = list(boats_dict.values()) if isinstance(boats_dict, dict) else boats_dict
+    for pb in pb_list:
+        if not isinstance(pb, dict):
+            continue
+        lane = pb.get("racer_boat_number")
+        if lane is None:
+            continue
+        ex_time = pb.get("racer_exhibition_time")
+        ex_st   = pb.get("racer_start_timing")
+        boats_raw[lane] = {
+            "ex_time": float(ex_time) if ex_time and float(ex_time) > 0 else None,
+            "ex_st":   float(ex_st) if ex_st is not None else None,
+            "tilt":    float(pb["racer_tilt_adjustment"]) if pb.get("racer_tilt_adjustment") is not None else None,
+        }
+
+    wd_num = preview.get("race_wind_direction_number")
+    wd_str: Optional[str] = None
+    if wd_num is not None:
+        wd_num = int(wd_num)
+        wd_str = "追" if wd_num in (1, 2) else "向" if wd_num in (9, 10) else "横"
+
+    ws  = preview.get("race_wind")
+    wh  = preview.get("race_wave")
+    wdc = preview.get("race_weather_number")
+    weather_label = {1: "晴", 2: "曇", 3: "雨", 4: "雪"}.get(int(wdc), str(wdc)) if wdc is not None else None
+
+    return {
+        "boats": boats_raw,
+        "wind_speed":     float(ws) if ws is not None else None,
+        "wind_direction": wd_str,
+        "wave_height":    int(wh) if wh is not None else None,
+        "weather":        weather_label,
+    }
+
+
 def _apply_preview_to_boats(
     boats: list[BoatInfo],
     preview: dict,
 ) -> WeatherInfo:
     """
-    直前情報を boats に上書きし、WeatherInfo を返す。
-    preview が None でも安全に動く。
+    【非推奨・朝刊AIポリシーにより不使用】
+    展示・気象を boats/WeatherInfo に反映する旧関数。
+    予想には使わず、教師データ抽出には _extract_preview_raw を使う。
+    互換性のためコードは残すが、build_race_data からは呼び出されない。
     """
     # ── 艇別: 展示タイム / 展示ST / チルト ──────────────────
     # boats は {"1": {...}, "2": {...}} 形式の辞書
@@ -922,7 +977,11 @@ def build_race_data(
     previews: list[dict],
 ) -> list[tuple[int, int, list[BoatInfo], WeatherInfo]]:
     """
-    出走表 + 直前情報を結合して (venue_num, race_number, boats, weather) のリストを返す。
+    出走表を組み立てる。
+    【朝刊AI】previews（展示・気象）は予想用の boats/weather には反映しない。
+    展示・気象の生データは _extract_preview_raw で別途抽出し、
+    教師データ（hit_record.csv保存等）としてのみ利用する。
+    予想に使う weather は常に空の WeatherInfo（全フィールドNone）。
     """
     # 直前情報をキー (venue_num, race_number) で引けるようにする
     preview_map: dict[tuple[int, int], dict] = {}
@@ -939,13 +998,30 @@ def build_race_data(
 
         boats   = _extract_boats_from_program(prog)
         preview = preview_map.get((vn, rno), {})
-        weather = _apply_preview_to_boats(boats, preview)
+
+        # 【朝刊AI】教師データ用: 展示・気象の生データを抽出してキャッシュに保存。
+        # 予想には使わず、hit_record.csv保存等の学習・検証用途にのみ使う。
+        if preview:
+            try:
+                _PREVIEW_RAW_CACHE[(int(vn), int(rno))] = _extract_preview_raw(preview)
+            except Exception:
+                pass
+
+        # 予想用の weather は常に空（全フィールドNone）。
+        # boats の ex_time/ex_st も _apply_preview_to_boats を呼ばないため常に None のまま。
+        weather = WeatherInfo()
+
         closed_at  = prog.get('race_closed_at', '')
         race_grade = prog.get('race_grade_number', 0) or 0
         results.append((int(vn), int(rno), boats, weather, closed_at, int(race_grade)))
 
-    log.info("レース組み立て完了: %d レース", len(results))
+    log.info("レース組み立て完了: %d レース（【朝刊AI】展示・気象は予想に不使用、教師データとしてのみ保存）", len(results))
     return results
+
+
+# 【朝刊AI・教師データ用】(venue_num, race_number) → 展示・気象の生データ
+# build_race_data 実行時に埋まる。予想には使わず、結果照合時に hit_record.csv へ保存する。
+_PREVIEW_RAW_CACHE: dict[tuple[int, int], dict] = {}
 
 
 # ════════════════════════════════════════════════════════════
@@ -1100,6 +1176,13 @@ def calc_boat_score(
     all_boats: list,
     weather,
 ) -> float:
+    """
+    【非推奨・朝刊AIポリシーにより不使用】
+    展示タイム・展示ST・気象データに依存する旧スコアリング関数。
+    実際の予想には x_asahi_scoring.calc_boat_score_v2 を使用する
+    （previews由来データを一切参照しない朝データのみのエンジン）。
+    互換性のためコードは残すが、どこからも呼び出されない。
+    """
     score = 0.0
 
     # 展示タイム
@@ -1190,6 +1273,13 @@ def calculate_upset_score(
     venue_num: int = 0,
     is_night: bool = False,
 ) -> tuple:
+    """
+    【非推奨・朝刊AIポリシーにより不使用】
+    展示タイム・展示ST・気象データに依存する旧予想エンジン。
+    実際の予想には x_asahi_scoring.calculate_upset_score_v2 を使用する
+    （previews由来データを一切参照しない朝データのみのエンジン）。
+    互換性のためコードは残すが、どこからも呼び出されない。
+    """
     import math
 
     def logit(p: float) -> float:
@@ -1531,36 +1621,21 @@ def _build_why_bet(
     parts = combo.split("-")
     first = int(parts[0]) if parts else 0
 
-    # 気象
-    if weather:
-        ws = weather.wind_speed or 0
-        wd = weather.wind_direction or ""
-        wh = weather.wave_height or 0
-        if wd == "向" and ws >= 3:
-            reasons.append(f"向かい風{ws:.0f}m")
-        elif wd == "追" and ws >= 3:
-            reasons.append(f"追い風{ws:.0f}m")
-        if wh >= 3:
-            reasons.append(f"波高{wh}cm")
+    # 【朝刊AI】気象（風速・風向・波高）は previews 由来のため買い理由に使用しない
 
-    # 1号艇弱さ（詳細理由）
+    # 1号艇弱さ（詳細理由、朝取得可能データのみ）
     if boats:
         boat1 = next((b for b in boats if b.lane == 1), None)
         if boat1:
-            if boat1.ex_st and boat1.ex_st >= 0.20:
-                reasons.append(f"1号艇ST大幅遅れ{boat1.ex_st:.2f}")
-            elif boat1.ex_st and boat1.ex_st >= 0.18:
-                reasons.append(f"1号艇ST遅れ{boat1.ex_st:.2f}")
+            # 平均ST実績（展示STの代わりに朝データのavg_stを使用）
+            if boat1.avg_st and boat1.avg_st >= 0.18:
+                reasons.append(f"1号艇平均ST遅め{boat1.avg_st:.2f}")
+            elif boat1.avg_st and boat1.avg_st >= 0.16:
+                reasons.append(f"1号艇平均STやや遅め{boat1.avg_st:.2f}")
             if boat1.win_rate and boat1.win_rate < 5.0:
                 reasons.append(f"1号艇勝率低({boat1.win_rate:.1f})")
             if boat1.racer_class in ("B1","B2"):
                 reasons.append(f"1号艇{boat1.racer_class}級")
-            # 展示順位
-            if has_exhibition and boat1.ex_time:
-                ex_all = sorted([b.ex_time for b in boats if b.ex_time and b.ex_time > 0])
-                rank1  = ex_all.index(boat1.ex_time) + 1 if boat1.ex_time in ex_all else len(ex_all)
-                if rank1 >= 5:
-                    reasons.append(f"1号艇展示{rank1}位(最下位圏)")
             # モーター
             motors = sorted([b.motor for b in boats if b.motor], reverse=True)
             if motors and boat1.motor:
@@ -1574,18 +1649,7 @@ def _build_why_bet(
     if lane4_boost > 0 and first == 4:
         reasons.append("4カド優勢")
 
-    # 展示順位
-    if boats and has_exhibition:
-        ex_data = sorted(
-            [(b.lane, b.ex_time) for b in boats if b.ex_time and b.ex_time > 0],
-            key=lambda x: x[1]
-        )
-        ex_rank_map = {lane: rank+1 for rank, (lane,_) in enumerate(ex_data)}
-        rank = ex_rank_map.get(first, 0)
-        if rank == 1:
-            reasons.append(f"{first}号艇展示1位")
-        elif rank == 2:
-            reasons.append(f"{first}号艇展示2位")
+    # 【朝刊AI】展示順位に基づく買い理由は previews 由来のため生成しない
 
     # オッズ急落
     if odds_dropped:
@@ -1717,18 +1781,18 @@ def _evaluate_bets(
             attack_pressure = p_att / (p1 + p_att + 1e-6)
             survive *= (1.0 - attack_pressure * 0.4)
 
-        # 1号艇ST補正
+        # 1号艇ST補正（【朝刊AI】平均ST実績を使用、展示STは使わない）
         if boats:
             boat1 = next((b for b in boats if b.lane == 1), None)
-            if boat1 and boat1.ex_st:
-                if boat1.ex_st >= 0.20:   survive *= 0.75
-                elif boat1.ex_st >= 0.17: survive *= 0.88
-            if boat1 and boat1.ex_time:
-                ex_list = [b.ex_time for b in boats if b.ex_time and b.ex_time > 0]
-                if ex_list:
-                    rank1 = sorted(ex_list).index(boat1.ex_time) + 1
-                    if rank1 >= 5: survive *= 0.80
-                    elif rank1 >= 3: survive *= 0.92
+            if boat1 and boat1.avg_st:
+                if boat1.avg_st >= 0.18:   survive *= 0.75
+                elif boat1.avg_st >= 0.16: survive *= 0.88
+            # コース別ST実績（1コース、fanファイル）による補正
+            if boat1 and boat1.course_nyuko and boat1.course_nyuko[0] > 0:
+                course_st_1c = boat1.course_st[0]
+                course_rank_1c = boat1.course_rank[0]
+                if course_rank_1c and course_rank_1c >= 4: survive *= 0.80
+                elif course_rank_1c and course_rank_1c >= 3: survive *= 0.92
 
         return min(max(survive, 0.01), 0.99)
 
@@ -2502,7 +2566,7 @@ def _check_race_quality(
             else:
                 reasons.append("軸不明")
 
-    # 気象適性（0〜0.20）
+    # 【朝刊AI】気象適性は previews 由来のため使用しない（weather は常に空）
     if weather:
         ws = weather.wind_speed or 0
         wh = weather.wave_height or 0
@@ -3056,19 +3120,12 @@ def _run_main(race_date: str | None = None) -> None:
         race_grade = rest[1] if len(rest) > 1 else 0
         closed_at  = rest[0] if len(rest) > 0 else ""
 
-        # 展示タイムの有無を記録
-        ex_times = [b.ex_time for b in boats if b.ex_time is not None and b.ex_time > 0]
-        has_exhibition = len(ex_times) > 0
-
-        # 展示タイムなしの場合は締切15分以内のレースのみ通知（SKIP_TIME_FILTER=1で無効化）
-        if not has_exhibition and closed_at and not skip_filter:
-            try:
-                closed_dt = datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
-                minutes_to_close = (closed_dt - now).total_seconds() / 60
-                if minutes_to_close > 15:
-                    continue
-            except Exception:
-                pass
+        # 【朝刊AI】展示データ(previews由来)は予想に使用しない。
+        # has_exhibition は常に False に固定し、下流の既存フォールバック
+        # ロジック（展示なし時の保守的な処理）が常時適用されるようにする。
+        # これにより「展示取得を待って通知を遅らせる」処理も不要になる
+        # （旧: 展示タイムなしの場合は締切15分以内のみ通知 → 廃止）。
+        has_exhibition = False
         # ── 強制スキップ場 ────────────────────────────────────────
         if venue_num in VENUE_FORCE_SKIP:
             log.debug("強制スキップ: %s %dR",
@@ -3080,8 +3137,9 @@ def _run_main(race_date: str | None = None) -> None:
             NIGHT_VENUES = {4, 6, 12, 17, 20, 21, 22, 23, 24}
             is_night = venue_num in NIGHT_VENUES
 
-            score, detail, target = calculate_upset_score(
-                boats, weather, race_grade,
+            # 【朝刊AI】previews由来（展示・気象）データを使わない新エンジンで計算
+            score, detail, target = calculate_upset_score_v2(
+                boats, race_grade,
                 venue_num=venue_num,
                 is_night=is_night,
             )
@@ -3109,6 +3167,8 @@ def _run_main(race_date: str | None = None) -> None:
             log.debug("スコア: %s %dR score=%.2f", VENUE_NAMES.get(venue_num,f"場{venue_num}"), race_number, score)
 
             # ── 捨て条件チェック（ログから自動抽出した負け条件）──
+            # 【朝刊AI】wind_dir は previews 由来のため weather は常に空。
+            # wind_dir 条件は実質的に発火しなくなる（venue/race_type条件は有効）。
             venue_name_str = VENUE_NAMES.get(venue_num, f"場{venue_num}")
             wd_str = weather.wind_direction if weather else ""
             rt_str = detail.get("race_type", "")   # calculate_upset_scoreから取得できれば
@@ -3191,22 +3251,10 @@ def _run_main(race_date: str | None = None) -> None:
                           race_quality, quality_skip_reason)
                 continue
 
-            # ── 気象条件フィルタ（緩和版）────────────────────────
-            ws = weather.wind_speed      if weather else None
-            wh = weather.wave_height     if weather else None
-            wd = weather.wind_direction  if weather else None
-
-            weather_bonus = 0
-            if ws is not None and ws >= 3.0:   weather_bonus += 1  # 3m以上（旧:5m）
-            if wh is not None and wh >= 3:     weather_bonus += 1  # 3cm以上（旧:5cm）
-            if wd == "向":                     weather_bonus += 1
-
-            # 1つ以上でOK（旧:2つ以上）
-            if weather_bonus < 1:
-                log.debug("気象条件不足: %s %dR 風%.1f%s 波%s bonus=%d",
-                          VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number,
-                          ws or 0, wd or "-", wh or 0, weather_bonus)
-                continue
+            # 【朝刊AI】気象条件フィルタは previews 由来データに依存するため廃止。
+            # weather は常に空のため、このフィルタを残すと全レースが
+            # スキップされてしまう。朝データのみの品質スコア(_check_race_quality)
+            # による選別のみで判定する。
 
             # ── ①EVがある → 通知（荒れスコアはサブフィルタ）────────
             # ── ②EVなし  → 荒れスコア閾値でフォールバック判定 ──────
@@ -3284,6 +3332,9 @@ def _run_main(race_date: str | None = None) -> None:
                     import json as _json
                     pred_file = f"pred_{race_date}_{venue_num}_{race_number}.json"
                     NIGHT_VENUES = {4, 6, 12, 17, 20, 21, 22, 23, 24}
+                    # 【朝刊AI・教師データ用】展示・気象は予想には使わないが、
+                    # Phase2の学習・検証のため _PREVIEW_RAW_CACHE から生データを記録する。
+                    _preview_raw = _PREVIEW_RAW_CACHE.get((venue_num, race_number), {})
                     _pred_data = {
                         # レース識別
                         "race_id":    f"{race_date}_{venue_num}_{race_number}",
@@ -3308,13 +3359,14 @@ def _run_main(race_date: str | None = None) -> None:
                         "uncertainty":  best.get("uncertainty", 0),
                         # システム自信度
                         "system_conf":  round(system_conf, 3),
-                        # モデルスコア
+                        # モデルスコア（朝刊AI: previews由来データを使わずに算出）
                         "upset_score": round(score, 3),
-                        # 気象情報
-                        "wind_speed": weather.wind_speed if weather else None,
-                        "wind_dir":   weather.wind_direction if weather else None,
-                        "wave":       weather.wave_height if weather else None,
-                        "weather":    weather.weather if weather else None,
+                        "model_version": _asahi_model_version(),
+                        # 【教師データ】展示・気象の生データ（予想には未使用、Phase2学習用）
+                        "wind_speed": _preview_raw.get("wind_speed"),
+                        "wind_dir":   _preview_raw.get("wind_direction"),
+                        "wave":       _preview_raw.get("wave_height"),
+                        "weather":    _preview_raw.get("weather"),
                         # オッズ急落
                         "odds_dropped": dropped[:3] if dropped else [],
                         # 結果（後で埋める）
@@ -3327,19 +3379,9 @@ def _run_main(race_date: str | None = None) -> None:
                 except Exception as _pe:
                     log.debug("予測ログ保存失敗: %s", _pe)
 
-            # ── 気象データ再取得（通知直前に最新化）──────────────────
-            try:
-                _fresh = _fetch_beforeinfo_api(venue_num, race_number, race_date)
-                if _fresh and _fresh.get("weather"):
-                    _fw = _fresh["weather"]
-                    result.weather = WeatherInfo(
-                        wind_speed     = _fw.get("wind_speed",     result.weather.wind_speed     if result.weather else None),
-                        wind_direction = _fw.get("wind_direction", result.weather.wind_direction if result.weather else None),
-                        wave_height    = _fw.get("wave_height",    result.weather.wave_height    if result.weather else None),
-                        weather        = result.weather.weather if result.weather else None,
-                    )
-            except Exception as _we:
-                log.debug("気象再取得失敗: %s", _we)
+            # 【朝刊AI】通知直前の気象・展示再取得は行わない。
+            # 新聞・危険艇・万舟等は朝1回生成した内容で固定し、
+            # 送信直前にデータを再取得・再計算することはポリシー上禁止する。
 
             log.info(
                 "荒れ検知: %s %dR score=%.2f target=%s",
@@ -3408,9 +3450,21 @@ def _run_main(race_date: str | None = None) -> None:
                         "venue_num":   venue_num,
                         "race":        race_number,
                         "night":       int(venue_num in {4,6,12,17,20,21,22,23,24}),
-                        "wind_speed":  weather.wind_speed     if weather else None,
-                        "wind_dir":    weather.wind_direction if weather else None,
-                        "wave":        weather.wave_height    if weather else None,
+                        # 【教師データ】予想には未使用、Phase2学習用の生データ
+                        "wind_speed":  _PREVIEW_RAW_CACHE.get((venue_num, race_number), {}).get("wind_speed"),
+                        "wind_dir":    _PREVIEW_RAW_CACHE.get((venue_num, race_number), {}).get("wind_direction"),
+                        "wave":        _PREVIEW_RAW_CACHE.get((venue_num, race_number), {}).get("wave_height"),
+                        "model_version": _asahi_model_version(),
+                        "feat_win_rate":       (detail.get("_features") or {}).get("win_rate"),
+                        "feat_motor":          (detail.get("_features") or {}).get("motor"),
+                        "feat_avg_st":         (detail.get("_features") or {}).get("avg_st"),
+                        "feat_racer_class":    (detail.get("_features") or {}).get("racer_class"),
+                        "feat_course_st_1c":   (detail.get("_features") or {}).get("course_st_1c"),
+                        "feat_course_rank_1c": (detail.get("_features") or {}).get("course_rank_1c"),
+                        "feat_danger_breakdown": _json.dumps(
+                            (detail.get("_features") or {}).get("danger_breakdown") or {},
+                            ensure_ascii=False,
+                        ),
                         "ranking_skip": True,   # ランキング外フラグ
                     }
                     _sl, _ks = [], set()
@@ -3463,9 +3517,22 @@ def _run_main(race_date: str | None = None) -> None:
                 "venue_num":  venue_num,
                 "race":       race_number,
                 "night":      int(venue_num in {4,6,12,17,20,21,22,23,24}),
-                "wind_speed": weather.wind_speed      if weather else None,
-                "wind_dir":   weather.wind_direction  if weather else None,
-                "wave":       weather.wave_height     if weather else None,
+                # 【教師データ】予想には未使用、Phase2学習用の生データ
+                "wind_speed": _PREVIEW_RAW_CACHE.get((venue_num, race_number), {}).get("wind_speed"),
+                "wind_dir":   _PREVIEW_RAW_CACHE.get((venue_num, race_number), {}).get("wind_direction"),
+                "wave":       _PREVIEW_RAW_CACHE.get((venue_num, race_number), {}).get("wave_height"),
+                "model_version": _asahi_model_version(),
+                # 【朝刊AI特徴量】実際に予想に使った各特徴量の値（Phase2重み学習用）
+                "feat_win_rate":       (detail.get("_features") or {}).get("win_rate"),
+                "feat_motor":          (detail.get("_features") or {}).get("motor"),
+                "feat_avg_st":         (detail.get("_features") or {}).get("avg_st"),
+                "feat_racer_class":    (detail.get("_features") or {}).get("racer_class"),
+                "feat_course_st_1c":   (detail.get("_features") or {}).get("course_st_1c"),
+                "feat_course_rank_1c": (detail.get("_features") or {}).get("course_rank_1c"),
+                "feat_danger_breakdown": _json.dumps(
+                    (detail.get("_features") or {}).get("danger_breakdown") or {},
+                    ensure_ascii=False,
+                ),
             }
             try:
                 _sent_lines = []
@@ -4584,6 +4651,7 @@ def _check_yesterday_results(today_date: str) -> None:
                 "pred_ev":     pred_ev,
                 "pred_odds":   pred_odds,
                 "upset_score": pd_data.get("upset_score", ""),
+                # 【教師データ】展示・気象は予想には未使用、Phase2学習用にのみ保存
                 "wind_speed":  pd_data.get("wind_speed", ""),
                 "wind_dir":    pd_data.get("wind_dir", ""),
                 "wave":        pd_data.get("wave", ""),
@@ -4593,6 +4661,15 @@ def _check_yesterday_results(today_date: str) -> None:
                 "profit":      profit,
                 "n_bets":      n_bets,
                 "cost":        cost,
+                # 【朝刊AI】使用モデルVersion・特徴量（Phase2重み学習用）
+                "model_version":         pd_data.get("model_version", ""),
+                "feat_win_rate":         pd_data.get("feat_win_rate", ""),
+                "feat_motor":            pd_data.get("feat_motor", ""),
+                "feat_avg_st":           pd_data.get("feat_avg_st", ""),
+                "feat_racer_class":      pd_data.get("feat_racer_class", ""),
+                "feat_course_st_1c":     pd_data.get("feat_course_st_1c", ""),
+                "feat_course_rank_1c":   pd_data.get("feat_course_rank_1c", ""),
+                "feat_danger_breakdown": pd_data.get("feat_danger_breakdown", ""),
             })
 
         if not records:
@@ -4606,6 +4683,9 @@ def _check_yesterday_results(today_date: str) -> None:
             "pred_combo","pred_prob","pred_ev","pred_odds","upset_score",
             "wind_speed","wind_dir","wave",
             "result_combo","payout","hit","profit","n_bets","cost",
+            "model_version",
+            "feat_win_rate","feat_motor","feat_avg_st","feat_racer_class",
+            "feat_course_st_1c","feat_course_rank_1c","feat_danger_breakdown",
         ]
 
         # ── 重複書き込み防止 ──────────────────────────────────────

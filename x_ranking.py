@@ -11,7 +11,9 @@ Usage:
     python x_ranking.py --generate --split     # 4ファイルに分けて出力
 
 notify_arashi.py の fetch_programs / fetch_previews / _extract_boats_from_program /
-_apply_preview_to_boats / VENUE_NAMES / _safe_get / RESULTS_URL を再利用する。
+VENUE_NAMES / _safe_get / RESULTS_URL を再利用する。
+【朝刊AI】previews由来（展示・気象）データはスコア計算に使用せず、
+x_asahi_scoring.py の共通エンジンで朝データのみから評価する。
 """
 
 from __future__ import annotations
@@ -34,9 +36,18 @@ from notify_arashi import (
     fetch_programs,
     fetch_previews,
     _extract_boats_from_program,
-    _apply_preview_to_boats,
+    _extract_preview_raw,
+    _PREVIEW_RAW_CACHE,
     BoatInfo,
     WeatherInfo,
+)
+
+# 【朝刊AI】共通スコアリングエンジン（previews由来データ不使用）
+from x_asahi_scoring import (
+    calc_danger_score_v2,
+    calculate_upset_score_v2,
+    load_asahi_config,
+    get_model_version as _asahi_model_version,
 )
 
 # ════════════════════════════════════════════════════════════
@@ -70,15 +81,8 @@ def _yesterday_jst() -> str:
 
 
 def _boat_motor_no(boat_raw: dict) -> Optional[int]:
-    """出走表の boat 辞書からモーター番号を取得する。
-    BoatraceOpenAPI v2 では "racer_assigned_motor_number" が正式フィールド名。
-    旧フィールド名（motor_number / racer_motor_number）も互換のため残す。
-    """
-    val = (
-        boat_raw.get("racer_assigned_motor_number")  # v2 正式フィールド名
-        or boat_raw.get("motor_number")              # 旧フィールド名（互換）
-        or boat_raw.get("racer_motor_number")        # 旧フィールド名（互換）
-    )
+    """出走表の boat 辞書からモーター番号を取得する"""
+    val = boat_raw.get("motor_number") or boat_raw.get("racer_motor_number")
     try:
         return int(val) if val is not None else None
     except (ValueError, TypeError):
@@ -228,47 +232,15 @@ def update_motor_history(race_date: str) -> int:
         log.info("[履歴] 追記レコードなし: %s", race_date)
         return 0
 
-    # ── 重複防止 ──────────────────────────────────────────────
-    # hot/awakening スケジュールでも --update-history が呼ばれるため、
-    # 同一日付が複数回追記されないよう既存の date+venue_num+motor_no+race_number
-    # を確認してスキップする。
-    existing_keys: set[tuple] = set()
     file_exists = os.path.exists(MOTOR_HISTORY)
-    if file_exists:
-        try:
-            with open(MOTOR_HISTORY, "r", encoding="utf-8") as _ef:
-                for _row in csv.DictReader(_ef):
-                    existing_keys.add((
-                        _row.get("date", ""),
-                        str(_row.get("venue_num", "")),
-                        str(_row.get("motor_no", "")),
-                        str(_row.get("race_number", "")),
-                    ))
-        except Exception:
-            pass
-
-    new_rows = [
-        r for r in rows
-        if (
-            str(r.get("date", "")),
-            str(r.get("venue_num", "")),
-            str(r.get("motor_no", "")),
-            str(r.get("race_number", "")),
-        ) not in existing_keys
-    ]
-
-    if not new_rows:
-        log.info("[履歴] 追記スキップ（全件既記録済み）: %s", race_date)
-        return 0
-
     with open(MOTOR_HISTORY, "a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=MOTOR_HISTORY_FIELDS)
         if not file_exists:
             writer.writeheader()
-        writer.writerows(new_rows)
+        writer.writerows(rows)
 
-    log.info("[履歴] 追記: %d件 (%s)（%d件スキップ）", len(new_rows), race_date, len(rows) - len(new_rows))
-    return len(new_rows)
+    log.info("[履歴] 追記: %d件 (%s)", len(rows), race_date)
+    return len(rows)
 
 
 # ════════════════════════════════════════════════════════════
@@ -281,84 +253,33 @@ def _calc_danger_breakdown(
     weather: Optional[WeatherInfo] = None,
 ) -> dict:
     """
-    危険度スコアの内訳を辞書で返す。
+    危険度スコアの内訳を辞書で返す（【朝刊AI】共通スコアリングエンジン使用）。
+    x_asahi_scoring.calc_danger_score_v2 に委譲し、朝データのみで算出する。
+    weather 引数は互換性のため残すが使用しない（previews由来のため）。
     note レポートのスコア内訳表示・AIコメント生成に使用。
-    {
-      "st":     (raw_score, weighted),  # ST危険度
-      "ex":     (raw_score, weighted),  # 展示危険度
-      "motor":  (raw_score, weighted),  # モーター危険度
-      "grade":  (raw_score, weighted),  # 等級危険度
-      "wr":     (raw_score, weighted),  # 勝率危険度
-      "rival":  (raw_score, weighted),  # 相手強度
-      "total":  int,
-    }
+    戻り値: {"win_rate_low": (raw, weighted), "motor_bad": (raw, weighted),
+             "avg_st_slow": ..., "class_gap": ..., "course_st_slow": ...,
+             "course_rank_bad": ..., "total": int}
     """
     if not boat1:
-        return {"st":(0,0),"ex":(0,0),"motor":(0,0),"grade":(0,0),"wr":(0,0),"rival":(0,0),"total":0}
+        empty = (0, 0)
+        return {
+            "win_rate_low": empty, "motor_bad": empty, "avg_st_slow": empty,
+            "class_gap": empty, "course_st_slow": empty, "course_rank_bad": empty,
+            "total": 0,
+        }
 
-    # ST
-    st = boat1.avg_st or 0.17
-    if   st >= 0.20: st_score = 100
-    elif st >= 0.18: st_score = 80
-    elif st >= 0.16: st_score = 60
-    elif st >= 0.14: st_score = 30
-    else:            st_score = 0
-    if boat1.ex_st is not None and boat1.ex_st >= 0.22:
-        st_score = min(100, st_score + 20)
+    total, raw_breakdown = calc_danger_score_v2(boat1, all_boats)
 
-    # 展示
-    ex_score = 50
-    ex_times = [b.ex_time for b in all_boats if b.ex_time is not None and b.ex_time > 0]
-    if boat1.ex_time is not None and boat1.ex_time > 0 and len(ex_times) >= 4:
-        rank = sum(1 for b in all_boats
-                   if b.ex_time and b.ex_time < boat1.ex_time) + 1
-        ex_score = {1: 0, 2: 0, 3: 20, 4: 50, 5: 80, 6: 100}.get(rank, 50)
-
-    # モーター
-    m2 = boat1.motor or 32.0
-    if   m2 <= 20: motor_score = 100
-    elif m2 <= 25: motor_score = 70
-    elif m2 <= 30: motor_score = 40
-    elif m2 <= 35: motor_score = 15
-    else:          motor_score = 0
-
-    # 等級
-    grade_score = {"A1": 0, "A2": 20, "B1": 70, "B2": 100}.get(boat1.racer_class, 50)
-
-    # 勝率
-    wr = boat1.win_rate or 5.0
-    if   wr < 4.0: wr_score = 100
-    elif wr < 4.5: wr_score = 80
-    elif wr < 5.0: wr_score = 50
-    elif wr < 5.5: wr_score = 25
-    else:          wr_score = 0
-
-    # 相手
-    others = [b for b in all_boats if b.lane != 1]
-    best_other_wr = max((b.win_rate or 0) for b in others) if others else 0
-    rival_score = min(100, max(0, (best_other_wr - wr) * 20))
-    a1_count = sum(1 for b in others if b.racer_class == "A1")
-    if a1_count >= 2:
-        rival_score = min(100, rival_score + 30)
-
-    W = dict(st=0.20, ex=0.20, motor=0.15, grade=0.15, wr=0.15, rival=0.15)
-    total = (
-        st_score    * W["st"]    +
-        ex_score    * W["ex"]    +
-        motor_score * W["motor"] +
-        grade_score * W["grade"] +
-        wr_score    * W["wr"]    +
-        rival_score * W["rival"]
-    )
-    return {
-        "st":    (st_score,    round(st_score    * W["st"],    1)),
-        "ex":    (ex_score,    round(ex_score    * W["ex"],    1)),
-        "motor": (motor_score, round(motor_score * W["motor"], 1)),
-        "grade": (grade_score, round(grade_score * W["grade"], 1)),
-        "wr":    (wr_score,    round(wr_score    * W["wr"],    1)),
-        "rival": (rival_score, round(rival_score * W["rival"], 1)),
-        "total": round(min(100, max(0, total))),
-    }
+    cfg = load_asahi_config()
+    weights = cfg["danger_score"]["weights"]
+    result = {"total": round(total)}
+    for key, weighted in raw_breakdown.items():
+        max_w = weights.get(key, {}).get("weight", 1) or 1
+        # raw を 0-100 スケールに正規化（weighted / max_weight * 100）
+        raw_100 = round(weighted / max_w * 100) if max_w else 0
+        result[key] = (raw_100, weighted)
+    return result
 
 
 def calc_danger_score(
@@ -366,7 +287,7 @@ def calc_danger_score(
     all_boats: list[BoatInfo],
     weather: Optional[WeatherInfo] = None,
 ) -> int:
-    """1号艇の危険度スコアを 0〜100 で返す"""
+    """1号艇の危険度スコアを 0〜100 で返す（【朝刊AI】共通エンジン使用）"""
     return _calc_danger_breakdown(boat1, all_boats, weather)["total"]
 
 
@@ -391,9 +312,13 @@ def _danger_reason(boat1: Optional[BoatInfo], all_boats: list[BoatInfo]) -> str:
     reasons: list[str] = []
     n = len(all_boats)
 
-    # ── ST: 6艇中何位か ──────────────────────────────
+    # ── ST: 6艇中何位か（【朝刊AI】平均ST実績・コース別ST実績のみ使用）───
     avg_st = boat1.avg_st or 0.0
-    ex_st  = boat1.ex_st
+    course_st_1c = (
+        boat1.course_st[0]
+        if boat1.course_st and boat1.course_nyuko and boat1.course_nyuko[0] > 0
+        else None
+    )
     st_vals = [b.avg_st for b in all_boats if b.avg_st and b.avg_st > 0]
     if st_vals and avg_st > 0:
         # STは大きい方が遅い → 大きい順でランク付け
@@ -403,11 +328,11 @@ def _danger_reason(boat1: Optional[BoatInfo], all_boats: list[BoatInfo]) -> str:
             reasons.append(f"平均ST{avg_st:.2f}（{n}艇中{st_worst_rank}位・大幅遅れ）")
         elif avg_st >= 0.18:
             st_str = f"平均ST{avg_st:.2f}（{n}艇中{st_worst_rank}位）"
-            if ex_st and ex_st >= 0.20:
-                st_str += f" 展示{ex_st:.2f}"
+            if course_st_1c and course_st_1c >= 0.18:
+                st_str += f" コース実績{course_st_1c:.2f}"
             reasons.append(st_str)
-        elif ex_st and ex_st >= 0.22:
-            reasons.append(f"展示ST{ex_st:.2f}（遅れリスク）")
+        elif course_st_1c and course_st_1c >= 0.19:
+            reasons.append(f"1コースST実績{course_st_1c:.2f}（遅れリスク）")
 
     # ── 等級 ─────────────────────────────────────────
     if boat1.racer_class in ("B1", "B2"):
@@ -460,16 +385,20 @@ def _calc_stars(boat1: Optional[BoatInfo], all_boats: list[BoatInfo]) -> dict[st
     if not boat1:
         return {"ST": stars(3), "機力": stars(3), "近況": stars(3), "相手": stars(3)}
 
-    # ST危険度 (遅いほど★多)
+    # ST危険度 (遅いほど★多、【朝刊AI】平均ST実績・コース別ST実績を使用)
     avg_st = boat1.avg_st or 0.17
-    ex_st  = boat1.ex_st or avg_st
+    course_st_1c = (
+        boat1.course_st[0]
+        if boat1.course_st and boat1.course_nyuko and boat1.course_nyuko[0] > 0
+        else avg_st
+    )
     st_score = (
         5 if avg_st >= 0.20 else
         4 if avg_st >= 0.18 else
         3 if avg_st >= 0.17 else
         2 if avg_st >= 0.16 else 1
     )
-    if ex_st >= 0.22: st_score = min(5, st_score + 1)
+    if course_st_1c >= 0.20: st_score = min(5, st_score + 1)
 
     # 機力（モーター2連率が低いほど★多）
     m2 = boat1.motor or 32.0
@@ -525,7 +454,20 @@ def calc_hot_motor(
     motor_2rate: Optional[float],
     history: dict[tuple[int, int], list[dict]],
 ) -> Optional[int]:
-    """激走モーター指数を 0〜100 で返す。データ不足（<10走）は None"""
+    """
+    激走モーター指数を 0〜100 で返す。データ不足（<10走）は None。
+
+    【朝刊AI: データ区分の明記】
+    ここで使う `history`（motor_history.csv）は、過去に開催済みの
+    レースで既に確定した実績データ（着順・展示タイム等）である。
+    未来情報を一切含まないため、当日朝の時点でも安定して参照でき、
+    特徴量として使用してよい（過去実績データ）。
+
+    一方、当日これから行われるレースの previews API 由来データ
+    （当日の展示タイム・展示ST・展示順位・風速・風向・波高など、
+    リアルタイムデータ）は、本関数はもちろん朝刊AI全体で一切使用しない。
+    過去実績データと当日リアルタイムデータを混在させないこと。
+    """
     rows = history.get((venue_num, motor_no), [])
     if len(rows) < 10:
         return None
@@ -537,7 +479,7 @@ def calc_hot_motor(
     r10 = sum(_place_score(r["place"]) for r in recent10) / len(recent10)
     r20 = sum(_place_score(r["place"]) for r in recent20) / len(recent20)
 
-    # 展示タイム偏差（直近10走 vs 全履歴平均）
+    # 【過去実績データ】展示タイム偏差（直近10走 vs 全履歴平均、いずれも確定済みの過去実績）
     ex10  = [float(r["ex_time"]) for r in recent10 if _is_valid_ex(r.get("ex_time"))]
     ex_all = [float(r["ex_time"]) for r in rows    if _is_valid_ex(r.get("ex_time"))]
     if ex10 and ex_all:
@@ -564,7 +506,12 @@ def calc_upset_index(
     boats: list[BoatInfo],
     weather: Optional[WeatherInfo] = None,
 ) -> int:
-    """万舟警報指数を 0〜100 で返す"""
+    """
+    万舟警報指数を 0〜100 で返す（【朝刊AI】展示差・気象リスクを除外）。
+    weather 引数は互換性のため残すが使用しない（previews由来のため）。
+    展示差・気象リスク分(30%)を除外した分、朝データのみの4項目に
+    比例配分して重みを再正規化する（元合計75% → 100%へ ×1.333）。
+    """
     if len(boats) < 4:
         return 0
 
@@ -586,7 +533,7 @@ def calc_upset_index(
     elif sigma < 1.0: close_score = 40
     else:             close_score = 10
 
-    # STばらつき
+    # STばらつき（【朝刊AI】平均ST実績のみ使用）
     sts = [b.avg_st or 0.17 for b in boats]
     st_sigma = statistics.stdev(sts) if len(sts) > 1 else 0.02
     if   st_sigma >= 0.04: st_var = 100
@@ -601,32 +548,13 @@ def calc_upset_index(
     elif motor_gap >= 10: mg_score = 40
     else:                 mg_score = 10
 
-    # 展示差
-    ex_times = [b.ex_time for b in boats if b.ex_time and b.ex_time > 0]
-    if len(ex_times) >= 4:
-        ex_gap = max(ex_times) - min(ex_times)
-        if   ex_gap >= 0.30: ex_score = 100
-        elif ex_gap >= 0.20: ex_score = 60
-        else:                ex_score = 20
-    else:
-        ex_score = 50
-
-    # 気象リスク
-    ws = (weather.wind_speed or 0.0) if weather else 0.0
-    wd = (weather.wind_direction or "") if weather else ""
-    if   ws >= 5: weather_score = 100
-    elif ws >= 3: weather_score = 50
-    else:         weather_score = 10
-    if "向" in wd:
-        weather_score = min(100, int(weather_score * 1.5))
-
+    # 【朝刊AI】展示差・気象リスクは previews 由来のため使用しない。
+    # 元の重み(展示15%+気象10%=25%)を残り4項目へ比例配分して100%に正規化。
     total = (
-        in_score      * 0.25 +
-        close_score   * 0.20 +
-        st_var        * 0.15 +
-        mg_score      * 0.15 +
-        ex_score      * 0.15 +
-        weather_score * 0.10
+        in_score    * 0.333 +
+        close_score * 0.267 +
+        st_var      * 0.200 +
+        mg_score    * 0.200
     )
     return round(min(100, max(0, total)))
 
@@ -648,16 +576,19 @@ def _upset_reasons(boats: list, boat1) -> list[str]:
 
     reasons: list[str] = []
 
-    # 展示タイム: 1号艇除いた最速艇
-    ex_valid = [b for b in boats if b.ex_time and b.ex_time > 0]
-    if ex_valid:
-        all_sorted = sorted(ex_valid, key=lambda b: b.ex_time)
+    # 【朝刊AI】コース別ST実績: 1号艇以外で最も速い艇（展示タイムの代替）
+    course_st_valid = [
+        b for b in boats
+        if b.course_nyuko and b.course_nyuko[0] > 0 and b.course_st[0] > 0
+    ]
+    if course_st_valid:
+        all_sorted = sorted(course_st_valid, key=lambda b: b.course_st[0])
         fastest = all_sorted[0]
         if fastest.lane != 1:
-            reasons.append(f"🔥 {fastest.lane}号艇が展示1位({fastest.ex_time:.2f}秒)")
+            reasons.append(f"🔥 {fastest.lane}号艇が1コースST実績{fastest.course_st[0]:.2f}で最速")
         elif len(all_sorted) > 1 and all_sorted[1].lane != 1:
             second = all_sorted[1]
-            reasons.append(f"🔥 {second.lane}号艇が展示2位({second.ex_time:.2f}秒)")
+            reasons.append(f"🔥 {second.lane}号艇が1コースST実績{second.course_st[0]:.2f}で2番手")
 
     # 1号艇より勝率上の選手
     wr1 = boat1.win_rate or 0 if boat1 else 0
@@ -675,11 +606,16 @@ def _upset_reasons(boats: list, boat1) -> list[str]:
         best_m = max(high_motor, key=lambda b: b.motor or 0)
         reasons.append(f"🔥 {best_m.lane}号艇モーター{best_m.motor:.0f}%の強機")
 
-    # 1号艇のST遅れ
+    # 1号艇のST遅れ（【朝刊AI】平均ST実績・コース別ST実績を使用）
     if boat1 and boat1.avg_st and boat1.avg_st >= 0.19:
+        course_st_1c = (
+            boat1.course_st[0]
+            if boat1.course_st and boat1.course_nyuko and boat1.course_nyuko[0] > 0
+            else None
+        )
         st_str = f"🔥 1号艇ST{boat1.avg_st:.2f}（遅れリスク）"
-        if boat1.ex_st and boat1.ex_st >= 0.20:
-            st_str = f"🔥 1号艇ST{boat1.avg_st:.2f}/展示{boat1.ex_st:.2f}（遅れリスク）"
+        if course_st_1c and course_st_1c >= 0.19:
+            st_str = f"🔥 1号艇ST{boat1.avg_st:.2f}/1コース実績{course_st_1c:.2f}（遅れリスク）"
         reasons.append(st_str)
 
     # モーター格差
@@ -696,8 +632,12 @@ def _pick_key_racer(boats: list, boat1) -> tuple:
     if not others:
         return ("不明", "データなし")
 
-    ex_valid = [b for b in others if b.ex_time and b.ex_time > 0]
-    ex_best  = min(ex_valid, key=lambda b: b.ex_time) if ex_valid else None
+    # 【朝刊AI】コース別ST実績を展示の代替として使用
+    course_st_valid = [
+        b for b in others
+        if b.course_nyuko and b.course_nyuko[0] > 0 and b.course_st[0] > 0
+    ]
+    ex_best  = min(course_st_valid, key=lambda b: b.course_st[0]) if course_st_valid else None
     wr_best  = max(others, key=lambda b: b.win_rate or 0)
     motor_best = max(others, key=lambda b: b.motor or 0)
 
@@ -721,7 +661,15 @@ def calc_awakening(
     motor_no: int,
     history: dict[tuple[int, int], list[dict]],
 ) -> Optional[int]:
-    """覚醒モーター指数を 0〜100 で返す。データ不足（<20走）は None"""
+    """
+    覚醒モーター指数を 0〜100 で返す。データ不足（<20走）は None。
+
+    【朝刊AI: データ区分の明記】
+    calc_hot_motor と同様、`history`（motor_history.csv）は過去に
+    確定済みのレース実績データであり、未来情報を含まないため使用する
+    （過去実績データ）。当日これから行われるレースの previews API
+    由来データ（当日リアルタイムの展示タイム・展示ST等）は一切使用しない。
+    """
     rows = history.get((venue_num, motor_no), [])
     if len(rows) < 20:
         return None
@@ -741,7 +689,7 @@ def calc_awakening(
     rate50 = sum(1 for r in recent50 if int(r["place"]) <= 2) / len(recent50)
     climb  = min(100, max(0, (rate10 - rate50) * 500 + 50))
 
-    # 展示改善度（速く＝小さくなるほど改善）
+    # 【過去実績データ】展示改善度（速く＝小さくなるほど改善。いずれも確定済みの過去実績）
     ex5  = [float(r["ex_time"]) for r in recent5  if _is_valid_ex(r.get("ex_time"))]
     ex20 = [float(r["ex_time"]) for r in recent20 if _is_valid_ex(r.get("ex_time"))]
     if ex5 and ex20:
@@ -799,32 +747,70 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
         if not boats:
             continue
 
-        # 直前情報を boats に適用（WeatherInfo を返す）
+        # 【朝刊AI】previews（展示・気象）は予想には使わない。
+        # 生データは教師データとしてキャッシュに保存するのみ。
         preview = preview_map.get((vn, rno))
-        weather: Optional[WeatherInfo] = None
         if preview:
-            weather = _apply_preview_to_boats(boats, preview)
+            try:
+                _PREVIEW_RAW_CACHE[(vn, rno)] = _extract_preview_raw(preview)
+            except Exception:
+                pass
+        weather: Optional[WeatherInfo] = WeatherInfo()
 
         boat1 = next((b for b in boats if b.lane == 1), None)
 
-        # ── ① 危険な1号艇 ────────────────────────────────
+        # ── ① 危険な1号艇（【朝刊AI】共通エンジンで算出）────
         breakdown  = _calc_danger_breakdown(boat1, boats, weather)
         d_score    = breakdown["total"]
         if d_score >= 40:
+            # コース別ST情報をまとめる（新聞表示・ST順位計算用）
+            boats_course_st = []
+            for b in boats:
+                boats_course_st.append({
+                    "lane":        b.lane,
+                    "name":        b.name,
+                    "racer_id":    b.racer_id,
+                    "course_st":   b.course_st,
+                    "course_nyuko": b.course_nyuko,
+                    "course_rank": b.course_rank,
+                    "avg_st":      b.avg_st,
+                    # 【朝刊AI】ex_st は previews 由来のため使用しない（常にNone）
+                })
+
+            # 1号艇の1コースSTが全6艇中何位か計算
+            # （1コース以外の選手も「1コースでのST」で比較）
+            st_1c_list = [
+                (b.lane, b.course_st[0])
+                for b in boats
+                if b.course_nyuko[0] > 0
+            ]
+            if st_1c_list and boat1 and boat1.course_nyuko[0] > 0:
+                st_1c_sorted = sorted(st_1c_list, key=lambda x: x[1])
+                boat1_1c_rank = next(
+                    (i+1 for i, (lane, _) in enumerate(st_1c_sorted) if lane == 1), None
+                )
+            else:
+                boat1_1c_rank = None
+
             danger_list.append({
-                "venue":      venue_name,
-                "venue_num":  vn,
-                "race":       rno,
-                "score":      d_score,
-                "racer":      boat1.name if boat1 else "?",
-                "racer_class": boat1.racer_class if boat1 else "",
-                "win_rate":   boat1.win_rate    if boat1 else 0,
-                "motor":      boat1.motor       if boat1 else 0,
-                "avg_st":     boat1.avg_st      if boat1 else 0,
-                "ex_time":    boat1.ex_time      if boat1 else None,
-                "reason":     _danger_reason(boat1, boats),
-                "stars":      _calc_stars(boat1, boats),
-                "breakdown":  breakdown,
+                "venue":        venue_name,
+                "venue_num":    vn,
+                "race":         rno,
+                "score":        d_score,
+                "racer":        boat1.name if boat1 else "?",
+                "racer_class":  boat1.racer_class if boat1 else "",
+                "win_rate":     boat1.win_rate    if boat1 else 0,
+                "motor":        boat1.motor       if boat1 else 0,
+                "avg_st":       boat1.avg_st      if boat1 else 0,
+                # 【朝刊AI】ex_time は previews 由来のため保存しない
+                "reason":       _danger_reason(boat1, boats),
+                "stars":        _calc_stars(boat1, boats),
+                "breakdown":    breakdown,
+                # コース別ST情報（新聞の危険艇速報で表示）
+                "boats_course_st":  boats_course_st,
+                "boat1_1c_st":      boat1.course_st[0] if boat1 and boat1.course_nyuko[0] > 0 else None,
+                "boat1_1c_rank":    boat1_1c_rank,      # 6艇中の1コースST順位
+                "boat1_1c_nyuko":   boat1.course_nyuko[0] if boat1 else 0,
             })
 
         # ── ③ 万舟警報 ───────────────────────────────────

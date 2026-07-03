@@ -357,7 +357,7 @@ def generate_csvs(data: dict, prefix: str = "") -> list[str]:
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(["日付","会場","レース","危険度","ランク","選手名","等級",
-                    "勝率","モーター2連率","平均ST","展示タイム","判定理由","AIコメント"])
+                    "勝率","モーター2連率","平均ST","判定理由","AIコメント"])
         for d in all_danger:
             score = d.get("score", 0)
             rank  = "S" if score >= 80 else "A" if score >= 60 else "B"
@@ -365,7 +365,7 @@ def generate_csvs(data: dict, prefix: str = "") -> list[str]:
                 date_str, d.get("venue",""), d.get("race",""),
                 score, rank, d.get("racer",""), d.get("racer_class",""),
                 d.get("win_rate",""), d.get("motor",""),
-                d.get("avg_st",""), d.get("ex_time",""),
+                d.get("avg_st",""),
                 d.get("reason",""), _race_comment(d),
             ])
     paths.append(path)
