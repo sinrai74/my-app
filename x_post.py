@@ -332,7 +332,7 @@ def post_from_ranking(
                 top_match = top_manshuu_match,
             )
     except Exception as _e:
-        log.warning("[X投稿] 生成失敗: %s", _e)
+        log.error("[X投稿] 生成失敗: %s", _e, exc_info=True)
         body += "\n【X投稿用】上記をXにコピペしてください。"
 
     # ── 添付画像を収集 ───────────────────────────────────────

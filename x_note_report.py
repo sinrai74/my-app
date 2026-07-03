@@ -2188,14 +2188,22 @@ def send_note_report(
         if data:
             sorted_index, _, race_scores = _build_race_index(data)
             if sorted_index:
-                top_key = sorted_index[0]
-                top_venue = top_key[0]
-                top_race  = str(top_key[1])
-                top_match = int(race_scores.get(top_key, {}).get("match_index", 0))
+                # sorted_index の要素は (venue, race, [brand_key, ...]) の3要素タプル。
+                # race_scores のキーは (venue, race) の2要素タプルなので、
+                # 先頭2要素だけを取り出して検索する。
+                top_venue, top_race_num = sorted_index[0][0], sorted_index[0][1]
+                top_race  = str(top_race_num)
+                top_match = int(race_scores.get((top_venue, top_race_num), {}).get("match_index", 0))
         x_post_block = newspaper_post(danger_count, manshuu_count, top_venue, top_race, top_match)
     except Exception as e:
-        log.warning("[X投稿] 生成失敗: %s", e)
-        x_post_block = ""
+        log.error("[X投稿] 生成失敗（フォールバックを使用）: %s", e, exc_info=True)
+        # 失敗時も最低限のX投稿ブロックを出す（メールから欠落しないようにする）
+        sep = "━━━━━━━━━━━━━━"
+        x_post_block = (
+            f"\n{sep}\n📱 X投稿候補\n{sep}\n"
+            f"📰本日のAI競艇新聞を公開しました。\nnoteで無料公開中です。\n"
+            f"#競艇 #ボートレース #競艇予想 #note\n{sep}"
+        )
 
     body = (
         f"AI競艇新聞 {date_disp} を生成しました。\n\n"
