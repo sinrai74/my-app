@@ -198,59 +198,68 @@ def _period_summary_html(label: str, period_data: dict, cumulative_rank_data: di
 </div>"""
 
 
-def _trust_badge_html(trust: dict, daily_stats: dict, today_records: list) -> str:
+def _trust_badge_html(records_30d: list, daily_stats_range: dict) -> str:
     """
-    ⑮ AI信頼度バッジHTML。
-    危険艇: 「掲載X件中Y件的中」形式で表示。
-    万舟:   「掲載20件中、実際に万舟X件 / 高配当X件 / 中穴X件」形式で表示。
+    ⑮ AI信頼度バッジHTML（30日実績・新聞掲載件数ベース）。
+    危険艇: 過去30日の「掲載X件中Y件的中」を合算して表示。
+    万舟:   過去30日の「掲載X件　上位10件中Y件万舟／高配当Y件／中穴Y件」を合算表示。
     高配当は独立ブランドとして廃止し、万舟の内訳として表示する。
-    daily_stats がある場合はそちらを優先（正確な掲載件数）。
+    daily_stats.json が無い日・列が無い旧データは自動的に母数から除外される
+    （_calc_brand_results の has_data 判定による）。
     """
     color_map = {"A+": "#ef5350", "A": "#ffa726", "B": "#ffee58", "C": "#42a5f5"}
     rows = ""
 
-    # 危険艇
-    danger_result = _calc_brand_results(today_records, daily_stats, "danger")
-    t_danger = trust.get("danger", {"rate": 0, "trust": "C", "total": 0})
-    color = color_map.get(t_danger["trust"], "#999")
+    def _trust_of(rate: float) -> str:
+        if rate >= 65: return "A+"
+        if rate >= 55: return "A"
+        if rate >= 45: return "B"
+        return "C"
+
+    # 危険艇（過去30日の掲載件数ベース合算）
+    danger_result = _calc_brand_results_range(records_30d, daily_stats_range, "danger")
     if danger_result["has_data"]:
-        detail = f'掲載{danger_result["listed"]}件中{danger_result["hit"]}件的中（{danger_result["rate"]}%）'
-    elif t_danger["total"] > 0:
-        detail = f'{t_danger["rate"]}%（{t_danger["total"]}件・30日実績）'
+        trust_d = _trust_of(danger_result["rate"])
+        color   = color_map.get(trust_d, "#999")
+        detail  = f'掲載{danger_result["listed"]}件中{danger_result["hit"]}件的中（{danger_result["rate"]}%・30日実績）'
     else:
-        detail = "本日データなし"
+        trust_d = "C"
+        color   = color_map.get(trust_d, "#999")
+        detail  = "30日実績データなし"
     rows += f"""
 <div class="trust-row">
   <span class="trust-icon">🚨</span>
   <span class="trust-label">危険艇</span>
-  <span class="trust-badge" style="background:{color}">{t_danger["trust"]}</span>
+  <span class="trust-badge" style="background:{color}">{trust_d}</span>
   <span class="trust-detail">{detail}</span>
 </div>"""
 
-    # 万舟（上位10件の的中検証 + 全20件からの高配当・中穴内訳）
-    manshuu_result  = _calc_brand_results(today_records, daily_stats, "manshuu")
-    hot_result      = _calc_brand_results(today_records, daily_stats, "hot_high")
-    korogashi_result = _calc_brand_results(today_records, daily_stats, "korogashi")
-    t_manshuu = trust.get("manshuu", {"rate": 0, "trust": "C", "total": 0})
-    color_m = color_map.get(t_manshuu["trust"], "#999")
-    listed_count = daily_stats.get("manshuu", {}).get("count", 0)
+    # 万舟（過去30日、上位10件の的中検証 + 全掲載件数からの高配当・中穴内訳）
+    manshuu_result   = _calc_brand_results_range(records_30d, daily_stats_range, "manshuu")
+    hot_result       = _calc_brand_results_range(records_30d, daily_stats_range, "hot_high")
+    korogashi_result = _calc_brand_results_range(records_30d, daily_stats_range, "korogashi")
+    listed_total = sum(
+        v.get("manshuu", {}).get("count", 0) for v in daily_stats_range.values()
+    )
 
     if manshuu_result["has_data"] or hot_result["has_data"]:
-        top10_text = f'上位10件中{manshuu_result["hit"]}件万舟' if manshuu_result["has_data"] else ""
+        trust_m = _trust_of(manshuu_result["rate"] if manshuu_result["has_data"] else hot_result["rate"])
+        color_m = color_map.get(trust_m, "#999")
+        top10_text = f'上位10件中{manshuu_result["hit"]}件万舟（{manshuu_result["rate"]}%）' if manshuu_result["has_data"] else ""
         hot_text   = f'高配当{hot_result["hit"]}件' if hot_result["has_data"] else ""
         koro_text  = f'中穴{korogashi_result["hit"]}件' if korogashi_result["has_data"] else ""
         parts = [x for x in [top10_text, hot_text, koro_text] if x]
-        detail_m = f'掲載{listed_count}件　' + "　".join(parts) if parts else f'掲載{listed_count}件'
-    elif t_manshuu["total"] > 0:
-        detail_m = f'{t_manshuu["rate"]}%（{t_manshuu["total"]}件・30日実績）'
+        detail_m = f'掲載{listed_total}件（30日累計）　' + "　".join(parts) if parts else f'掲載{listed_total}件（30日累計）'
     else:
-        detail_m = "本日データなし"
+        trust_m = "C"
+        color_m = color_map.get(trust_m, "#999")
+        detail_m = "30日実績データなし"
 
     rows += f"""
 <div class="trust-row">
   <span class="trust-icon">💰</span>
   <span class="trust-label">万舟</span>
-  <span class="trust-badge" style="background:{color_m}">{t_manshuu["trust"]}</span>
+  <span class="trust-badge" style="background:{color_m}">{trust_m}</span>
   <span class="trust-detail">{detail_m}</span>
 </div>"""
 
@@ -369,12 +378,77 @@ def _calc_brand_results(
     }
 
 
+def _load_daily_stats_range(end_date: str, days: int) -> dict:
+    """
+    daily_stats.json から end_date を含む過去 days 日間の全日付分を返す。
+    戻り値: {date_str: daily_stats_entry, ...}
+    """
+    if not os.path.exists("daily_stats.json"):
+        return {}
+    try:
+        with open("daily_stats.json", "r", encoding="utf-8") as f:
+            all_data = json.load(f)
+    except Exception:
+        return {}
+
+    end_dt = datetime.strptime(end_date, "%Y%m%d")
+    start_dt = end_dt - timedelta(days=days - 1)
+    start_str = start_dt.strftime("%Y%m%d")
+
+    return {d: v for d, v in all_data.items() if start_str <= d <= end_date}
+
+
+def _calc_brand_results_range(
+    records: list[dict],
+    daily_stats_range: dict,
+    brand: str,
+) -> dict:
+    """
+    複数日分の daily_stats（_load_daily_stats_range の戻り値）を使って
+    「期間内の掲載件数合計 X件中、Y件が条件達成」を計算する（30日実績用）。
+
+    records は対象期間の hit_record.csv レコード（date列を含む）。
+    日付ごとに掲載レース一覧が異なるため、日付単位で照合してから合算する。
+
+    戻り値は _calc_brand_results と同じ形式。
+    """
+    if not daily_stats_range:
+        return {"listed": 0, "checked": 0, "hit": 0, "rate": 0.0, "has_data": False}
+
+    # 日付ごとにレコードをグルーピング
+    records_by_date: dict[str, list[dict]] = {}
+    for r in records:
+        d = str(r.get("date", "")).replace("-", "")
+        records_by_date.setdefault(d, []).append(r)
+
+    total_listed = 0
+    total_checked = 0
+    total_hit = 0
+
+    for date_str, daily_stats in daily_stats_range.items():
+        day_records = records_by_date.get(date_str, [])
+        result = _calc_brand_results(day_records, daily_stats, brand)
+        total_listed  += result["listed"]
+        total_checked += result["checked"]
+        total_hit     += result["hit"]
+
+    rate = round(total_hit / total_checked * 100, 1) if total_checked > 0 else 0.0
+    return {
+        "listed":   total_listed,
+        "checked":  total_checked,
+        "hit":      total_hit,
+        "rate":     rate,
+        "has_data": total_checked > 0,
+    }
+
+
 def generate_results_html(date_str: str, output_path: str) -> dict:
     """実績ページHTMLを生成し、サマリーdictを返す"""
     periods = collect_all_periods(date_str)
     miss_analysis = analyze_misses(periods["today"]["records"])
     trust = calc_brand_trust(periods["d30"]["records"])
     daily_stats = _load_daily_stats(date_str)
+    daily_stats_range_30d = _load_daily_stats_range(date_str, 30)
     daily_review = generate_daily_review(
         periods["today"]["agg"], periods["today"]["rank_data"], miss_analysis,
     )
@@ -539,7 +613,7 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
 <!-- ⑮ AI信頼度 -->
 <div class="trust-section">
   <h2>🏅 AI信頼度（30日実績）</h2>
-  {_trust_badge_html(trust, daily_stats, periods["today"]["records"])}
+  {_trust_badge_html(periods["d30"]["records"], daily_stats_range_30d)}
 </div>
 
 <!-- ⑰ 外れ分析 -->
@@ -616,8 +690,13 @@ def send_results_page(html_path: str, date_str: str, summary: dict,
             profit      = today_agg.get("total_profit", 0),
         )
     except Exception as e:
-        log.warning("[X投稿] 生成失敗: %s", e)
-        x_post_block = ""
+        log.error("[X投稿] 生成失敗（フォールバックを使用）: %s", e, exc_info=True)
+        sep = "━━━━━━━━━━━━━━"
+        x_post_block = (
+            f"\n{sep}\n📱 X投稿候補\n{sep}\n"
+            f"📊AI実績ページを公開しました。\n毎日検証して精度を高めています。\n"
+            f"#競艇 #ボートレース #競艇予想\n{sep}"
+        )
 
     body = (
         f"AI実績ページ {date_disp} を添付します。\n\n"
