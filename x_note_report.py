@@ -1347,6 +1347,11 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
   padding:28px 16px;margin-bottom:20px;background:var(--card)}}
 .cover h1{{font-size:2em;color:var(--accent);letter-spacing:.1em}}
 .cover .date{{color:var(--gray);margin:6px 0 14px;font-size:.9em}}
+.morning-badge{{display:inline-block;background:var(--accent);color:#0d0d1a;
+  font-weight:bold;font-size:.85em;padding:4px 14px;border-radius:20px;
+  margin-bottom:10px;letter-spacing:.05em}}
+.morning-notice{{font-size:.78em;color:var(--gray);background:#12121e;
+  border-radius:6px;padding:8px 12px;margin-top:8px;line-height:1.5}}
 .kpi-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:14px}}
 @media(min-width:480px){{.kpi-grid{{grid-template-columns:repeat(4,1fr)}}}}
 .kpi{{background:#1a1a30;border-radius:8px;padding:12px 8px;text-align:center}}
@@ -1573,8 +1578,10 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 
 <!-- ① 表紙 -->
 <div class="cover">
+  <div class="morning-badge">🌅 朝版（Morning Edition）</div>
   <h1>📰 AI競艇新聞</h1>
   <div class="date">{date_disp}発行　{now_str}生成　毎朝7時更新</div>
+  <div class="morning-notice">この新聞は朝時点のデータを基に生成されています。掲載内容は当日中変更されません。</div>
   <div class="kpi-grid">
     <div class="kpi"><div class="kn s">{s_d}</div><div class="kl">危険Sランク</div></div>
     <div class="kpi"><div class="kn s">{s_m}</div><div class="kl">万舟Sランク</div></div>
@@ -2027,6 +2034,10 @@ def generate_markdown(data: dict, output_path: str) -> None:
     lines = [
         f"# 📰 AI競艇新聞 {date_disp}",
         "",
+        f"🌅 **朝版（Morning Edition）**　生成日時: {datetime.now(JST).strftime('%Y/%m/%d %H:%M')}",
+        "",
+        "> この新聞は朝時点のデータを基に生成されています。掲載内容は当日中変更されません。",
+        "",
         f"*{SYSTEM_NAME} | AI Version: {AI_VERSION}*",
         "",
         "## 📑 目次",
@@ -2160,7 +2171,7 @@ def send_note_report(
     data: Optional[dict] = None,
 ) -> bool:
     date_disp = f"{date_str[4:6]}/{date_str[6:8]}"
-    subject   = f"📰 AI競艇新聞 {date_disp}（note用）"
+    subject   = f"🌅 【朝版】AI競艇新聞 {date_disp}（note用）"
 
     # X投稿候補テキストを生成
     try:
@@ -2190,6 +2201,8 @@ def send_note_report(
         )
 
     body = (
+        f"🌅 朝版（Morning Edition）　生成日時: {datetime.now(JST).strftime('%Y/%m/%d %H:%M')}\n"
+        "この新聞は朝時点のデータを基に生成されています。掲載内容は当日中変更されません。\n\n"
         f"AI競艇新聞 {date_disp} を生成しました。\n\n"
         "【添付ファイル一覧】\n"
         f"  note.html     ← noteエディタにコピペ\n"

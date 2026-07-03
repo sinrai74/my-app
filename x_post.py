@@ -48,6 +48,9 @@ _HASHTAGS: dict[str, str] = {
     "awakening": "#競艇 #ボートレース #モーター #覚醒 #競艇予想",
 }
 
+# 【朝版ポリシー】このメール本文は朝生成データに基づく（当日中は書き換えない）
+_MORNING_NOTICE = "🌅 朝版データ（当日中変更なし）"
+
 
 # ════════════════════════════════════════════════════════════
 # テキスト生成（x_ranking.py と同じ内容）
@@ -82,7 +85,7 @@ def _format_danger(data: dict) -> str:
     rank = _score_to_rank(top["score"])
     stars = top.get("stars", {})
     lines = [
-        f"🚨 AI危険艇速報 {date_str}", "",
+        f"🚨 AI危険艇速報 {date_str}", f"（{_MORNING_NOTICE}）", "",
         f"【{rank}】{top['venue']}{top['race']}R",
         f"{top['racer']}",
         f"▶ {top['reason']}", "",
@@ -116,7 +119,7 @@ def _format_hot(data: dict) -> str:
     items = data.get("hot_motor", [])
     if not items:
         return f"🔥【{date_str} 激走モーターTOP10】🔥\n\nデータ蓄積中...\n{_HASHTAGS['hot']}"
-    lines = [f"🔥 AI激走モーター {date_str}", ""]
+    lines = [f"🔥 AI激走モーター {date_str}", f"（{_MORNING_NOTICE}）", ""]
     for i, m in enumerate(items[:10], 1):
         recent = m.get("recent5", "---")
         gap    = m.get("gap", 0)
@@ -135,7 +138,7 @@ def _format_manshuu(data: dict) -> str:
     top = items[0]
     rank = _score_to_rank(top["score"])
     reasons = top.get("key_reason", "").split(" / ")
-    lines = [f"💰 AI万舟警報 {date_str}", "", f"【{rank}】{top['venue']}{top['race']}R", ""]
+    lines = [f"💰 AI万舟警報 {date_str}", f"（{_MORNING_NOTICE}）", "", f"【{rank}】{top['venue']}{top['race']}R", ""]
     for r in reasons[:3]:
         lines.append(r if r.startswith("🔥") else f"🔥 {r}")
     lines.append("")
@@ -154,7 +157,7 @@ def _format_awakening(data: dict) -> str:
     items = data.get("awakening_motor", [])
     if not items:
         return f"⚡【{date_str} 覚醒モーターTOP10】⚡\n\nデータ蓄積中...\n{_HASHTAGS['awakening']}"
-    lines = [f"⚡ AI覚醒モーター {date_str}", ""]
+    lines = [f"⚡ AI覚醒モーター {date_str}", f"（{_MORNING_NOTICE}）", ""]
     for i, a in enumerate(items[:10], 1):
         recent = a.get("recent10", "---")
         old_r  = a.get("old_2rate")
@@ -290,9 +293,9 @@ def post_from_ranking(
         "awakening": "覚醒モーター",
     }
     if len(target_types) == 1:
-        subject = f"[競艇AI] {date_str} {type_labels.get(target_types[0], target_types[0])}"
+        subject = f"🌅[朝版][競艇AI] {date_str} {type_labels.get(target_types[0], target_types[0])}"
     else:
-        subject = f"[競艇ランキング] {date_str} 本日のAIランキング"
+        subject = f"🌅[朝版][競艇ランキング] {date_str} 本日のAIランキング"
 
     # ── 本文: 指定種類を縦に並べる ───────────────────────────
     sep = "\n" + "=" * 50 + "\n"

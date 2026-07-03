@@ -721,6 +721,8 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
 .footer{{text-align:center;color:#444;font-size:.78em;padding:20px 0;
   border-top:1px solid var(--border);margin-top:10px}}
 .footer-meta{{color:#3a3a3a;font-size:.85em;margin-top:6px}}
+.verification-notice{{font-size:.78em;color:var(--gray);background:#12121e;
+  border-radius:6px;padding:8px 12px;margin-top:10px;line-height:1.5}}
 </style>
 </head>
 <body>
@@ -728,6 +730,7 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
 <div class="header">
   <h1>📊 AI実績ページ</h1>
   <div class="meta">{date_disp}分　生成: {now_str}</div>
+  <div class="verification-notice">本検証は朝版AI競艇新聞（{date_disp}発行分）の予想を基準に集計しています。当日の途中経過・速報の反映は行っていません。</div>
 </div>
 
 <!-- ⑱ AI総評 -->
@@ -846,7 +849,9 @@ def send_results_page(html_path: str, date_str: str, summary: dict,
         )
 
     body = (
-        f"AI実績ページ {date_disp} を添付します。\n\n"
+        f"AI実績ページ {date_disp} を添付します。\n"
+        f"本検証は朝版AI競艇新聞（{date_disp}発行分）の予想を基準に集計しています。"
+        f"当日の途中経過・速報の反映は行っていません。\n\n"
         f"【AI総評】\n{summary['daily_review']}\n\n"
         f"今日の的中率: {today_agg['hit_rate']}%\n"
         f"7日トレンド: {summary['trend_7d']['arrow']} {summary['trend_7d']['text']}\n"

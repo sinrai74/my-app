@@ -25,6 +25,10 @@ name: X Ranking Post
         description: '画像添付 (true/false)'
         required: false
         default: 'true'
+      save_data:
+        description: '生成結果を保存(commit)する (true/false)。手動確認時はfalseにすると本番データを上書きしない'
+        required: false
+        default: 'true'
 
 jobs:
   post:
@@ -82,10 +86,11 @@ jobs:
           echo "投稿種類: $TYPE"
 
       # ── 前日モーター履歴を蓄積 ──────────────────────────
-      # 激走・覚醒スコアは motor_history.csv の蓄積データが必要。
-      # danger/hot/awakening/all すべてで実行する（検証のみ不要）。
+      # 【朝版ポリシー】ランキング生成は朝(danger)の1回のみ。
+      # 激走・覚醒の送信タイミング(hot/awakening)では再生成しない
+      # （展示情報等の後追い反映によるデータ書き換えを防ぐため）。
       - name: Update motor history
-        if: steps.post_type.outputs.type != 'verification'
+        if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         run: |
           DATE_ARG=""
           if [ -n "${{ github.event.inputs.date }}" ]; then
@@ -94,12 +99,15 @@ jobs:
           fi
           python x_ranking.py --update-history $DATE_ARG || echo "履歴更新失敗（続行）"
 
-      # ── ランキング生成（検証以外は常に実行）────────────
+      # ── ランキング生成（朝版：1日1回のみ生成し、以後は固定）──────
+      # 【朝版ポリシー】新聞・危険艇・万舟・転がし・激走・覚醒は
+      # 毎朝のデータ取得後に一度だけ生成し、当日中は再計算・書き換えを行わない。
+      # 展示ST・展示タイムはリアルタイム反映せず、翌日以降の学習用データとしてのみ使う。
       # cronを前倒ししているため、当日の出走表がBoatraceOpenAPI側に
       # まだ反映されていない場合がある。生成結果の date と実際のレース
       # 件数を確認し、不一致・空データなら最大2回、10分間隔でリトライする。
       - name: Generate rankings
-        if: steps.post_type.outputs.type != 'verification'
+        if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         run: |
           EXPECTED_DATE="${{ github.event.inputs.date }}"
           if [ -z "$EXPECTED_DATE" ]; then
@@ -140,9 +148,9 @@ jobs:
 
           rm -f _check_ranking_date.py
 
-      # ── 画像生成 ───────────────────────────────────────
+      # ── 画像生成（朝版：ranking_cache.json と同時に1回だけ生成）───
       - name: Generate images
-        if: steps.post_type.outputs.type != 'verification' && github.event.inputs.with_image != 'false'
+        if: (steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all') && github.event.inputs.with_image != 'false'
         run: |
           python x_image.py --all --input ranking_cache.json || echo "画像生成失敗（テキストのみ）"
 
@@ -172,9 +180,9 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type hot $IMG $DRY
 
-      # ── 万舟警報を送信（イベント駆動のため allのみ）──
+      # ── 万舟警報を送信（朝の危険艇と同時に送信）──
       - name: Send - Manshuu Alert
-        if: steps.post_type.outputs.type == 'all'
+        if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
@@ -256,8 +264,11 @@ jobs:
           python x_weekly_report.py $DRY || echo "週次レポート失敗（続行）"
 
       # ── motor_history.csv を保存 ──────────────────────
+      # 【手動確認用】workflow_dispatch で save_data=false を指定すると、
+      # 生成・送信は行うが git commit/push はスキップする（本番データを上書きしない）。
+      # 通常のスケジュール実行(cron)では常に保存する。
       - name: Commit motor history
-        if: always()
+        if: always() && (github.event_name != 'workflow_dispatch' || github.event.inputs.save_data != 'false')
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -271,3 +282,9 @@ jobs:
           git push origin main || echo "push失敗"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip commit (manual dry check)
+        if: always() && github.event_name == 'workflow_dispatch' && github.event.inputs.save_data == 'false'
+        run: |
+          echo "save_data=false のため、生成結果は保存(commit)しませんでした。"
+          echo "ranking_cache.json 等はこのジョブの実行環境内でのみ変更され、リポジトリには反映されていません。"
