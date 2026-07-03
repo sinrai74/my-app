@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
-x_results_page.py  ── ⑭ AI実績ページ 完全刷新版
+x_results_page.py  ── ⑭ AI実績ページ（詳細版・後方互換）
 
-今日 / 7日 / 30日 / 累計 の4期間でブランド別成功率を集計し、
-⑮AI信頼度・⑯改善ログ・⑰外れ分析・⑱AI総評を統合したHTMLページを
-生成・メール送信する。
+【役割分離について】
+2026年7月の仕様変更により、AI実績ページは以下3種類に分離された：
+  x_results_public.py    … 公開用（ユーザー向け、X・note配信用）
+  x_results_developer.py … 開発用（AI改善専用、非公開）
+  x_results_page.py（本ファイル） … 詳細版（今日/7日/30日/累計の全期間タブ付き、後方互換）
+
+集計ロジックは x_results_common.py に集約し、本ファイルはそれを
+インポートして詳細版HTMLの表示処理のみを行う。
 
 Usage:
     python x_results_page.py              # 前日分の実績ページを生成
@@ -39,39 +44,22 @@ from x_verification import (
 )
 from x_improvement_log import format_log_html, format_log_text
 
+# 【役割分離】集計ロジックは x_results_common に集約し、ここではインポートして使う
+from x_results_common import (
+    collect_all_periods,
+    load_daily_stats as _load_daily_stats,
+    load_daily_stats_range as _load_daily_stats_range,
+    calc_brand_results as _calc_brand_results,
+    calc_brand_results_range as _calc_brand_results_range,
+    calc_ranking_payouts as _calc_ranking_payouts,
+)
+
 log = logging.getLogger("x_results")
 
 JST     = timezone(timedelta(hours=9))
 MAIL_TO = "bigkirinuki@gmail.com"
 
 
-# ════════════════════════════════════════════════════════════
-# 期間別データ集計
-# ════════════════════════════════════════════════════════════
-
-def collect_all_periods(end_date: str) -> dict:
-    """
-    ⑭ 今日/7日/30日/累計の4期間すべてを集計してまとめて返す。
-    """
-    records_1d  = load_today_records(end_date)
-    records_7d  = load_records_range(days=7,  end_date=end_date)
-    records_30d = load_records_range(days=30, end_date=end_date)
-    records_all = load_records_range(days=None, end_date=end_date)
-
-    periods = {}
-    for label, records in [
-        ("today", records_1d), ("d7", records_7d),
-        ("d30", records_30d), ("all", records_all),
-    ]:
-        agg = aggregate(records)
-        rank_data = aggregate_by_rank(records)
-        periods[label] = {
-            "records": records,
-            "agg": agg,
-            "rank_data": rank_data,
-        }
-
-    return periods
 
 
 # ════════════════════════════════════════════════════════════
@@ -284,210 +272,10 @@ def _miss_analysis_html(miss: dict) -> str:
 # HTML生成
 # ════════════════════════════════════════════════════════════
 
-def _load_daily_stats(date_str: str) -> dict:
-    """
-    daily_stats.json から指定日の掲載件数・レース一覧を返す。
-    ファイルがない・日付がない場合は空dictを返す。
-    """
-    if not os.path.exists("daily_stats.json"):
-        return {}
-    try:
-        with open("daily_stats.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get(date_str, {})
-    except Exception:
-        return {}
+# 【役割分離】_load_daily_stats / _calc_brand_results / _load_daily_stats_range /
+# _calc_brand_results_range / _calc_ranking_payouts は x_results_common.py に集約済み。
+# ファイル冒頭で import 済みのため、ここでの再定義はしない。
 
-
-def _calc_brand_results(
-    records: list[dict],
-    daily_stats: dict,
-    brand: str,
-) -> dict:
-    """
-    「掲載X件中、Y件が条件達成」を計算して返す。
-
-    brand: "danger" / "manshuu" / "hot_high" / "korogashi"
-    daily_stats: _load_daily_stats() の戻り値（掲載レース一覧）
-
-    戻り値:
-      {
-        "listed":  20,   # 掲載件数（daily_stats から）
-        "checked": 10,   # 検証対象件数（万舟は top10 のみ）
-        "hit":     4,    # 条件達成件数
-        "rate":    20.0, # 達成率（checked 基準）
-        "has_data": bool,
-      }
-    """
-    # 掲載レースのキーセット
-    if brand == "manshuu":
-        # 万舟の的中検証は上位10件のみ
-        listed_count = daily_stats.get("manshuu", {}).get("count", 0)
-        check_races  = {
-            (str(r["venue_num"]), str(r["race"]))
-            for r in daily_stats.get("manshuu", {}).get("top10", [])
-        }
-    elif brand == "danger":
-        listed_count = daily_stats.get("danger", {}).get("count", 0)
-        check_races  = {
-            (str(r["venue_num"]), str(r["race"]))
-            for r in daily_stats.get("danger", {}).get("races", [])
-        }
-    else:
-        # hot_high / korogashi: 万舟掲載20件全てが対象
-        listed_count = daily_stats.get("manshuu", {}).get("count", 0)
-        check_races  = {
-            (str(r["venue_num"]), str(r["race"]))
-            for r in daily_stats.get("manshuu", {}).get("races", [])
-        }
-
-    if not check_races or not records:
-        return {"listed": listed_count, "checked": 0, "hit": 0, "rate": 0.0, "has_data": False}
-
-    checked = 0
-    hit     = 0
-    for r in records:
-        key = (str(r.get("venue_num", "")), str(r.get("race", "")))
-        if key not in check_races:
-            continue
-        result_combo = r.get("result_combo", "")
-        if not (result_combo and "-" in result_combo):
-            continue
-        payout = float(r.get("payout") or 0)
-        checked += 1
-        if brand == "danger":
-            if result_combo.split("-")[0].strip() != "1":
-                hit += 1
-        elif brand == "manshuu":
-            if payout > 10000:
-                hit += 1
-        elif brand == "hot_high":
-            if payout > 5000:
-                hit += 1
-        elif brand == "korogashi":
-            if payout > 2700:
-                hit += 1
-
-    rate = round(hit / checked * 100, 1) if checked > 0 else 0.0
-    return {
-        "listed":   listed_count,
-        "checked":  checked,
-        "hit":      hit,
-        "rate":     rate,
-        "has_data": checked > 0,
-    }
-
-
-def _load_daily_stats_range(end_date: str, days: int) -> dict:
-    """
-    daily_stats.json から end_date を含む過去 days 日間の全日付分を返す。
-    戻り値: {date_str: daily_stats_entry, ...}
-    """
-    if not os.path.exists("daily_stats.json"):
-        return {}
-    try:
-        with open("daily_stats.json", "r", encoding="utf-8") as f:
-            all_data = json.load(f)
-    except Exception:
-        return {}
-
-    end_dt = datetime.strptime(end_date, "%Y%m%d")
-    start_dt = end_dt - timedelta(days=days - 1)
-    start_str = start_dt.strftime("%Y%m%d")
-
-    return {d: v for d, v in all_data.items() if start_str <= d <= end_date}
-
-
-def _calc_brand_results_range(
-    records: list[dict],
-    daily_stats_range: dict,
-    brand: str,
-) -> dict:
-    """
-    複数日分の daily_stats（_load_daily_stats_range の戻り値）を使って
-    「期間内の掲載件数合計 X件中、Y件が条件達成」を計算する（30日実績用）。
-
-    records は対象期間の hit_record.csv レコード（date列を含む）。
-    日付ごとに掲載レース一覧が異なるため、日付単位で照合してから合算する。
-
-    戻り値は _calc_brand_results と同じ形式。
-    """
-    if not daily_stats_range:
-        return {"listed": 0, "checked": 0, "hit": 0, "rate": 0.0, "has_data": False}
-
-    # 日付ごとにレコードをグルーピング
-    records_by_date: dict[str, list[dict]] = {}
-    for r in records:
-        d = str(r.get("date", "")).replace("-", "")
-        records_by_date.setdefault(d, []).append(r)
-
-    total_listed = 0
-    total_checked = 0
-    total_hit = 0
-
-    for date_str, daily_stats in daily_stats_range.items():
-        day_records = records_by_date.get(date_str, [])
-        result = _calc_brand_results(day_records, daily_stats, brand)
-        total_listed  += result["listed"]
-        total_checked += result["checked"]
-        total_hit     += result["hit"]
-
-    rate = round(total_hit / total_checked * 100, 1) if total_checked > 0 else 0.0
-    return {
-        "listed":   total_listed,
-        "checked":  total_checked,
-        "hit":      total_hit,
-        "rate":     rate,
-        "has_data": total_checked > 0,
-    }
-
-
-def _calc_ranking_payouts(records: list[dict], daily_stats: dict) -> list[dict]:
-    """
-    「📊今日のAIランキング」（AI一致指数トップ10）の各レースについて、
-    実際の払戻・的中結果を hit_record.csv と突合して返す。
-
-    daily_stats["ranking"] は _save_daily_stats（x_note_report.py）が
-    AI一致指数降順で保存した上位10件（venue_num・race・venue・match_index）。
-
-    戻り値: [{"venue":, "race":, "match_index":, "payout": int|None,
-              "result_combo": str, "has_data": bool}, ...]
-             match_index 降順（= 元の順位）のまま返す。
-    """
-    ranking = daily_stats.get("ranking", [])
-    if not ranking:
-        return []
-
-    # (venue_num, race) → レコード のマップを作る
-    record_map: dict[tuple, dict] = {}
-    for r in records:
-        key = (str(r.get("venue_num", "")), str(r.get("race", "")))
-        record_map[key] = r
-
-    result = []
-    for item in ranking:
-        key = (str(item.get("venue_num", "")), str(item.get("race", "")))
-        rec = record_map.get(key)
-
-        payout = None
-        result_combo = ""
-        has_data = False
-        if rec:
-            result_combo = rec.get("result_combo", "")
-            if result_combo and "-" in result_combo:
-                payout = int(_safe_float(rec.get("payout")))
-                has_data = True
-
-        result.append({
-            "venue":        item.get("venue", ""),
-            "race":         item.get("race", ""),
-            "match_index":  item.get("match_index", 0),
-            "payout":       payout,
-            "result_combo": result_combo,
-            "has_data":     has_data,
-        })
-
-    return result
 
 
 def _brand_expectation_summary_html(records: list[dict], daily_stats: dict) -> str:
@@ -915,13 +703,47 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AI実績ページ 生成・送信")
     parser.add_argument("--date",    help="対象日 YYYYMMDD（省略時は前日）")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--skip-public",    action="store_true", help="公開用ページの生成をスキップ")
+    parser.add_argument("--skip-developer", action="store_true", help="開発用レポートの生成をスキップ")
+    parser.add_argument("--send-developer", action="store_true",
+                        help="開発用レポートをメール送信する（デフォルトは保存のみ・非公開）")
     args = parser.parse_args()
 
     date_str = args.date or _yesterday_jst()
-    html_path = "results.html"
 
+    # ── 詳細版（後方互換） ──────────────────────────────────
+    html_path = "results.html"
     summary = generate_results_html(date_str, html_path)
     ok = send_results_page(html_path, date_str, summary, dry_run=args.dry_run)
+
+    # ── 【役割分離】公開用ページ ─────────────────────────────
+    if not args.skip_public:
+        try:
+            from x_results_public import generate_public_html, generate_public_pdf, send_public_page
+            public_html = "ai_result_public.html"
+            public_pdf  = "ai_result_public.pdf"
+            public_summary = generate_public_html(date_str, public_html)
+            pdf_ok = generate_public_pdf(public_html, public_pdf)
+            send_public_page(
+                public_html, public_pdf if pdf_ok else None,
+                date_str, public_summary, dry_run=args.dry_run,
+            )
+        except Exception as e:
+            log.error("[公開用ページ] 生成・送信失敗: %s", e)
+
+    # ── 【役割分離】開発用レポート（デフォルトは保存のみ・非公開） ──
+    if not args.skip_developer:
+        try:
+            from x_results_developer import generate_developer_html, send_developer_report
+            dev_html = "ai_result_developer.html"
+            dev_summary = generate_developer_html(date_str, dev_html)
+            if args.send_developer:
+                send_developer_report(dev_html, date_str, dev_summary, dry_run=args.dry_run)
+            else:
+                log.info("[開発用レポート] 保存のみ（--send-developer 未指定のため送信スキップ）: %s", dev_html)
+        except Exception as e:
+            log.error("[開発用レポート] 生成失敗: %s", e)
+
     sys.exit(0 if ok else 1)
 
 
