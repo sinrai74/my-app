@@ -35,7 +35,7 @@ from x_verification import (
     load_today_records, load_records_range,
     aggregate, aggregate_by_rank,
     calc_brand_trust, analyze_misses, generate_daily_review,
-    trend_vs_previous, _yesterday_jst,
+    trend_vs_previous, _yesterday_jst, _safe_float,
 )
 from x_improvement_log import format_log_html, format_log_text
 
@@ -442,6 +442,134 @@ def _calc_brand_results_range(
     }
 
 
+def _calc_ranking_payouts(records: list[dict], daily_stats: dict) -> list[dict]:
+    """
+    「📊今日のAIランキング」（AI一致指数トップ10）の各レースについて、
+    実際の払戻・的中結果を hit_record.csv と突合して返す。
+
+    daily_stats["ranking"] は _save_daily_stats（x_note_report.py）が
+    AI一致指数降順で保存した上位10件（venue_num・race・venue・match_index）。
+
+    戻り値: [{"venue":, "race":, "match_index":, "payout": int|None,
+              "result_combo": str, "has_data": bool}, ...]
+             match_index 降順（= 元の順位）のまま返す。
+    """
+    ranking = daily_stats.get("ranking", [])
+    if not ranking:
+        return []
+
+    # (venue_num, race) → レコード のマップを作る
+    record_map: dict[tuple, dict] = {}
+    for r in records:
+        key = (str(r.get("venue_num", "")), str(r.get("race", "")))
+        record_map[key] = r
+
+    result = []
+    for item in ranking:
+        key = (str(item.get("venue_num", "")), str(item.get("race", "")))
+        rec = record_map.get(key)
+
+        payout = None
+        result_combo = ""
+        has_data = False
+        if rec:
+            result_combo = rec.get("result_combo", "")
+            if result_combo and "-" in result_combo:
+                payout = int(_safe_float(rec.get("payout")))
+                has_data = True
+
+        result.append({
+            "venue":        item.get("venue", ""),
+            "race":         item.get("race", ""),
+            "match_index":  item.get("match_index", 0),
+            "payout":       payout,
+            "result_combo": result_combo,
+            "has_data":     has_data,
+        })
+
+    return result
+
+
+def _brand_expectation_summary_html(records: list[dict], daily_stats: dict) -> str:
+    """
+    📊 本日のAI成績サマリー（ご要望の5項目）
+    ① 危険艇達成率（掲載20件中、1号艇以外1着の割合）
+    ② 万舟達成率（掲載上位10件中、payout>10,000円の割合）
+    ③ 高配当達成率（掲載20件中、payout>5,000円の割合）
+    ④ 各マークの期待値（役割達成率）一覧
+    ⑤ 今日のAIランキング（AI一致指数トップ10）の払戻一覧
+    """
+    danger_result = _calc_brand_results(records, daily_stats, "danger")
+    manshuu_result = _calc_brand_results(records, daily_stats, "manshuu")
+    hot_result = _calc_brand_results(records, daily_stats, "hot_high")
+
+    def _rate_text(result: dict, label: str) -> str:
+        if result["has_data"]:
+            return f'{label}: 掲載{result["listed"]}件中{result["hit"]}件達成（{result["rate"]}%）'
+        return f'{label}: データなし'
+
+    summary_rows = "".join([
+        f'<div class="expect-row"><span class="expect-icon">🚨</span>'
+        f'<span class="expect-label">危険艇</span>'
+        f'<span class="expect-detail">{_rate_text(danger_result, "1号艇以外1着")}</span></div>',
+        f'<div class="expect-row"><span class="expect-icon">💰</span>'
+        f'<span class="expect-label">万舟</span>'
+        f'<span class="expect-detail">{_rate_text(manshuu_result, "1万円超")}</span></div>',
+        f'<div class="expect-row"><span class="expect-icon">🎯</span>'
+        f'<span class="expect-label">転がし候補</span>'
+        f'<span class="expect-detail">準備中（データ整備後に対応）</span></div>',
+        f'<div class="expect-row"><span class="expect-icon">⚡</span>'
+        f'<span class="expect-label">激走モーター</span>'
+        f'<span class="expect-detail">対象外（的中判定なし）</span></div>',
+        f'<div class="expect-row"><span class="expect-icon">📈</span>'
+        f'<span class="expect-label">覚醒モーター</span>'
+        f'<span class="expect-detail">対象外（的中判定なし）</span></div>',
+    ])
+
+    # ③高配当は独立ブロックとしても表示（万舟20件からの内訳）
+    high_payout_block = (
+        f'<div class="expect-row"><span class="expect-icon">🔥</span>'
+        f'<span class="expect-label">高配当</span>'
+        f'<span class="expect-detail">{_rate_text(hot_result, "5千円超")}</span></div>'
+    )
+
+    # ⑤ AIランキング払戻一覧
+    ranking_list = _calc_ranking_payouts(records, daily_stats)
+    if ranking_list:
+        ranking_rows = ""
+        for i, item in enumerate(ranking_list, 1):
+            if item["has_data"]:
+                payout_text = f'{item["payout"]:,}円'
+                combo_text  = item["result_combo"]
+            else:
+                payout_text = "結果待ち"
+                combo_text  = "-"
+            ranking_rows += (
+                f'<tr><td>{i}位</td><td>{item["venue"]}{item["race"]}R</td>'
+                f'<td>{item["match_index"]}</td><td>{combo_text}</td>'
+                f'<td>{payout_text}</td></tr>'
+            )
+        ranking_html = (
+            '<table class="ranking-payout-table">'
+            '<thead><tr><th>順位</th><th>レース</th><th>一致指数</th><th>結果</th><th>払戻</th></tr></thead>'
+            f'<tbody>{ranking_rows}</tbody></table>'
+        )
+    else:
+        ranking_html = '<p class="no-data">AIランキングデータなし</p>'
+
+    return f"""
+<div class="brand-expectation-section">
+  <h2>📊 本日のAI成績サマリー</h2>
+  <div class="expectation-grid">
+    {summary_rows}
+    {high_payout_block}
+  </div>
+  <h3>📊 今日のAIランキング 払戻一覧</h3>
+  {ranking_html}
+</div>"""
+
+
+
 def generate_results_html(date_str: str, output_path: str) -> dict:
     """実績ページHTMLを生成し、サマリーdictを返す"""
     periods = collect_all_periods(date_str)
@@ -449,6 +577,7 @@ def generate_results_html(date_str: str, output_path: str) -> dict:
     trust = calc_brand_trust(periods["d30"]["records"])
     daily_stats = _load_daily_stats(date_str)
     daily_stats_range_30d = _load_daily_stats_range(date_str, 30)
+    brand_expectation_html = _brand_expectation_summary_html(periods["today"]["records"], daily_stats)
     daily_review = generate_daily_review(
         periods["today"]["agg"], periods["today"]["rank_data"], miss_analysis,
     )
@@ -487,6 +616,21 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
 .review-box{{background:#0e1e0e;border:1px solid #2a4a2a;border-radius:10px;
   padding:16px;margin-bottom:20px}}
 .review-box h2{{color:#81c784;font-size:1.05em;margin-bottom:8px}}
+/* 本日のAI成績サマリー */
+.brand-expectation-section{{background:var(--card);border:1px solid var(--border);
+  border-radius:10px;padding:16px;margin-bottom:20px}}
+.brand-expectation-section h2{{font-size:1.05em;color:var(--accent);margin-bottom:10px}}
+.brand-expectation-section h3{{font-size:.92em;color:var(--gray);margin:14px 0 8px}}
+.expectation-grid{{display:flex;flex-direction:column;gap:6px}}
+.expect-row{{display:flex;align-items:center;gap:8px;font-size:.85em;
+  padding:6px 8px;background:#12121e;border-radius:6px}}
+.expect-icon{{font-size:1.1em}}
+.expect-label{{min-width:70px;font-weight:bold;color:#cde}}
+.expect-detail{{color:var(--gray);flex:1}}
+.ranking-payout-table{{width:100%;border-collapse:collapse;font-size:.82em}}
+.ranking-payout-table th,.ranking-payout-table td{{padding:5px 8px;
+  border-bottom:1px solid #333;text-align:left}}
+.ranking-payout-table thead th{{color:var(--gray);font-weight:normal}}
 .review-text{{color:#cde;font-size:.92em;line-height:1.7}}
 /* タブ切り替え（CSS単体で動くラジオ+ラベル方式。JSがあれば併用して同期させる） */
 .tab-radio{{position:absolute;opacity:0;pointer-events:none;width:0;height:0}}
@@ -591,6 +735,9 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
   <h2>🤖 AI総評</h2>
   <div class="review-text">{daily_review}</div>
 </div>
+
+<!-- 📊 本日のAI成績サマリー（危険艇・万舟・高配当・各マーク達成率・AIランキング払戻） -->
+{brand_expectation_html}
 
 <!-- ⑭ 期間タブ（ラジオ+ラベルでCSS単体でも切替可能。JSがあれば併用同期）
      ラジオは #period-panels と同じ階層の兄弟に置き、~結合子でパネルを参照する。

@@ -2510,6 +2510,7 @@ def _save_daily_stats(data: dict, date_str: str) -> None:
       "20260701": {
         "danger":  {"count": 20, "races": [{"venue_num":4,"race":12}, ...]},
         "manshuu": {"count": 20, "races": [...], "top10": [最初の10件]},
+        "ranking": [{"venue_num":4,"race":12,"venue":"平和島","match_index":95}, ...]  # AI一致指数トップ10
       },
       ...
     }
@@ -2519,6 +2520,29 @@ def _save_daily_stats(data: dict, date_str: str) -> None:
 
     def _race_key(item: dict) -> dict:
         return {"venue_num": item.get("venue_num", 0), "race": item.get("race", 0)}
+
+    # venue名 → venue_num の逆引きマップ（危険艇・万舟のエントリから作る）
+    venue_num_map: dict[str, int] = {}
+    for item in all_danger + all_manshuu:
+        v = item.get("venue", "")
+        if v and v not in venue_num_map:
+            venue_num_map[v] = item.get("venue_num", 0)
+
+    # 📊 今日のAIランキング（AI一致指数トップ10）を venue_num 付きで保存
+    # x_results_page.py で hit_record.csv と突合して払戻を表示するために使う
+    ranking_top10 = []
+    try:
+        sorted_index, _, race_scores = _build_race_index(data)
+        ranked = sorted(race_scores.items(), key=lambda kv: -kv[1]["match_index"])[:10]
+        for (venue, race), s in ranked:
+            ranking_top10.append({
+                "venue_num":   venue_num_map.get(venue, 0),
+                "venue":       venue,
+                "race":        race,
+                "match_index": s["match_index"],
+            })
+    except Exception as e:
+        log.warning("[daily_stats] AIランキング保存失敗: %s", e)
 
     stats = {
         "danger": {
@@ -2531,6 +2555,7 @@ def _save_daily_stats(data: dict, date_str: str) -> None:
             # 万舟の的中検証は上位10件のみ（掲載上位10件）
             "top10": [_race_key(u) for u in all_manshuu[:10]],
         },
+        "ranking": ranking_top10,
     }
 
     daily_stats_file = "daily_stats.json"
@@ -2551,8 +2576,8 @@ def _save_daily_stats(data: dict, date_str: str) -> None:
     try:
         with open(daily_stats_file, "w", encoding="utf-8") as f:
             json.dump(existing, f, ensure_ascii=False, indent=2)
-        log.info("[daily_stats] 保存: %s 危険艇%d件 万舟%d件",
-                 date_str, len(all_danger), len(all_manshuu))
+        log.info("[daily_stats] 保存: %s 危険艇%d件 万舟%d件 AIランキング%d件",
+                 date_str, len(all_danger), len(all_manshuu), len(ranking_top10))
     except Exception as e:
         log.warning("[daily_stats] 保存失敗: %s", e)
 
