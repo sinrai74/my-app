@@ -295,16 +295,6 @@ def _section_comment_manshuu(all_manshuu: list) -> str:
     return " ".join(lines)
 
 
-def _section_comment_hot_high(manshuu_list: list) -> str:
-    cutoff = _hot_high_threshold(manshuu_list)
-    high = [u for u in manshuu_list if u.get("score", 0) >= cutoff]
-    if not high:
-        return "本日は高配当期待レースがありません。"
-    venues = list(dict.fromkeys(u.get("venue","") for u in high[:5]))
-    venue_txt = "・".join(venues[:3])
-    return f"荒れ指数{cutoff:.0f}以上の高配当期待レースが{len(high)}件。{venue_txt}は特に要チェックです。"
-
-
 def _section_comment_motor(hot_motor: list, label: str) -> str:
     if not hot_motor:
         return "本日はデータ蓄積中です（数日後に表示されます）。"
@@ -442,14 +432,11 @@ def generate_csvs(data: dict, prefix: str = "") -> list[str]:
 # AI総合注目度（PICKセクション用の加重平均、一致指数とは別軸）の重み
 OVERALL_WEIGHTS = {
     "danger":    0.25,
-    "manshuu":   0.25,
+    "manshuu":   0.30,
     "korogashi": 0.20,
     "motor_hot": 0.15,
     "motor_awk": 0.10,
-    "hot_high":  0.05,
 }
-
-HOT_HIGH_THRESHOLD = HOT_HIGH_THRESHOLD_FALLBACK   # 互換用エイリアス
 
 
 def _calc_match_index(brands: list[str], raw_scores: dict) -> float:
@@ -608,10 +595,6 @@ def build_dashboard(data: dict, conditions: list) -> dict:
     s_manshuu_count = sum(1 for u in all_manshuu if rank_of(u.get("score",0)) == "S")
     high_match_count = sum(1 for s in race_scores.values() if s["match_index"] >= 95)
 
-    # 高配当期待件数（動的閾値）
-    cutoff = _hot_high_threshold(all_manshuu)
-    hot_high_count = sum(1 for u in all_manshuu if u.get("score", 0) >= cutoff)
-
     best_venue  = conditions[0]["venue"] if conditions else None    # 最も期待
     worst_venue = None   # 最も堅そう（コンディション低い＝荒れにくい）
     rough_venue = None   # 最も荒れそう（万舟スコア最高）
@@ -630,7 +613,6 @@ def build_dashboard(data: dict, conditions: list) -> dict:
         "danger_s_count":     s_danger_count,
         "manshuu_s_count":    s_manshuu_count,
         "korogashi_count":    len(korogashi_buy),
-        "hot_high_count":     hot_high_count,
         "motor_hot_count":    len(hot_motor),
         "motor_awk_count":    len(awake_motor),
         "high_match_count":   high_match_count,
@@ -660,7 +642,6 @@ def _render_dashboard_section(data: dict, dashboard: dict) -> str:
     <div class="dash-cell s"><div class="dc-num">{d['danger_s_count']}</div><div class="dc-label">🚨危険艇S</div></div>
     <div class="dash-cell s"><div class="dc-num">{d['manshuu_s_count']}</div><div class="dc-label">💰万舟S</div></div>
     <div class="dash-cell"><div class="dc-num">{d['korogashi_count']}</div><div class="dc-label">🎯転がし候補</div></div>
-    <div class="dash-cell"><div class="dc-num">{d['hot_high_count']}</div><div class="dc-label">🔥高配当期待</div></div>
     <div class="dash-cell"><div class="dc-num">{d['motor_hot_count']}</div><div class="dc-label">⚡激走モーター</div></div>
     <div class="dash-cell"><div class="dc-num">{d['motor_awk_count']}</div><div class="dc-label">📈覚醒モーター</div></div>
     <div class="dash-cell hi"><div class="dc-num">{d['high_match_count']}</div><div class="dc-label">一致指数95+</div></div>
@@ -720,22 +701,6 @@ def _render_condition_section(data: dict) -> str:
 </section>"""
 
 
-def _hot_high_threshold(manshuu_list: list) -> float:
-    """
-    万舟リストから高配当期待の動的閾値を算出する。
-    上位 HOT_HIGH_RATIO 件のスコアを基準にする（最低3件は確保）。
-    データが少ない・分散がない場合は HOT_HIGH_THRESHOLD にフォールバック。
-    """
-    if not manshuu_list:
-        return HOT_HIGH_THRESHOLD
-    scores = sorted((u.get("score", 0) for u in manshuu_list), reverse=True)
-    n = max(3, math.ceil(len(scores) * HOT_HIGH_RATIO))
-    n = min(n, len(scores))
-    cutoff = scores[n - 1]
-    # 全件が同スコア帯などで閾値が低すぎる場合は固定値と高い方を採用
-    return max(cutoff, min(HOT_HIGH_THRESHOLD, scores[0]))
-
-
 # ════════════════════════════════════════════════════════════
 # ⑦ ブランドページ統一テンプレート（掲載条件・注意点）
 # ════════════════════════════════════════════════════════════
@@ -750,10 +715,6 @@ BRAND_CRITERIA: dict[str, dict] = {
     "manshuu": {
         "condition": "荒れ指数40点以上のレースを抽出（イン信頼度・実力接近度・ST分散・モーター格差・展示差・気象の6指標で算出）",
         "caution":   "荒れ指数はあくまで統計的傾向であり、決まり手や進入の急変までは予測できません。",
-    },
-    "hot_high": {
-        "condition": "万舟警報の中でも荒れ指数が上位30%（または80点以上）のレースのみを抽出",
-        "caution":   "高配当期待は的中率より払戻額の大きさに焦点を当てた指標です。点数を絞った勝負には不向きな場合があります。",
     },
     "motor_hot": {
         "condition": "直近5走の公式2連率を上回るモーターを検出（モーター履歴データが10走以上蓄積された会場のみ対象）",
@@ -821,7 +782,7 @@ def _build_race_index(data: dict) -> tuple:
       race_scores:  {(venue, race): {
           "overall":     重み付き加重平均スコア（既存・引き続き内部利用）,
           "match_index": AI一致指数（① 加点方式・100点満点）,
-          "danger":, "manshuu":, "korogashi":, "hot_high":,
+          "danger":, "manshuu":, "korogashi":,
           "motor_hot":, "motor_awk":, "brand_count":,
       }}
     """
@@ -847,9 +808,6 @@ def _build_race_index(data: dict) -> tuple:
         venue, race = u.get("venue",""), u.get("race","")
         score = u.get("score", 0)
         _add(venue, race, "manshuu", score)
-        # 高配当期待: 万舟スコアが閾値以上のものを別ブランドとしても掲載
-        if score >= HOT_HIGH_THRESHOLD:
-            _add(venue, race, "hot_high", score)
 
     # 転がし候補（korogashi_cache.json があれば統合）
     kdata = _load_korogashi_cache()
@@ -879,7 +837,6 @@ def _build_race_index(data: dict) -> tuple:
         danger_s    = raw.get("danger", 0)
         manshuu_s   = raw.get("manshuu", 0)
         korogashi_s = raw.get("korogashi", 0)
-        hot_high_s  = raw.get("hot_high", 0)
         # 激走/覚醒は会場単位データのためレース単位スコアはなし→掲載有無のみ反映
         motor_hot_present = any(
             m.get("venue","") == key[0]
@@ -897,8 +854,7 @@ def _build_race_index(data: dict) -> tuple:
             manshuu_s   * W["manshuu"]   +
             korogashi_s * W["korogashi"] +
             motor_hot_s * W["motor_hot"] +
-            motor_awk_s * W["motor_awk"] +
-            hot_high_s  * W["hot_high"]
+            motor_awk_s * W["motor_awk"]
         )
         # 重み合計に対して正規化（満点ブランドが揃っていなくても公平に）
         total_w = sum(W[b] for b in brands if b in W) or 1.0
@@ -914,7 +870,6 @@ def _build_race_index(data: dict) -> tuple:
             "danger":      danger_s,
             "manshuu":     manshuu_s,
             "korogashi":   korogashi_s,
-            "hot_high":    hot_high_s,
             "motor_hot":   motor_hot_s if motor_hot_present else None,
             "motor_awk":   motor_awk_s if motor_awk_present else None,
             "brand_count": len(brands),
@@ -924,7 +879,6 @@ def _build_race_index(data: dict) -> tuple:
     brand_counts = {
         "danger":    len(all_danger),
         "manshuu":   len(all_manshuu),
-        "hot_high":  sum(1 for u in all_manshuu if u.get("score", 0) >= HOT_HIGH_THRESHOLD),
         "motor_hot": len(data.get("hot_motor", [])),
         "motor_awk": len(data.get("awakening_motor", [])),
         "korogashi": sum(1 for s in kdata.get("top10", []) if s.get("verdict") in ("購入", "注意")),
@@ -938,7 +892,7 @@ def _anchor_for(venue, race, brands) -> str:
     base = _race_anchor(venue, race)
     if "danger" in brands:
         return base
-    if "manshuu" in brands or "hot_high" in brands:
+    if "manshuu" in brands:
         return base + "-manshuu"
     return base
 
@@ -948,9 +902,6 @@ def _anchor_for_brand(venue, race, brand: str) -> str:
     指定ブランド単体のジャンプ先アンカーを返す。
     danger      → レース詳細カード（危険艇セクション）
     manshuu     → レース詳細カード（万舟セクション）
-    hot_high    → 高配当期待セクション内の該当リンク
-                  （実体は万舟カードと同じだが、専用アンカーを振って
-                   高配当期待セクションへ直接ジャンプできるようにする）
     motor_hot   → 激走モーターセクションの先頭（レース単位データがないため）
     motor_awk   → 覚醒モーターセクションの先頭
     korogashi   → 転がし候補セクションの先頭
@@ -960,8 +911,6 @@ def _anchor_for_brand(venue, race, brand: str) -> str:
         return base
     if brand == "manshuu":
         return base + "-manshuu"
-    if brand == "hot_high":
-        return base + "-manshuu"   # 高配当期待は万舟詳細カードと同じ実体
     if brand == "motor_hot":
         return "motor"
     if brand == "motor_awk":
@@ -992,8 +941,43 @@ def _render_index_section(data: dict) -> str:
     if not sorted_index:
         return ""
 
+    # 万舟警報だけが掲載されている（危険艇・転がし等と重複しない）レースは
+    # 件数が多くINDEXが肥大化しやすいため、万舟スコア降順で上位20件に絞る。
+    # それ以外（危険艇や転がし等、複数ブランドが掲載されているレース）は全件残す。
+    all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
+    manshuu_score_map = {
+        (u.get("venue",""), u.get("race","")): u.get("score", 0)
+        for u in all_manshuu
+    }
+
+    manshuu_only = [
+        (venue, race, brands) for venue, race, brands in sorted_index
+        if brands == ["manshuu"]
+    ]
+    others = [
+        (venue, race, brands) for venue, race, brands in sorted_index
+        if brands != ["manshuu"]
+    ]
+
+    manshuu_only_top20 = sorted(
+        manshuu_only,
+        key=lambda item: -manshuu_score_map.get((item[0], item[1]), 0),
+    )[:20]
+    excluded_count = len(manshuu_only) - len(manshuu_only_top20)
+
+    # 会場→レース番号順に戻す
+    def _sort_key(item):
+        venue, race, _ = item
+        try:
+            race_num = int(race)
+        except (ValueError, TypeError):
+            race_num = 0
+        return (venue, race_num)
+
+    display_index = sorted(others + manshuu_only_top20, key=_sort_key)
+
     rows_html = ""
-    for venue, race, brands in sorted_index:
+    for venue, race, brands in display_index:
         # 各ブランドアイコンを個別にクリック可能にする
         # （危険艇＋万舟の両方が付いているレースは、どちらのアイコンを押しても
         #   対応するセクションへ別々にジャンプできる）
@@ -1010,7 +994,7 @@ def _render_index_section(data: dict) -> str:
 </div>"""
 
     count_rows = ""
-    for key in ["danger", "manshuu", "hot_high", "motor_hot", "motor_awk", "korogashi"]:
+    for key in ["danger", "manshuu", "motor_hot", "motor_awk", "korogashi"]:
         cnt = brand_counts.get(key, 0)
         if cnt == 0:
             continue
@@ -1018,12 +1002,20 @@ def _render_index_section(data: dict) -> str:
         name = BRAND_NAMES.get(key, key)
         count_rows += f'<div class="idx-count-row"><span>{icon} {name}</span><span class="idx-count-num">{cnt}件</span></div>'
 
+    note_html = ""
+    if excluded_count > 0:
+        note_html = (
+            f'<p class="idx-note">※ 万舟警報のみのレースは荒れ指数上位20件のみ表示'
+            f'（他{excluded_count}件は「AI万舟警報」セクションでご確認ください）</p>'
+        )
+
     return f"""
 <section id="race-index">
   <h2>📖 本日のレースINDEX</h2>
   <div class="index-counts top">
     {count_rows}
   </div>
+  {note_html}
   <div class="index-grid">
     {rows_html}
   </div>
@@ -1083,7 +1075,7 @@ def _render_pickup_section(data: dict) -> str:
     # 一致ブランド数による総合コメント生成（200文字程度）
     brand_names_jp = {
         "danger": "危険艇", "manshuu": "万舟", "korogashi": "転がし",
-        "motor_hot": "激走モーター", "motor_awk": "覚醒モーター", "hot_high": "高配当期待",
+        "motor_hot": "激走モーター", "motor_awk": "覚醒モーター",
     }
     matched_names = [brand_names_jp.get(b, b) for b in brands if b in brand_names_jp]
     match_text = "・".join(matched_names)
@@ -1224,10 +1216,8 @@ def generate_html(data: dict, output_path: str) -> None:
     top5_section    = _render_top5_section(data)
     index_section   = _render_index_section(data)
 
-    # 転がし候補データ・高配当期待（動的閾値、新聞表示分のmanshuu_displayベース）
+    # 転がし候補データ
     korogashi_data    = _load_korogashi_cache()
-    hot_high_cutoff   = _hot_high_threshold(manshuu_display)
-    high_payout       = [u for u in manshuu_display if u.get("score", 0) >= hot_high_cutoff]
 
     s_d = len([d for d in all_danger  if rank_of(d.get("score",0)) == "S"])
     a_d = len([d for d in all_danger  if rank_of(d.get("score",0)) == "A"])
@@ -1380,6 +1370,8 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
   display:flex;flex-direction:column;gap:6px}}
 .idx-count-row{{display:flex;justify-content:space-between;font-size:.88em;color:#bbb}}
 .idx-count-num{{color:var(--accent);font-weight:bold}}
+.idx-note{{font-size:.78em;color:var(--gray);margin:6px 0 10px;padding:6px 10px;
+  background:#12121e;border-radius:6px;border-left:3px solid var(--accent)}}
 .index-counts.top{{margin-bottom:16px;padding-top:0;border-top:none;
   background:#1a1a30;border-radius:8px;padding:12px}}
 /* AIイチオシ */
@@ -1484,7 +1476,7 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
 .bm-label{{color:var(--gray);white-space:nowrap;flex-shrink:0}}
 .bm-row.caution .bm-label{{color:#ffb74d}}
 .bm-text{{color:#999}}
-/* 高配当期待・転がしリンク */
+/* 転がしリンク */
 .hp-link,.kr-link{{display:block;background:var(--card);border-radius:6px;
   padding:10px 14px;margin-bottom:6px;color:var(--text);text-decoration:none;
   font-size:.9em;border-left:3px solid var(--hot)}}
@@ -1611,7 +1603,6 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
     <li><a href="#condition">📈 開催場ヒートマップ</a></li>
     <li><a href="#danger">🚨 AI危険艇速報</a></li>
     <li><a href="#manshuu">💰 AI万舟警報</a></li>
-    <li><a href="#hot-high">🔥 AI高配当期待</a></li>
     <li><a href="#motor">⚡ AI激走モーター</a></li>
     <li><a href="#awake">📈 AI覚醒モーター</a></li>
     <li><a href="#korogashi">🎯 AI転がし候補</a></li>
@@ -1654,12 +1645,6 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 <section id="manshuu">
   {_render_brand_header("manshuu", f"掲載{len(manshuu_display)}件（全{len(all_manshuu)}件中）", _section_comment_manshuu(all_manshuu))}
   {manshuu_rows()}
-</section>
-
-<!-- ⑧ 高配当期待 -->
-<section id="hot-high">
-  {_render_brand_header("hot_high", f"{len(high_payout)}レース", _section_comment_hot_high(manshuu_display))}
-  {''.join(f'<a href="#{_race_anchor(u.get("venue",""), u.get("race",""))}-manshuu" class="hp-link">{u.get("venue","")}{u.get("race","")}R　荒れ指数{u.get("score",0)}</a>' for u in high_payout) or '<p class="no-data">本日は対象レースなし</p>'}
 </section>
 
 <!-- ⑨ 激走モーター -->
@@ -2063,7 +2048,6 @@ def generate_markdown(data: dict, output_path: str) -> None:
         f"- 危険艇Sランク: **{dashboard['danger_s_count']}件**",
         f"- 万舟Sランク: **{dashboard['manshuu_s_count']}件**",
         f"- 転がし候補: **{dashboard['korogashi_count']}件**",
-        f"- 高配当期待: **{dashboard['hot_high_count']}件**",
     ]
     if dashboard["best_venue"]:
         lines.append(f"- ⭐ 最も期待: **{dashboard['best_venue']}**")
@@ -2296,7 +2280,7 @@ def generate_x_teaser(data: dict) -> str:
 
     brand_names_jp = {
         "danger": "危険艇", "manshuu": "万舟", "korogashi": "転がし",
-        "motor_hot": "激走", "motor_awk": "覚醒", "hot_high": "高配当期待",
+        "motor_hot": "激走", "motor_awk": "覚醒",
     }
 
     lines = ["━━━━━━━━━━━━━━", ""]
