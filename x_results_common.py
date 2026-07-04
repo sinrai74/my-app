@@ -557,8 +557,10 @@ def rank_improvement_candidates(feature_analysis: dict, top_n: int = 5) -> list[
 
 def classify_miss_reasons(records: list[dict]) -> dict:
     """
-    外れたレースを理由別に分類し、件数ランキングを返す。
-    feat_* 列があれば詳細分類（モーター過大評価等）、なければ簡易分類のみ。
+    外れたレースを9カテゴリに分類し、件数ランキングを返す。
+    カテゴリ: 本命決着・穴決着・モーター評価ミス・選手評価ミス・
+              コース評価ミス・買い目構成ミス・高期待値だが低確率・
+              データ不足・その他
     """
     misses = [
         r for r in records
@@ -581,35 +583,226 @@ def classify_miss_reasons(records: list[dict]) -> dict:
     }
 
 
+MISS_CATEGORIES = [
+    "本命決着（荒れを読み過ぎた）",
+    "穴決着（本命を評価し過ぎた）",
+    "モーター評価ミス",
+    "選手評価ミス",
+    "コース評価ミス",
+    "買い目構成ミス",
+    "高期待値だが低確率",
+    "データ不足",
+    "その他",
+]
+
+
+def _feat_float(r: dict, key: str) -> Optional[float]:
+    """feat_* 列を安全にfloat変換する。空・None・"None"はNoneを返す。"""
+    v = r.get(key)
+    if v in (None, "", "None"):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _classify_single_miss(r: dict) -> str:
-    """1件の外れレコードを理由カテゴリに分類する（ルールベース、Phase1簡易版）。"""
+    """
+    1件の外れレコードを9カテゴリのいずれかに分類する（優先順位付きルールベース）。
+
+    判定順序:
+      1. データ不足        … 分類に必要な特徴量が揃っていない
+      2. 本命決着          … 荒れ予想(upset_score高)だったのに1号艇が普通に1着
+      3. 穴決着            … 本命予想(upset_score低 or 1号艇軸)だったのに荒れた
+      4. 買い目構成ミス    … 1着は的中、2-3着の組み合わせのみ外れ
+      5. モーター評価ミス  … モーター高評価の軸艇が来なかった
+      6. 選手評価ミス      … 勝率高評価の軸艇が来なかった
+      7. コース評価ミス    … コース別ST実績が良い評価の軸艇が来なかった
+      8. 高期待値だが低確率 … EVは高いが的中確率自体が低い買い目だった
+      9. その他            … 上記いずれにも該当しない
+    """
     result_combo = r.get("result_combo", "")
     pred_combo   = r.get("pred_combo", "")
     first_actual = result_combo.split("-")[0].strip() if "-" in result_combo else ""
     first_pred   = pred_combo.split("-")[0].strip()   if "-" in pred_combo   else ""
 
-    feat_motor    = r.get("feat_motor")
-    feat_win_rate = r.get("feat_win_rate")
+    upset_score = _feat_float(r, "upset_score")
+    pred_ev     = _feat_float(r, "pred_ev")
+    pred_prob   = _feat_float(r, "pred_prob")
+    feat_motor        = _feat_float(r, "feat_motor")
+    feat_win_rate     = _feat_float(r, "feat_win_rate")
+    feat_course_st    = _feat_float(r, "feat_course_st_1c")
+    feat_course_rank  = _feat_float(r, "feat_course_rank_1c")
 
-    # feat_* が記録されている場合のみ詳細分類
-    try:
-        if feat_motor not in (None, "", "None") and float(feat_motor) >= 38 and first_pred == "1" and first_actual != "1":
-            return "モーター過大評価"
-    except (TypeError, ValueError):
-        pass
-    try:
-        if feat_win_rate not in (None, "", "None") and float(feat_win_rate) >= 6.0 and first_pred == "1" and first_actual != "1":
-            return "全国勝率過大評価"
-    except (TypeError, ValueError):
-        pass
+    # ── 1. データ不足 ────────────────────────────────────────
+    # 荒れ判定・特徴量のいずれも記録されていなければ分類材料がない
+    if upset_score is None and feat_motor is None and feat_win_rate is None:
+        return "データ不足"
 
-    if first_actual == "1" and first_pred != "1":
-        return "1号艇残り（想定外）"
-    if first_actual not in ("1", "2", "3") :
-        return "大穴・波乱"
-    if first_actual != first_pred:
-        return "進入変更・展開違い"
-    return "着順違い（頭は的中）"
+    # ── 2. 本命決着（荒れを読み過ぎた） ──────────────────────
+    if upset_score is not None and upset_score >= 6.0 and first_actual == "1":
+        return "本命決着（荒れを読み過ぎた）"
+
+    # ── 3. 穴決着（本命を評価し過ぎた） ──────────────────────
+    if first_actual != "1" and (
+        (upset_score is not None and upset_score < 4.0) or first_pred == "1"
+    ):
+        return "穴決着（本命を評価し過ぎた）"
+
+    # ── 4. 買い目構成ミス（1着は的中、2-3着のみ外れ） ────────
+    if first_pred and first_pred == first_actual:
+        return "買い目構成ミス"
+
+    # ── 5. モーター評価ミス ──────────────────────────────────
+    if feat_motor is not None and feat_motor >= 38 and first_pred != first_actual:
+        return "モーター評価ミス"
+
+    # ── 6. 選手評価ミス ──────────────────────────────────────
+    if feat_win_rate is not None and feat_win_rate >= 6.0 and first_pred != first_actual:
+        return "選手評価ミス"
+
+    # ── 7. コース評価ミス ────────────────────────────────────
+    if (
+        (feat_course_st is not None and feat_course_st <= 0.15)
+        or (feat_course_rank is not None and feat_course_rank <= 2.0)
+    ) and first_pred != first_actual:
+        return "コース評価ミス"
+
+    # ── 8. 高期待値だが低確率 ────────────────────────────────
+    if pred_ev is not None and pred_prob is not None and pred_ev >= 2.0 and pred_prob < 0.03:
+        return "高期待値だが低確率"
+
+    return "その他"
+
+
+# ════════════════════════════════════════════════════════════
+# 【開発用】艇番評価バイアス分析
+# ════════════════════════════════════════════════════════════
+
+def analyze_boat_number_bias(records: list[dict]) -> dict:
+    """
+    予想1着艇番と実際の1着艇番の分布を比較し、AIが特定の艇番を
+    過大評価・過小評価していないかを分析する。
+
+    戻り値:
+      {
+        "data_available": bool,
+        "n": int,
+        "pred_distribution":   {"1": 45.2, "2": 15.0, ...},  # 予想1着に選んだ割合(%)
+        "actual_distribution": {"1": 40.1, "2": 18.3, ...},  # 実際1着だった割合(%)
+        "bias": {"1": +5.1, "2": -3.3, ...},  # pred - actual（正=過大評価、負=過小評価）
+        "most_overestimated":  {"lane": "1", "diff": 5.1},
+        "most_underestimated": {"lane": "6", "diff": -4.2},
+      }
+    """
+    valid = [
+        r for r in records
+        if r.get("pred_combo") and "-" in r.get("pred_combo", "")
+        and r.get("result_combo") and "-" in r.get("result_combo", "")
+    ]
+    if len(valid) < 10:
+        return {"data_available": False, "n": len(valid), "reason": "サンプル不足（10件未満）"}
+
+    pred_count   = {str(i): 0 for i in range(1, 7)}
+    actual_count = {str(i): 0 for i in range(1, 7)}
+
+    for r in valid:
+        p_first = r["pred_combo"].split("-")[0].strip()
+        a_first = r["result_combo"].split("-")[0].strip()
+        if p_first in pred_count:
+            pred_count[p_first] += 1
+        if a_first in actual_count:
+            actual_count[a_first] += 1
+
+    n = len(valid)
+    pred_dist   = {k: round(v / n * 100, 1) for k, v in pred_count.items()}
+    actual_dist = {k: round(v / n * 100, 1) for k, v in actual_count.items()}
+    bias        = {k: round(pred_dist[k] - actual_dist[k], 1) for k in pred_dist}
+
+    most_over  = max(bias.items(), key=lambda x: x[1])
+    most_under = min(bias.items(), key=lambda x: x[1])
+
+    return {
+        "data_available": True,
+        "n": n,
+        "pred_distribution": pred_dist,
+        "actual_distribution": actual_dist,
+        "bias": bias,
+        "most_overestimated":  {"lane": most_over[0],  "diff": most_over[1]},
+        "most_underestimated": {"lane": most_under[0], "diff": most_under[1]},
+    }
+
+
+# ════════════════════════════════════════════════════════════
+# 【開発用】本日の改善候補（統計ベース自動生成）
+# ════════════════════════════════════════════════════════════
+
+def generate_improvement_suggestions(
+    miss_classification: dict,
+    boat_bias: dict,
+    top_n: int = 3,
+) -> list[str]:
+    """
+    外れ理由ランキング・艇番評価バイアスの統計結果から、
+    「本日の改善候補」を動的に生成する（固定文は使用しない）。
+    """
+    candidates: list[tuple[float, str]] = []  # (優先度スコア, 文言)
+
+    categories = miss_classification.get("categories", {})
+    total = miss_classification.get("total", 0)
+
+    # ── カテゴリ別外れ件数に基づく提案 ──────────────────────
+    category_suggestions = {
+        "本命決着（荒れを読み過ぎた）":
+            lambda n, pct: f"荒れ判定の閾値をやや引き上げる（本命決着が{n}件・外れの{pct:.0f}%で最多、荒れを読み過ぎる傾向）",
+        "穴決着（本命を評価し過ぎた）":
+            lambda n, pct: f"1号艇の信頼度評価をやや下げる（穴決着が{n}件・外れの{pct:.0f}%、本命評価が過大）",
+        "モーター評価ミス":
+            lambda n, pct: f"モーター評価の重みを見直す（モーター評価ミスが{n}件・外れの{pct:.0f}%）",
+        "選手評価ミス":
+            lambda n, pct: f"全国勝率評価の重みを見直す（選手評価ミスが{n}件・外れの{pct:.0f}%）",
+        "コース評価ミス":
+            lambda n, pct: f"コース別ST実績の重みを見直す（コース評価ミスが{n}件・外れの{pct:.0f}%）",
+        "買い目構成ミス":
+            lambda n, pct: f"フォーメーション（2〜3着の相手選定）ロジックを見直す（買い目構成ミスが{n}件・外れの{pct:.0f}%、軸自体は的中）",
+        "高期待値だが低確率":
+            lambda n, pct: f"高配当補正（EV偏重）をやや弱める（高EV低確率の外れが{n}件・外れの{pct:.0f}%）",
+    }
+
+    for cat, count in categories.items():
+        if cat in ("データ不足", "その他"):
+            continue
+        pct = count / total * 100 if total else 0
+        if cat in category_suggestions and count >= 2:
+            # 件数と割合を優先度スコアとする（多いほど優先）
+            priority = count + pct / 10
+            candidates.append((priority, category_suggestions[cat](count, pct)))
+
+    # ── 艇番評価バイアスに基づく提案 ──────────────────────────
+    if boat_bias.get("data_available"):
+        over  = boat_bias["most_overestimated"]
+        under = boat_bias["most_underestimated"]
+        if over["diff"] >= 3.0:
+            pred_pct = boat_bias["pred_distribution"][over["lane"]]
+            actual_pct = boat_bias["actual_distribution"][over["lane"]]
+            candidates.append((
+                over["diff"] * 2,
+                f"{over['lane']}号艇評価をやや下げる"
+                f"（予想1着率{pred_pct}% vs 実際{actual_pct}%、+{over['diff']}ptの過大評価）",
+            ))
+        if under["diff"] <= -3.0:
+            pred_pct = boat_bias["pred_distribution"][under["lane"]]
+            actual_pct = boat_bias["actual_distribution"][under["lane"]]
+            candidates.append((
+                abs(under["diff"]) * 2,
+                f"{under['lane']}号艇評価をやや上げる"
+                f"（予想1着率{pred_pct}% vs 実際{actual_pct}%、{under['diff']}ptの過小評価）",
+            ))
+
+    # 優先度スコア降順でソートし、上位N件のテキストのみ返す
+    candidates.sort(key=lambda x: -x[0])
+    return [text for _, text in candidates[:top_n]]
 
 
 # ════════════════════════════════════════════════════════════

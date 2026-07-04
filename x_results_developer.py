@@ -29,6 +29,7 @@ from x_results_common import (
     calc_brand_dev_stats, analyze_features, rank_improvement_candidates,
     classify_miss_reasons, analyze_buyscore_log, get_learning_history,
     calc_day_over_day_comparison,
+    analyze_boat_number_bias, generate_improvement_suggestions,
 )
 
 log = logging.getLogger("x_results_developer")
@@ -100,6 +101,39 @@ def _miss_reasons_html(classification: dict) -> str:
     return rows
 
 
+def _boat_bias_html(bias: dict) -> str:
+    """予想1着艇番 vs 実際1着艇番の分布比較テーブル"""
+    if not bias.get("data_available"):
+        return f'<p class="no-data">{bias.get("reason", "データ不足")}</p>'
+    rows = ""
+    for lane in [str(i) for i in range(1, 7)]:
+        pred = bias["pred_distribution"][lane]
+        actual = bias["actual_distribution"][lane]
+        diff = bias["bias"][lane]
+        sign = "+" if diff >= 0 else ""
+        flag = ""
+        if diff >= 3.0:
+            flag = " ⚠️過大評価"
+        elif diff <= -3.0:
+            flag = " ⚠️過小評価"
+        rows += f"""
+<tr><td>{lane}号艇</td><td>{pred}%</td><td>{actual}%</td><td>{sign}{diff}pt{flag}</td></tr>"""
+    return f"""
+<table class="dev-table">
+  <thead><tr><th>艇番</th><th>予想1着率</th><th>実際1着率</th><th>差分</th></tr></thead>
+  <tbody>{rows}</tbody>
+</table>
+<p class="dev-note">n={bias['n']}件。差分がプラスに大きいほど「予想で1着に選び過ぎ（過大評価）」、
+マイナスに大きいほど「実際は来ているのに予想で選べていない（過小評価）」ことを示す。</p>"""
+
+
+def _improvement_suggestions_html(suggestions: list[str]) -> str:
+    """統計ベースで自動生成された「本日の改善候補」"""
+    if not suggestions:
+        return '<p class="no-data">改善候補を生成するのに十分な外れデータがありません</p>'
+    return "".join(f'<div class="suggestion-row">・{s}</div>' for s in suggestions)
+
+
 def _buyscore_analysis_html(analysis: dict) -> str:
     if not analysis.get("data_available"):
         return f'<p class="no-data">{analysis.get("reason", "データなし")}</p>'
@@ -164,6 +198,8 @@ def generate_developer_html(date_str: str, output_path: str) -> dict:
     feat_analysis = analyze_features(periods["d30"]["records"])
     improve_candidates = rank_improvement_candidates(feat_analysis)
     miss_classification = classify_miss_reasons(today_records)
+    boat_bias = analyze_boat_number_bias(today_records)
+    improvement_suggestions = generate_improvement_suggestions(miss_classification, boat_bias, top_n=3)
     buyscore_analysis = analyze_buyscore_log(days=7)
     learning_history = get_learning_history()
     comparison = calc_day_over_day_comparison(date_str)
@@ -187,7 +223,8 @@ h4 {{color:#8a8aa0;font-size:.9em;margin:10px 0 4px;}}
 .dev-table th, .dev-table td {{border:1px solid #333;padding:6px 10px;text-align:left;}}
 .dev-table th {{background:#1a1a2e;color:#00e5ff;}}
 .no-data {{color:#666;font-style:italic;}}
-.cand-row, .miss-reason-row, .dist-row, .comp-row {{padding:4px 0;border-bottom:1px solid #222;}}
+.cand-row, .miss-reason-row, .dist-row, .comp-row, .suggestion-row {{padding:4px 0;border-bottom:1px solid #222;}}
+.suggestion-row {{color:#69f0ae;}}
 .dev-note {{color:#666;font-size:.8em;}}
 .buyscore-summary {{background:#14141f;padding:10px;border-radius:6px;margin-bottom:10px;}}
 </style>
@@ -226,6 +263,12 @@ h4 {{color:#8a8aa0;font-size:.9em;margin:10px 0 4px;}}
 <h2>❌ 外れ理由ランキング（本日）</h2>
 {_miss_reasons_html(miss_classification)}
 
+<h2>🚤 艇番評価バイアス分析（本日）</h2>
+{_boat_bias_html(boat_bias)}
+
+<h2>🎯 本日の改善候補</h2>
+{_improvement_suggestions_html(improvement_suggestions)}
+
 <h2>🎓 学習履歴</h2>
 {_learning_history_html(learning_history)}
 
@@ -245,6 +288,8 @@ h4 {{color:#8a8aa0;font-size:.9em;margin:10px 0 4px;}}
         "brand_stats": brand_stats, "feat_analysis": feat_analysis,
         "improve_candidates": improve_candidates,
         "miss_classification": miss_classification,
+        "boat_bias": boat_bias,
+        "improvement_suggestions": improvement_suggestions,
         "buyscore_analysis": buyscore_analysis,
         "learning_history": learning_history,
         "comparison": comparison,
