@@ -321,16 +321,18 @@ def _section_comment_korogashi(kdata: dict) -> str:
 
 def _race_comment(d: dict) -> str:
     bd = d.get("breakdown", {})
+    # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・満点
     items = [
-        ("ST",   bd.get("st",    (0,0))[1], "平均ST遅れリスク"),
-        ("展示",  bd.get("ex",    (0,0))[1], "展示タイム低調"),
-        ("機力",  bd.get("motor", (0,0))[1], "モーター力不足"),
-        ("等級",  bd.get("grade", (0,0))[1], "格下等級"),
-        ("勝率",  bd.get("wr",    (0,0))[1], "勝率が低調"),
-        ("相手",  bd.get("rival", (0,0))[1], "強力な対抗馬"),
+        ("平均ST",   bd.get("avg_st_slow",     0.0), 18, "平均ST遅れリスク"),
+        ("コースST", bd.get("course_st_slow",  0.0), 10, "コース別ST低調"),
+        ("機力",     bd.get("motor_bad",       0.0), 22, "モーター力不足"),
+        ("等級",     bd.get("class_gap",       0.0), 14, "格下等級"),
+        ("勝率",     bd.get("win_rate_low",    0.0), 28, "勝率が低調"),
+        ("ST順位",   bd.get("course_rank_bad", 0.0), 8,  "ST順位が低調"),
     ]
-    top = sorted(items, key=lambda x: -x[1])[:2]
-    parts = [label for label, val, _ in top if val >= 8]
+    # 各項目を満点に対する比率で比較する（満点が項目ごとに異なるため）
+    top = sorted(items, key=lambda x: -(x[1] / x[2] if x[2] else 0))[:2]
+    parts = [label for label, val, maxv, _ in top if maxv and val / maxv >= 0.4]
     if not parts:
         return "総合的な危険判定"
     return " + ".join(parts) + "が主因"
@@ -1234,19 +1236,21 @@ def generate_html(data: dict, output_path: str) -> None:
             score = d.get("score", 0)
             comment = _race_comment(d)
             bd = d.get("breakdown", {})
+            # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・
+            # 満点はここに合わせる（asahi_config.json の danger_score.weights と一致させること）
             bar_items = [
-                ("ST",   bd.get("st",    (0,0))[1], "#ef5350"),
-                ("展示",  bd.get("ex",    (0,0))[1], "#ff7043"),
-                ("機力",  bd.get("motor", (0,0))[1], "#ffa726"),
-                ("等級",  bd.get("grade", (0,0))[1], "#ab47bc"),
-                ("勝率",  bd.get("wr",    (0,0))[1], "#42a5f5"),
-                ("相手",  bd.get("rival", (0,0))[1], "#26a69a"),
+                ("勝率",     bd.get("win_rate_low",    0.0), 28, "#42a5f5"),
+                ("機力",     bd.get("motor_bad",       0.0), 22, "#ffa726"),
+                ("平均ST",   bd.get("avg_st_slow",     0.0), 18, "#ef5350"),
+                ("等級",     bd.get("class_gap",       0.0), 14, "#ab47bc"),
+                ("コースST", bd.get("course_st_slow",  0.0), 10, "#ff7043"),
+                ("ST順位",   bd.get("course_rank_bad", 0.0), 8,  "#26a69a"),
             ]
             bars = "".join(
                 f'<div class="bi"><span class="bl">{l}</span>'
-                f'<div class="bb"><div class="bf" style="width:{int(v/20*100)}%;background:{c}"></div></div>'
-                f'<span class="bv">{v:.0f}pt</span></div>'
-                for l, v, c in bar_items
+                f'<div class="bb"><div class="bf" style="width:{int(v/maxv*100) if maxv else 0}%;background:{c}"></div></div>'
+                f'<span class="bv">{v:.1f}pt</span></div>'
+                for l, v, maxv, c in bar_items
             )
             rank_cls = rank_of(score).lower()
             _anchor = _race_anchor(d.get('venue',''), d.get('race',''))
