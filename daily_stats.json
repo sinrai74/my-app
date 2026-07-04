@@ -1858,27 +1858,9 @@
         "match_index": 43.0
       },
       {
-        "venue_num": 21,
-        "venue": "芦屋",
-        "race": 8,
-        "match_index": 43.0
-      },
-      {
-        "venue_num": 8,
-        "venue": "常滑",
-        "race": 9,
-        "match_index": 43.0
-      },
-      {
         "venue_num": 4,
         "venue": "平和島",
         "race": 6,
-        "match_index": 42.0
-      },
-      {
-        "venue_num": 6,
-        "venue": "浜名湖",
-        "race": 9,
         "match_index": 42.0
       },
       {
@@ -1897,6 +1879,24 @@
         "venue_num": 9,
         "venue": "津",
         "race": 6,
+        "match_index": 41.0
+      },
+      {
+        "venue_num": 13,
+        "venue": "尼崎",
+        "race": 5,
+        "match_index": 41.0
+      },
+      {
+        "venue_num": 19,
+        "venue": "下関",
+        "race": 6,
+        "match_index": 41.0
+      },
+      {
+        "venue_num": 12,
+        "venue": "住之江",
+        "race": 8,
         "match_index": 41.0
       }
     ]
