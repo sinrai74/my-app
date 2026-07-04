@@ -38,6 +38,9 @@ from x_asahi_scoring import (
     get_model_version as _asahi_model_version,
 )
 
+# 【購入判定分離】BuyScoreによる「予想」と「購入」の分離エンジン
+from x_buyscore import apply_buyscore as _apply_buyscore
+
 # ════════════════════════════════════════════════════════════
 # ロギング設定
 # ════════════════════════════════════════════════════════════
@@ -1676,6 +1679,10 @@ def _evaluate_bets(
     upset_score: float = 0.0,
     odds_dropped: list[str] | None = None,
     weather=None,
+    venue_num: int = 0,
+    race_number: int = 0,
+    race_date: str = "",
+    venue_name: str = "",
 ) -> list[dict]:
     """
     全三連単120通りを複合スコア順でランキングして推奨買い目を返す。
@@ -2478,7 +2485,79 @@ def _evaluate_bets(
         t["uncertainty"]  = round(entropy_norm, 3)
         t["formation_break"] = formation_break
 
-    return top
+    # ════════════════════════════════════════════════════════
+    # 【購入判定分離】BuyScoreエンジンによる最終購入判定
+    # ════════════════════════════════════════════════════════
+    # ここまでの top は「予想」（評価済み候補）に過ぎない。
+    # 実際に「購入」するかどうかは、BuyScore・AI一致指数・EV・
+    # 危険度・市場乖離・信頼度を総合評価する x_buyscore.apply_buyscore
+    # に委ねる。見送りと判定された場合、top は空リストではなく
+    # "評価はしたが購入しなかった" 記録として _run_main 側に伝わるよう、
+    # skip_info を持つ特別なリストとして返す。
+    if not top:
+        return top
+
+    # AI一致指数は新聞生成時にしか確定しない値のため、この時点では
+    # upset_score から近似する（x_note_report.py と同じ近似式）。
+    approx_match_index = min(100, upset_score * 10.5)
+
+    # 市場とAIのモデル順位の乖離（順位差ベース、x_post.py と同じロジック）
+    market_gap = 0.0
+    if model_rank and market_rank:
+        best_lane = min(model_rank, key=model_rank.get)  # モデル1位の艇
+        if best_lane in market_rank:
+            rank_diff = market_rank[best_lane] - model_rank[best_lane]
+            market_gap = round(rank_diff / 5.0, 3)
+
+    buyscore_context = {
+        "match_index":        approx_match_index,
+        "match_index_approx": True,
+        "race_type":          race_type,
+        "has_exhibition":     has_exhibition,
+        "market_gap":         market_gap,
+        "upset_score":        upset_score,
+        "ex_rank_1st":        0,   # 【朝刊AI】展示は使用しないため常に0
+    }
+
+    try:
+        buy_result = _apply_buyscore(
+            top, buyscore_context,
+            venue=venue_name, race=str(race_number), date=race_date,
+        )
+    except Exception as e:
+        log.warning("[購入判定] BuyScoreエンジン失敗（フォールバックで従来通り購入扱い）: %s", e)
+        return top
+
+    if buy_result["passthrough"]:
+        log.info("[購入判定] 見送り: %s %sR 理由=%s",
+                 venue_name, race_number, buy_result["passthrough_reason"])
+        # 「予想はしたが購入しなかった」ことが後段で分かるよう、
+        # 元の候補に見送り情報を付与した特別なリストを返す。
+        # amount=0 のため実際の投資は発生しない。
+        skipped = []
+        for t in top[:1]:   # 最有力候補のみ記録（見送り理由の参照用）
+            t = dict(t)
+            t["purchased"] = False
+            t["skip_reason"] = buy_result["passthrough_reason"]
+            t["buyscore"] = t.get("buyscore", 0)
+            t["amount"] = 0
+            skipped.append(t)
+        return skipped
+
+    # 購入判定されたレース: BuyScoreでランク付けされた候補（最大4点）を採用
+    purchased = []
+    for c in buy_result["buy"]:
+        c = dict(c)
+        c["purchased"] = True
+        c["skip_reason"] = None
+        c["match_index"] = approx_match_index  # 購入履歴保存用（AI一致指数の近似値）
+        purchased.append(c)
+
+    log.info("[購入判定] 購入: %s %sR %d点 (BuyScore最高=%.0f)",
+             venue_name, race_number, len(purchased),
+             max((c.get("buyscore", 0) for c in purchased), default=0))
+
+    return purchased
 
 
 def _get_bet_multiplier() -> float:
@@ -3238,6 +3317,10 @@ def _run_main(race_date: str | None = None) -> None:
                         upset_score=score,
                         odds_dropped=dropped if odds_map else [],
                         weather=weather,
+                        venue_num=venue_num,
+                        race_number=race_number,
+                        race_date=race_date,
+                        venue_name=VENUE_NAMES.get(venue_num, f"場{venue_num}"),
                     )
                     detail["EV上位"] = (
                         f"{recommended[0]['combo']} EV={recommended[0]['ev']:.2f}"
@@ -3325,8 +3408,38 @@ def _run_main(race_date: str | None = None) -> None:
                 recommended_bets = recommended,
             )
 
-            if recommended:
-                best = recommended[0]
+            # 【購入判定分離】recommended は「予想」の全候補を含みうるが、
+            # 実際に通知・記録するのは purchased=True（BuyScoreで購入判定
+            # されたレース）のみ。purchased=False は「評価はしたが購入
+            # しなかった」レースであり、別途 skip_log.jsonl に記録する。
+            is_purchased = bool(recommended) and recommended[0].get("purchased", True)
+
+            if recommended and not is_purchased:
+                try:
+                    import json as _json
+                    skip_entry = {
+                        "date": race_date, "venue": VENUE_NAMES.get(venue_num, f"場{venue_num}"),
+                        "venue_num": venue_num, "race": race_number,
+                        "upset_score": round(score, 3),
+                        "best_combo": recommended[0].get("combo", ""),
+                        "best_ev": recommended[0].get("ev", 0),
+                        "buyscore": recommended[0].get("buyscore", 0),
+                        "skip_reason": recommended[0].get("skip_reason", ""),
+                        "model_version": _asahi_model_version(),
+                    }
+                    with open("skip_log.jsonl", "a", encoding="utf-8") as sf:
+                        sf.write(_json.dumps(skip_entry, ensure_ascii=False) + "\n")
+                except Exception as _se:
+                    log.debug("見送りログ保存失敗: %s", _se)
+                log.info("[見送り] %s %dR 理由=%s",
+                         VENUE_NAMES.get(venue_num, f"場{venue_num}"), race_number,
+                         recommended[0].get("skip_reason", ""))
+
+            # best は購入・見送りに関わらず定義する（後段の _pred_entry 構築で
+            # 「予想は出したが購入しなかった」場合も combo 等を参照するため）
+            best = recommended[0] if recommended else {}
+
+            if recommended and is_purchased:
                 result.best_combo = best["combo"]
                 result.best_ev    = best["ev"]
                 detail["推奨"] = (
@@ -3445,11 +3558,12 @@ def _run_main(race_date: str | None = None) -> None:
                 try:
                     import json as _json
                     _best = recommended[0] if recommended else {}
+                    _is_purchased_pre = bool(recommended) and _best.get("purchased", True)
                     _pred_entry_pre = {
                         "key":         notify_key,
                         "combo":       _best.get("combo", ""),
-                        "buy":         [b["combo"] for b in recommended] if recommended else [],
-                        "buy_amounts": [b.get("amount", 100) for b in recommended] if recommended else [],
+                        "buy":         [b["combo"] for b in recommended] if (recommended and _is_purchased_pre) else [],
+                        "buy_amounts": [b.get("amount", 100) for b in recommended] if (recommended and _is_purchased_pre) else [],
                         "odds":        _best.get("odds", 0),
                         "prob":        _best.get("prob", 0),
                         "ev":          _best.get("ev", 0),
@@ -3461,6 +3575,11 @@ def _run_main(race_date: str | None = None) -> None:
                         "venue_num":   venue_num,
                         "race":        race_number,
                         "night":       int(venue_num in {4,6,12,17,20,21,22,23,24}),
+                        # 【購入判定分離】
+                        "purchased":   _is_purchased_pre,
+                        "buyscore":    _best.get("buyscore", 0),
+                        "match_index": _best.get("match_index", 0),
+                        "skip_reason": _best.get("skip_reason", "") if not _is_purchased_pre else "",
                         # 【教師データ】予想には未使用、Phase2学習用の生データ
                         "wind_speed":  _PREVIEW_RAW_CACHE.get((venue_num, race_number), {}).get("wind_speed"),
                         "wind_dir":    _PREVIEW_RAW_CACHE.get((venue_num, race_number), {}).get("wind_direction"),
@@ -3514,12 +3633,12 @@ def _run_main(race_date: str | None = None) -> None:
             import json as _json
             _pred_entry = {
                 "key":        notify_key,
-                "combo":      best["combo"]          if recommended else "",
-                "buy":        [b["combo"] for b in recommended] if recommended else [],
-                "buy_amounts": [b.get("amount", 100) for b in recommended] if recommended else [],
-                "odds":       best["odds"]           if recommended else 0,
-                "prob":       best["prob"]           if recommended else 0,
-                "ev":         best["ev"]             if recommended else 0,
+                "combo":      best.get("combo", "") if recommended else "",
+                "buy":        [b["combo"] for b in recommended] if (recommended and is_purchased) else [],
+                "buy_amounts": [b.get("amount", 100) for b in recommended] if (recommended and is_purchased) else [],
+                "odds":       best.get("odds", 0)   if recommended else 0,
+                "prob":       best.get("prob", 0)   if recommended else 0,
+                "ev":         best.get("ev", 0)     if recommended else 0,
                 "confidence": best.get("confidence", 0) if recommended else 0,
                 "why_bet":    best.get("why_bet", [])   if recommended else [],
                 "race_type":  best.get("race_type", "") if recommended else "",
@@ -3528,6 +3647,13 @@ def _run_main(race_date: str | None = None) -> None:
                 "venue_num":  venue_num,
                 "race":       race_number,
                 "night":      int(venue_num in {4,6,12,17,20,21,22,23,24}),
+                # 【購入判定分離】予想は出したが実際に購入したかどうかを区別する。
+                # purchased=False の場合、cost=0（投資額なし）となり、
+                # 回収率・ROI集計から自動的に除外される。
+                "purchased":   is_purchased,
+                "buyscore":    best.get("buyscore", 0) if recommended else 0,
+                "match_index": best.get("match_index", 0) if recommended else 0,
+                "skip_reason": best.get("skip_reason", "") if (recommended and not is_purchased) else "",
                 # 【教師データ】予想には未使用、Phase2学習用の生データ
                 "wind_speed": _PREVIEW_RAW_CACHE.get((venue_num, race_number), {}).get("wind_speed"),
                 "wind_dir":   _PREVIEW_RAW_CACHE.get((venue_num, race_number), {}).get("wind_direction"),
@@ -4610,13 +4736,19 @@ def _check_yesterday_results(today_date: str) -> None:
             result_combo = result["combo"] if result else "不明"
             payout       = result["payout"] if result else 0  # 100円あたりの払戻
 
-            # 全買い目のどれかが当たれば的中
+            # 全買い目のどれかが当たれば的中（見送りでも「当たっていたか」は分析用に判定する）
             all_combos = buy_list if buy_list else ([pred_combo] if pred_combo else [])
             hit        = 1 if result_combo != "不明" and result_combo in all_combos else 0
 
-            # 実ベット額ベースの損益計算
-            # buy_amountsがあれば実額、なければ100円固定（旧データ互換）
-            if buy_amounts and len(buy_amounts) == len(buy_list):
+            # 【購入判定分離】見送り(purchased=False)の場合は実際に投資していないため
+            # cost・profit を必ず0にする。的中判定(hit)自体は「見送りが正しかったか」の
+            # 分析用に残すが、回収率・ROI集計には含めない（cost=0で自動的に除外される）。
+            is_purchased = pd_data.get("purchased", True)  # 旧データ互換のためデフォルトTrue
+
+            if not is_purchased:
+                cost   = 0
+                profit = 0
+            elif buy_amounts and len(buy_amounts) == len(buy_list):
                 total_cost = sum(int(a) for a in buy_amounts)
                 # 当たった買い目の金額を特定
                 hit_amount = 0
@@ -4627,11 +4759,13 @@ def _check_yesterday_results(today_date: str) -> None:
                             break
                 # 払戻 = (払戻倍率/100) × 当たり金額
                 hit_return = int(payout * hit_amount / 100) if hit else 0
+                cost   = total_cost
+                profit = (hit_return - total_cost) if hit else -total_cost
             else:
                 total_cost = n_bets * 100
                 hit_return = payout if hit else 0
-            cost   = total_cost
-            profit = (hit_return - total_cost) if hit else -total_cost
+                cost   = total_cost
+                profit = (hit_return - total_cost) if hit else -total_cost
 
             # pred_fileに結果を書き戻す（ファイルが存在する場合のみ）
             pred_file = f"pred_{yesterday}_{venue_num}_{race_number}.json"
@@ -4672,6 +4806,11 @@ def _check_yesterday_results(today_date: str) -> None:
                 "profit":      profit,
                 "n_bets":      n_bets,
                 "cost":        cost,
+                # 【購入判定分離】BuyScoreによる購入判定の記録
+                "purchased":   int(is_purchased),
+                "buyscore":    pd_data.get("buyscore", 0),
+                "match_index": pd_data.get("match_index", 0),
+                "skip_reason": pd_data.get("skip_reason", ""),
                 # 【朝刊AI】使用モデルVersion・特徴量（Phase2重み学習用）
                 "model_version":         pd_data.get("model_version", ""),
                 "feat_win_rate":         pd_data.get("feat_win_rate", ""),
@@ -4694,6 +4833,7 @@ def _check_yesterday_results(today_date: str) -> None:
             "pred_combo","pred_prob","pred_ev","pred_odds","upset_score",
             "wind_speed","wind_dir","wave",
             "result_combo","payout","hit","profit","n_bets","cost",
+            "purchased","buyscore","match_index","skip_reason",
             "model_version",
             "feat_win_rate","feat_motor","feat_avg_st","feat_racer_class",
             "feat_course_st_1c","feat_course_rank_1c","feat_danger_breakdown",

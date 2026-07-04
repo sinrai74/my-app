@@ -367,26 +367,44 @@ def find_race_result(results_data: dict, venue_num: int, race_number: int) -> Op
 
 def calc_overall_roi(records: list[dict]) -> dict:
     """
-    全体回収率・ROIを計算する。
-    回収率 = 払戻合計 / 購入額合計 × 100
-    ROI    = (払戻合計 - 購入額合計) / 購入額合計 × 100
-    """
-    notified = [r for r in records if r.get("pred_combo") and
-                r.get("result_combo") and "-" in r.get("result_combo", "")]
-    if not notified:
-        return {"recovery_rate": 0.0, "roi": 0.0, "total_cost": 0, "total_return": 0, "n": 0}
+    【購入判定分離】実際に購入対象(purchased=1)となった買い目のみで
+    回収率・ROIを算出する。「予想はしたが見送った」レコード(purchased=0)は
+    投資額0円のため、含めても含めなくても計算結果は変わらないが、
+    件数集計を正確にするため明示的に除外する。
 
-    total_cost = sum(int(_safe_float(r.get("cost")) or 100) for r in notified)
+    回収率 = 払戻金合計 ÷ 投資金額合計 × 100
+    ROI    = (払戻金合計 − 投資金額合計) ÷ 投資金額合計 × 100
+    """
+    purchased = [
+        r for r in records
+        if r.get("pred_combo")
+        and r.get("result_combo") and "-" in r.get("result_combo", "")
+        and int(_safe_float(r.get("purchased"), 1)) == 1   # 旧データ(purchased列なし)は1扱い
+    ]
+    if not purchased:
+        return {
+            "recovery_rate": 0.0, "roi": 0.0, "total_cost": 0, "total_return": 0,
+            "n": 0, "n_races": 0, "n_bets": 0,
+        }
+
+    # 【バグ修正】旧実装は "int(_safe_float(cost)) or 100" となっており、
+    # cost=0（投資なし）が Python の or 演算子で 100 に化けてしまっていた。
+    # cost は明示的にそのまま使う（0は0のまま扱う）。
+    total_cost = sum(int(_safe_float(r.get("cost"), 0)) for r in purchased)
     total_return = 0
-    for r in notified:
+    for r in purchased:
         if int(_safe_float(r.get("hit"))) == 1:
             total_return += int(_safe_float(r.get("payout")))
 
     recovery_rate = round(total_return / total_cost * 100, 1) if total_cost > 0 else 0.0
     roi = round((total_return - total_cost) / total_cost * 100, 1) if total_cost > 0 else 0.0
+    total_bets = sum(int(_safe_float(r.get("n_bets"), 1)) for r in purchased)
     return {
         "recovery_rate": recovery_rate, "roi": roi,
-        "total_cost": total_cost, "total_return": total_return, "n": len(notified),
+        "total_cost": total_cost, "total_return": total_return,
+        "n": len(purchased),        # 購入対象レース数
+        "n_races": len(purchased),  # 明示的なエイリアス（表示用）
+        "n_bets": total_bets,       # 購入点数（1レースで複数点購入した場合を含む）
     }
 
 
@@ -396,10 +414,14 @@ def calc_overall_roi(records: list[dict]) -> dict:
 
 def find_mvp_prediction(records: list[dict]) -> Optional[dict]:
     """
-    「昨日のMVP予想」= 的中した予想の中で最も払戻が高かったもの。
-    的中がなければ None を返す。
+    「昨日のMVP予想」= 実際に購入(purchased=1)して的中した予想の中で
+    最も払戻が高かったもの。的中がなければ None を返す。
     """
-    hits = [r for r in records if int(_safe_float(r.get("hit"))) == 1]
+    hits = [
+        r for r in records
+        if int(_safe_float(r.get("hit"))) == 1
+        and int(_safe_float(r.get("purchased"), 1)) == 1
+    ]
     if not hits:
         return None
     best = max(hits, key=lambda r: _safe_float(r.get("payout")))

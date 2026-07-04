@@ -152,6 +152,9 @@ body {{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Meiry
 .roi-cell {{background:#12121e;border-radius:8px;padding:12px;text-align:center;}}
 .roi-num {{font-size:1.4em;font-weight:bold;color:var(--accent);}}
 .roi-label {{font-size:.78em;color:var(--gray);margin-top:4px;}}
+.profit-highlight {{text-align:center;font-size:1.3em;font-weight:bold;
+  color:var(--good);margin-top:12px;padding:10px;background:#12121e;border-radius:8px;}}
+.roi-note {{font-size:.78em;color:var(--gray);margin-top:10px;line-height:1.5;}}
 .mvp-card {{background:linear-gradient(135deg,#1a3a1a,#0d0d1a);border:1px solid var(--good);
   border-radius:8px;padding:14px;text-align:center;}}
 .mvp-race {{font-size:1.1em;font-weight:bold;}}
@@ -185,13 +188,27 @@ body {{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Meiry
 </div>
 
 <div class="section">
-  <h2>💹 回収率・ROI</h2>
+  <h2>💰 購入実績（本日）</h2>
+  <div class="roi-grid">
+    <div class="roi-cell"><div class="roi-num">{roi_today['n_races']}</div><div class="roi-label">購入レース数</div></div>
+    <div class="roi-cell"><div class="roi-num">{roi_today['n_bets']}</div><div class="roi-label">購入点数</div></div>
+    <div class="roi-cell"><div class="roi-num">{roi_today['total_cost']:,}円</div><div class="roi-label">総投資金額</div></div>
+    <div class="roi-cell"><div class="roi-num">{roi_today['total_return']:,}円</div><div class="roi-label">総払戻金</div></div>
+  </div>
+  <div class="profit-highlight" style="color:{'var(--good)' if (roi_today['total_return'] - roi_today['total_cost']) >= 0 else 'var(--bad)'}">
+    利益: {(roi_today['total_return'] - roi_today['total_cost']):+,}円
+  </div>
+</div>
+
+<div class="section">
+  <h2>💹 回収率・ROI（購入対象のみ集計）</h2>
   <div class="roi-grid">
     <div class="roi-cell"><div class="roi-num">{roi_today['recovery_rate']}%</div><div class="roi-label">本日 回収率</div></div>
     <div class="roi-cell"><div class="roi-num">{roi_today['roi']:+.1f}%</div><div class="roi-label">本日 ROI</div></div>
     <div class="roi-cell"><div class="roi-num">{roi_7d['recovery_rate']}%</div><div class="roi-label">7日平均 回収率</div></div>
     <div class="roi-cell"><div class="roi-num">{roi_30d['recovery_rate']}%</div><div class="roi-label">30日平均 回収率</div></div>
   </div>
+  <p class="roi-note">※ AIが見送った（購入しなかった）レースは集計に含みません。実際に購入した場合の成績のみを反映しています。</p>
 </div>
 
 <div class="section">
