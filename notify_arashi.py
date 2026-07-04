@@ -2964,6 +2964,32 @@ def run(race_date: Optional[str] = None) -> None:
         log.error("環境変数 GMAIL_ADDRESS / GMAIL_APP_PASS が設定されていません")
         sys.exit(1)
 
+    # ── hit_record.csv スキーマ自動チェック＆マイグレーション ──────
+    # 旧スキーマのまま新カラム付きデータを追記すると DictReader が値を
+    # 取り違えるため、書き込みが始まる前にスキーマを最新へ揃える。
+    # 変換前に自動バックアップされ、変換後は整合性チェックも行う。
+    # 【運用ルール】機械的に安全と判断できない状態（未知のヘッダー、
+    # 変換後の整合性チェック失敗など）ではサイレントに動作を続けず、
+    # 実行を停止して分かりやすいエラーを出す。
+    try:
+        from migration import ensure_schema, print_report
+        _schema_status = ensure_schema(auto=True)
+        if _schema_status.get("migration"):
+            log.info("[スキーマ] hit_record.csv をマイグレーションしました")
+            print_report(_schema_status["migration"])
+        if _schema_status.get("fatal"):
+            log.error(
+                "[スキーマ] hit_record.csv のスキーマ状態が安全に判定できません: %s\n"
+                "  → 手動で確認し、必要なら `python migration.py --check` で状態を、"
+                "`python migration.py --dry-run` で変換内容を確認してください。",
+                _schema_status.get("reason", "詳細不明"),
+            )
+            sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as _se:
+        log.warning("[スキーマ] 自動チェック失敗（続行）: %s", _se)
+
     # 時間帯チェック（JST 8:20〜22:45 以外はスキップ）
     from datetime import datetime, timezone, timedelta
     JST = timezone(timedelta(hours=9))
