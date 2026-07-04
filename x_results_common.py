@@ -130,14 +130,20 @@ def calc_brand_results(records: list[dict], daily_stats: dict, brand: str) -> di
 
     checked = 0
     hit     = 0
+    already_seen: set[tuple] = set()   # 同一レースの重複カウントを防ぐ
     for r in records:
         key = (str(r.get("venue_num", "")), str(r.get("race", "")))
         if key not in check_races:
+            continue
+        if key in already_seen:
+            # 同じレースが hit_record.csv に複数行存在する場合、
+            # 掲載件数を超えてカウントされてしまうため2件目以降はスキップする
             continue
         result_combo = r.get("result_combo", "")
         if not (result_combo and "-" in result_combo):
             continue
         payout = float(r.get("payout") or 0)
+        already_seen.add(key)
         checked += 1
         if brand == "danger":
             if result_combo.split("-")[0].strip() != "1":
