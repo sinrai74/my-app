@@ -319,16 +319,45 @@ def _section_comment_korogashi(kdata: dict) -> str:
 # レースごとのAIコメント（1〜2行）
 # ════════════════════════════════════════════════════════════
 
+def _bd_weighted(bd: dict, key: str, default: float = 0.0) -> float:
+    """
+    breakdown辞書から「重み付き値(weighted)」を安全に取り出す。
+
+    【背景】x_ranking.py._calc_danger_breakdown() は各項目を
+    (raw_100, weighted) のタプルとして保存する（JSON化するとlistになる）。
+    一方こちらの表示側は単一の数値を期待しているため、
+    そのまま bd.get(key, 0.0) すると TypeError になる（list / int）。
+
+    新旧どちらの形式が来ても壊れないよう、ここで吸収する:
+      - list/tuple で長さ2以上 → 2番目の要素(weighted)を使う
+      - list/tuple で長さ1     → その要素を使う
+      - 数値（旧形式・将来の単純化後）→ そのまま使う
+      - それ以外（None・空list等）→ default
+    """
+    val = bd.get(key, default)
+    if isinstance(val, (list, tuple)):
+        if len(val) >= 2:
+            val = val[1]
+        elif len(val) == 1:
+            val = val[0]
+        else:
+            return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
 def _race_comment(d: dict) -> str:
     bd = d.get("breakdown", {})
     # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・満点
     items = [
-        ("平均ST",   bd.get("avg_st_slow",     0.0), 18, "平均ST遅れリスク"),
-        ("コースST", bd.get("course_st_slow",  0.0), 10, "コース別ST低調"),
-        ("機力",     bd.get("motor_bad",       0.0), 22, "モーター力不足"),
-        ("等級",     bd.get("class_gap",       0.0), 14, "格下等級"),
-        ("勝率",     bd.get("win_rate_low",    0.0), 28, "勝率が低調"),
-        ("ST順位",   bd.get("course_rank_bad", 0.0), 8,  "ST順位が低調"),
+        ("平均ST",   _bd_weighted(bd, "avg_st_slow"),     18, "平均ST遅れリスク"),
+        ("コースST", _bd_weighted(bd, "course_st_slow"),  10, "コース別ST低調"),
+        ("機力",     _bd_weighted(bd, "motor_bad"),       22, "モーター力不足"),
+        ("等級",     _bd_weighted(bd, "class_gap"),       14, "格下等級"),
+        ("勝率",     _bd_weighted(bd, "win_rate_low"),    28, "勝率が低調"),
+        ("ST順位",   _bd_weighted(bd, "course_rank_bad"), 8,  "ST順位が低調"),
     ]
     # 各項目を満点に対する比率で比較する（満点が項目ごとに異なるため）
     top = sorted(items, key=lambda x: -(x[1] / x[2] if x[2] else 0))[:2]
@@ -1239,12 +1268,12 @@ def generate_html(data: dict, output_path: str) -> None:
             # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・
             # 満点はここに合わせる（asahi_config.json の danger_score.weights と一致させること）
             bar_items = [
-                ("勝率",     bd.get("win_rate_low",    0.0), 28, "#42a5f5"),
-                ("機力",     bd.get("motor_bad",       0.0), 22, "#ffa726"),
-                ("平均ST",   bd.get("avg_st_slow",     0.0), 18, "#ef5350"),
-                ("等級",     bd.get("class_gap",       0.0), 14, "#ab47bc"),
-                ("コースST", bd.get("course_st_slow",  0.0), 10, "#ff7043"),
-                ("ST順位",   bd.get("course_rank_bad", 0.0), 8,  "#26a69a"),
+                ("勝率",     _bd_weighted(bd, "win_rate_low"),    28, "#42a5f5"),
+                ("機力",     _bd_weighted(bd, "motor_bad"),       22, "#ffa726"),
+                ("平均ST",   _bd_weighted(bd, "avg_st_slow"),     18, "#ef5350"),
+                ("等級",     _bd_weighted(bd, "class_gap"),       14, "#ab47bc"),
+                ("コースST", _bd_weighted(bd, "course_st_slow"),  10, "#ff7043"),
+                ("ST順位",   _bd_weighted(bd, "course_rank_bad"), 8,  "#26a69a"),
             ]
             bars = "".join(
                 f'<div class="bi"><span class="bl">{l}</span>'
