@@ -93,6 +93,31 @@ def load_asahi_config(force_reload: bool = False) -> dict:
                 "lane_weight": {"1": 1.6, "2": 1.2, "3": 0.9, "4": 0.5, "5": -0.2, "6": -0.6},
             },
         },
+        "lane_rank_scores": {
+            "lane_base_rate": {
+                "1": {"first": 55, "second": 16, "third": 12},
+                "2": {"first": 14, "second": 17, "third": 14},
+                "3": {"first": 12, "second": 16, "third": 15},
+                "4": {"first": 10, "second": 17, "third": 16},
+                "5": {"first": 6,  "second": 14, "third": 17},
+                "6": {"first": 3,  "second": 10, "third": 13},
+            },
+            "first_place": {
+                "base_rate_weight": 1.0, "win_rate_weight": 0.9,
+                "motor_weight": 0.7, "avg_st_weight": 0.7, "danger_penalty_weight": 1.0,
+            },
+            "second_place": {
+                "base_rate_weight": 1.0, "win_rate_weight": 0.5,
+                "motor_weight": 0.5, "avg_st_weight": 0.2, "danger_penalty_weight": 0.15,
+            },
+            "third_place": {
+                "base_rate_weight": 1.0, "win_rate_weight": 0.3,
+                "motor_weight": 0.4, "avg_st_weight": 0.1, "danger_penalty_weight": 0.0,
+            },
+            "lane6_first_place_conditions": {
+                "min_match_index": 85, "min_upset_score": 8.5, "normal_suppress_ratio": 0.35,
+            },
+        },
     }
 
     if not os.path.exists(ASAHI_CONFIG_FILE):
@@ -379,3 +404,136 @@ def calculate_upset_score_v2(
     }
 
     return upset_score, detail, target
+
+
+# ════════════════════════════════════════════════════════════
+# ④ 着順別評価（1着・2着・3着を個別に算出する）
+# ════════════════════════════════════════════════════════════
+#
+# 【設計背景】
+# 従来は単一のスコア(calc_boat_score_v2)をsoftmax化した1つの確率分布を
+# 1着・2着・3着すべてに流用していたため、以下の歪みが生じていた:
+#   ・危険艇判定で1号艇の1着適性を下げると、2着・3着適性まで連動して
+#     下がってしまい、1号艇が舟券圏内(2-3着)からも過度に排除される
+#   ・6号艇は艇番による基礎優位性が低いだけなのに、モーター・勝率が
+#     良いと1着候補になりやすく、実際の competitin における6号艇の
+#     低い1着率と乖離する
+#
+# 本関数群は、艇番別の実決着率（lane_base_rate）を土台に、
+# 1着＝勝ち切る能力、2着＝連対能力、3着＝舟券絡み率という
+# 異なる評価軸で独立にスコアを算出する。
+# 危険艇判定（1号艇の1着適性低下）は1着評価にのみ強く反映し、
+# 2着・3着評価への影響は danger_penalty_weight で個別に抑制する。
+
+def calc_lane_rank_scores_v2(
+    boat,
+    all_boats: list,
+    config: Optional[dict] = None,
+) -> dict:
+    """
+    1艇について、1着適性・2着適性・3着適性を個別に算出する。
+    戻り値: {"first": float, "second": float, "third": float}（いずれも正の相対スコア）
+    """
+    cfg = config or load_asahi_config()
+    lrs = cfg["lane_rank_scores"]
+    base_rates = lrs["lane_base_rate"].get(
+        str(boat.lane), {"first": 10, "second": 15, "third": 15}
+    )
+
+    # 全艇平均比で個別指標を評価する（相対評価にすることで艇番間の
+    # スケールのブレを吸収する）
+    win_rates = [b.win_rate for b in all_boats if b.win_rate is not None]
+    motors    = [b.motor    for b in all_boats if b.motor    is not None]
+    avg_win_rate = sum(win_rates) / len(win_rates) if win_rates else 5.0
+    avg_motor    = sum(motors) / len(motors) if motors else 33.0
+
+    win_rate_diff = (boat.win_rate - avg_win_rate) if boat.win_rate is not None else 0.0
+    motor_diff    = (boat.motor    - avg_motor)    if boat.motor    is not None else 0.0
+    # 平均ST実績: 0.17秒を基準に、速いほどプラスに寄与する
+    avg_st_diff = (0.17 - boat.avg_st) * 10.0 if boat.avg_st else 0.0
+
+    def _rank_score(rank_key: str, base_rate: float) -> float:
+        w = lrs[rank_key]
+        score = base_rate * w["base_rate_weight"]
+        score += win_rate_diff * w["win_rate_weight"]
+        score += motor_diff    * w["motor_weight"]
+        score += avg_st_diff   * w["avg_st_weight"]
+        return score
+
+    first_score  = _rank_score("first_place",  base_rates["first"])
+    second_score = _rank_score("second_place", base_rates["second"])
+    third_score  = _rank_score("third_place",  base_rates["third"])
+
+    # ── 危険艇判定（1号艇のみ）を1着評価に強く反映し、2着・3着への
+    #    影響は各着順ごとの danger_penalty_weight で個別に抑制する ──
+    if boat.lane == 1:
+        danger_score, _ = calc_danger_score_v2(boat, all_boats, cfg)
+        # danger_score は0-100点。スコアスケール(概ね数十点)に合わせて
+        # 1/10した値をペナルティ基準量とする。
+        penalty_unit = danger_score / 10.0
+        first_score  -= penalty_unit * lrs["first_place"]["danger_penalty_weight"]
+        second_score -= penalty_unit * lrs["second_place"]["danger_penalty_weight"]
+        third_score  -= penalty_unit * lrs["third_place"]["danger_penalty_weight"]
+
+    return {
+        "first":  max(0.1, first_score),
+        "second": max(0.1, second_score),
+        "third":  max(0.1, third_score),
+    }
+
+
+def calc_rank_probabilities_v2(
+    boats: list,
+    context: Optional[dict] = None,
+    config: Optional[dict] = None,
+) -> dict:
+    """
+    レース全体について、1着・2着・3着それぞれの確率分布を個別に算出する。
+
+    context: {"match_index": float, "upset_score": float} を渡すと、
+             6号艇1着の特別条件判定に使う（省略時は特別条件なしとして
+             通常の減衰を適用する＝6号艇1着を控えめに評価する）。
+
+    戻り値: {
+      "first":  {lane: prob, ...},   # 1着確率分布（6号艇は条件次第で減衰）
+      "second": {lane: prob, ...},   # 2着確率分布
+      "third":  {lane: prob, ...},   # 3着確率分布
+      "lane6_first_allowed": bool,   # 6号艇1着の特別条件を満たしたか
+    }
+    """
+    cfg = config or load_asahi_config()
+    context = context or {}
+    lrs = cfg["lane_rank_scores"]
+
+    scores = {b.lane: calc_lane_rank_scores_v2(b, boats, cfg) for b in boats}
+
+    def _softmax_normalize(score_map: dict) -> dict:
+        total = sum(score_map.values())
+        if total <= 0:
+            n = len(score_map) or 1
+            return {l: 1.0 / n for l in score_map}
+        return {l: s / total for l, s in score_map.items()}
+
+    # ── 6号艇1着の特別条件判定 ──────────────────────────────
+    lane6_cond = lrs["lane6_first_place_conditions"]
+    match_index = context.get("match_index", 0)
+    upset_score = context.get("upset_score", 0)
+    lane6_allowed = (
+        match_index >= lane6_cond["min_match_index"]
+        or upset_score >= lane6_cond["min_upset_score"]
+    )
+
+    first_raw = {lane: s["first"] for lane, s in scores.items()}
+    if not lane6_allowed and 6 in first_raw:
+        # 特別条件を満たさない通常時は、6号艇の1着スコアを大幅に減衰させる
+        # （完全除外はしない＝万が一の展開まで確率0にはしない）
+        first_raw[6] *= lane6_cond["normal_suppress_ratio"]
+
+    first_probs  = _softmax_normalize(first_raw)
+    second_probs = _softmax_normalize({lane: s["second"] for lane, s in scores.items()})
+    third_probs  = _softmax_normalize({lane: s["third"]  for lane, s in scores.items()})
+
+    return {
+        "first": first_probs, "second": second_probs, "third": third_probs,
+        "lane6_first_allowed": lane6_allowed,
+    }

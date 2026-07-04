@@ -4,7 +4,6 @@
   "phase": 1,
   "generated_at": "2026-07-03T00:00:00+09:00",
   "note": "Phase1: 実績データが不足しているため、業界知見（一般的にボートレース予想で重要とされる指標の相対的な重要度）に基づく初期値。各重みには採用理由を付記。Phase2で実績5000〜10000レース以上蓄積後、自動学習による見直しを予定。",
-
   "danger_score": {
     "_comment": "危険艇速報（1号艇危険度）100点満点の内訳。合計は正の配点の合計=100になるよう設計。",
     "total_scale": 100,
@@ -36,7 +35,7 @@
     },
     "thresholds": {
       "win_rate_low_ratio": 0.85,
-      "motor_bad_ratio": 0.90,
+      "motor_bad_ratio": 0.9,
       "avg_st_slow_1": 0.18,
       "avg_st_slow_2": 0.16,
       "course_st_slow_1": 0.18,
@@ -45,34 +44,139 @@
       "course_rank_bad_2": 3.0
     }
   },
-
   "upset_prob": {
     "_comment": "万舟警報（荒れ確率）計算の効果量(logit加算値)。sigmoid/logit変換の枠組みは維持し、中身の特徴量を朝データのみに再構成。",
     "effects": {
-      "st_risk_avg_st":       {"value": 0.30, "reason": "1号艇の平均ST実績が遅い場合の荒れ寄与（旧展示ST版と同等の効果量を実績STに付け替え）"},
-      "st_risk_course_st":    {"value": 0.25, "reason": "1号艇のコース別ST実績が遅い場合の追加寄与"},
-      "win_rate_risk_1":      {"value": 0.50, "reason": "1号艇の全国勝率が5.0未満の場合"},
-      "win_rate_risk_2":      {"value": 0.20, "reason": "1号艇の全国勝率が5.5未満の場合（弱い寄与）"},
-      "motor_risk":           {"value": 0.20, "reason": "1号艇のモーター2連率が35%未満の場合"},
-      "class_risk":           {"value": 0.30, "reason": "1号艇がB1/B2級の場合"},
-      "boat2_strength_mult":  {"value": 2.0,  "reason": "2号艇のモデル内部確率が1号艇を上回る場合の増幅係数"},
-      "class_gap_effect":     {"value": 0.40, "reason": "1号艇B級・他にA1級がいる場合の等級差効果"}
+      "st_risk_avg_st": {
+        "value": 0.3,
+        "reason": "1号艇の平均ST実績が遅い場合の荒れ寄与（旧展示ST版と同等の効果量を実績STに付け替え）"
+      },
+      "st_risk_course_st": {
+        "value": 0.25,
+        "reason": "1号艇のコース別ST実績が遅い場合の追加寄与"
+      },
+      "win_rate_risk_1": {
+        "value": 0.5,
+        "reason": "1号艇の全国勝率が5.0未満の場合"
+      },
+      "win_rate_risk_2": {
+        "value": 0.2,
+        "reason": "1号艇の全国勝率が5.5未満の場合（弱い寄与）"
+      },
+      "motor_risk": {
+        "value": 0.2,
+        "reason": "1号艇のモーター2連率が35%未満の場合"
+      },
+      "class_risk": {
+        "value": 0.3,
+        "reason": "1号艇がB1/B2級の場合"
+      },
+      "boat2_strength_mult": {
+        "value": 2.0,
+        "reason": "2号艇のモデル内部確率が1号艇を上回る場合の増幅係数"
+      },
+      "class_gap_effect": {
+        "value": 0.4,
+        "reason": "1号艇B級・他にA1級がいる場合の等級差効果"
+      }
     },
     "venue_factor_note": "会場ごとの統計的な荒れやすさ(VENUE_UPSET_FACTOR)は朝データ（過去の会場特性）に基づくため継続使用する",
     "race_grade_note": "レースグレード補正(grade_effects)も朝時点で確定する出走表情報のため継続使用する",
     "night_factor": -0.08
   },
-
   "boat_relative_score": {
     "_comment": "calc_boat_score_v2: 各艇の相対的な強さスコア（順位づけ用）。展示タイム・展示STの代わりに、平均ST実績・コース別ST実績・モーター実績・勝率で構成する。",
     "weights": {
-      "avg_st_component":     {"weight": 1.5, "reason": "旧展示ST版(重み1.3)相当。実績STのため展示ほど直近性はないがブレが少ない。"},
-      "course_st_component":  {"weight": 1.3, "reason": "進入コースでのST実績。進入変更リスクを考慮しavg_stよりやや低め。"},
-      "motor_component":      {"weight": 1.2, "reason": "旧展示タイム版のモーター寄与と同等水準を維持。"},
-      "win_rate_component":   {"weight": 0.7, "reason": "全国勝率の影響（旧版と同じ係数を維持）。"},
+      "avg_st_component": {
+        "weight": 1.5,
+        "reason": "旧展示ST版(重み1.3)相当。実績STのため展示ほど直近性はないがブレが少ない。"
+      },
+      "course_st_component": {
+        "weight": 1.3,
+        "reason": "進入コースでのST実績。進入変更リスクを考慮しavg_stよりやや低め。"
+      },
+      "motor_component": {
+        "weight": 1.2,
+        "reason": "旧展示タイム版のモーター寄与と同等水準を維持。"
+      },
+      "win_rate_component": {
+        "weight": 0.7,
+        "reason": "全国勝率の影響（旧版と同じ係数を維持）。"
+      },
       "lane_weight": {
-        "1": 1.6, "2": 1.2, "3": 0.9, "4": 0.5, "5": -0.2, "6": -0.6
+        "1": 1.6,
+        "2": 1.2,
+        "3": 0.9,
+        "4": 0.5,
+        "5": -0.2,
+        "6": -0.6
       }
+    }
+  },
+  "lane_rank_scores": {
+    "_comment": "1着・2着・3着を個別評価するための艇番別ベースレート・重み。同じスコアを全着順へ流用しないための着順別評価エンジン。lane_base_rate は競艇全国平均の艇番別決着率（%）に基づく統計値。危険艇判定（1号艇の1着適性低下）は1着評価にのみ影響させ、2着・3着評価への影響は最小限（second/thirdのdanger_penalty_weightを参照）に抑える。",
+    "lane_base_rate": {
+      "_comment": "艇番別の実決着率（%、全国平均の一般的な値）。1着率合計・2着率合計・3着率合計は概ね100%になるよう設計。",
+      "1": {
+        "first": 55,
+        "second": 16,
+        "third": 12
+      },
+      "2": {
+        "first": 14,
+        "second": 17,
+        "third": 14
+      },
+      "3": {
+        "first": 12,
+        "second": 16,
+        "third": 15
+      },
+      "4": {
+        "first": 10,
+        "second": 17,
+        "third": 16
+      },
+      "5": {
+        "first": 6,
+        "second": 14,
+        "third": 17
+      },
+      "6": {
+        "first": 3,
+        "second": 10,
+        "third": 13
+      }
+    },
+    "first_place": {
+      "_comment": "1着適性＝勝ち切る能力。艇番ベースレートを土台に、勝率・モーター・ST実績・危険艇判定で補正する。",
+      "base_rate_weight": 1.0,
+      "win_rate_weight": 0.9,
+      "motor_weight": 0.7,
+      "avg_st_weight": 0.7,
+      "danger_penalty_weight": 1.0
+    },
+    "second_place": {
+      "_comment": "2着適性＝連対能力。危険艇判定でも1号艇を過度に排除しないよう、danger_penalty_weightを小さく設定する。",
+      "base_rate_weight": 1.0,
+      "win_rate_weight": 0.5,
+      "motor_weight": 0.5,
+      "avg_st_weight": 0.2,
+      "danger_penalty_weight": 0.15
+    },
+    "third_place": {
+      "_comment": "3着適性＝舟券絡み率。最も幅広く評価し、危険艇判定はほぼ影響させない（1号艇は3着に自然に残す）。",
+      "base_rate_weight": 1.0,
+      "win_rate_weight": 0.3,
+      "motor_weight": 0.4,
+      "avg_st_weight": 0.1,
+      "danger_penalty_weight": 0.0
+    },
+    "lane6_first_place_conditions": {
+      "_comment": "6号艇1着を積極候補として残す例外条件。いずれか1つでも満たせば通常の減衰を適用しない。満たさない場合は6号艇1着の確率を大幅に減衰させる（除外はしない）。",
+      "min_match_index": 85,
+      "min_upset_score": 8.5,
+      "normal_suppress_ratio": 0.35
     }
   }
 }

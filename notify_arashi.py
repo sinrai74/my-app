@@ -34,6 +34,7 @@ import requests
 from x_asahi_scoring import (
     calculate_upset_score_v2,
     calc_danger_score_v2,
+    calc_rank_probabilities_v2,
     get_model_version as _asahi_model_version,
 )
 
@@ -1749,6 +1750,19 @@ def _evaluate_bets(
     sorted_market = sorted(lane_avg_odds.items(), key=lambda x: x[1])
     market_rank = {lane: rank+1 for rank, (lane,_) in enumerate(sorted_market)}
 
+    # ── 【朝刊AI】着順別確率（1着・2着・3着を個別評価）────────
+    # _mc_trifecta_probs と trifecta_prob の両方から参照する共通データ。
+    # 危険艇判定（1号艇の1着適性低下）は1着評価にのみ強く反映され、
+    # 2着・3着評価への影響は最小限に抑えられている
+    # （x_asahi_scoring.calc_rank_probabilities_v2 を参照）。
+    if boats:
+        _rank_probs = calc_rank_probabilities_v2(
+            boats, context={"match_index": 0, "upset_score": upset_score}
+        )
+    else:
+        _rank_probs = {"first": ml_probs, "second": ml_probs, "third": ml_probs,
+                        "lane6_first_allowed": True}
+
     # ── 三連単確率計算 ────────────────────────────────────────
     # ════════════════════════════════════════════════════════
     # 展開シミュレーションエンジン
@@ -1796,64 +1810,52 @@ def _evaluate_bets(
 
         return min(max(survive, 0.01), 0.99)
 
-    def _expansion_second_probs(
-        probs: dict[int, float],
-        first: int,
-        attack_lane: int,
-        survive_prob: float,
-    ) -> dict[int, float]:
-        """
-        展開補正済みの2着確率を返す。
-        - 攻め艇が1着の場合: 内艇差し残りが多い
-        - 1号艇が1着の場合: 差し艇の2着が多い
-        """
-        remaining = {l: p for l, p in probs.items() if l != first}
-        total = sum(remaining.values()) or 1.0
-        second = {l: p / total for l, p in remaining.items()}
-
-        if first != 1:
-            # 外艇1着 → 内側差し残りが多い
-            for lane in list(second.keys()):
-                if lane < first:              # 内艇は差し残り
-                    second[lane] *= 1.25
-                elif lane == 1:               # 1号艇は半残り
-                    second[lane] *= (0.6 + survive_prob * 0.4)
-        else:
-            # 1号艇1着 → 外目のまくり差しが多い
-            if attack_lane > 0 and attack_lane in second:
-                second[attack_lane] *= 1.20
-            for lane in list(second.keys()):
-                if 3 <= lane <= 4:
-                    second[lane] *= 1.10
-
-        # 再正規化
-        total2 = sum(second.values()) or 1.0
-        return {l: p / total2 for l, p in second.items()}
-
     def _mc_trifecta_probs(
         probs: dict[int, float],
         n_sim: int = 5000,
     ) -> dict[str, float]:
         """
         ② Monte Carlo 三連単確率
+
+        【朝刊AI・着順別評価】1着・2着・3着それぞれ独立した確率分布
+        （calc_rank_probabilities_v2）を用いる。従来は1着確率(probs)を
+        2着・3着にもそのまま流用していたが、これにより
+          ・危険艇判定で1号艇の1着適性が下がっても、2着・3着では
+            自然に舟券圏内へ残る
+          ・6号艇は艇番の実決着率に基づき1着候補になりにくく、
+            AI一致指数・荒れ度が高い場合のみ1着候補として残る
+        という設計を実現する。
+
         n_sim 回レース仮想再生して三連単確率を推定する。
-        展開補正（attack_lane / survive_prob）を組み込んでいる。
+        1着→2着は展開補正（attack_lane / survive_prob）を組み込み、
+        3着は独立した third_probs を用いる（1着確率の使い回しをしない）。
         """
         import random as _rand
         _rand.seed(None)   # ランダムシード
 
+        if not boats:
+            # boats がない場合は従来通り単一分布にフォールバック
+            rank_probs = {"first": probs, "second": probs, "third": probs}
+        else:
+            # 【朝刊AI】_evaluate_bets 冒頭で計算済みの共通データを再利用する
+            rank_probs = _rank_probs
+
+        first_probs  = rank_probs["first"]
+        second_probs_base = rank_probs["second"]
+        third_probs  = rank_probs["third"]
+
         attack_lane  = _detect_attack_lane(probs)
         survive_prob = _calc_lane1_survive_prob(probs, attack_lane)
 
-        lanes  = list(probs.keys())
+        lanes  = list(first_probs.keys())
         result_count: dict[str, int] = {}
 
         for _ in range(n_sim):
-            # 1着
-            first = _rand.choices(lanes, weights=[probs[l] for l in lanes])[0]
+            # 1着（着順別1着確率分布を使用。6号艇は特別条件を満たさない限り抑制済み）
+            first = _rand.choices(lanes, weights=[first_probs[l] for l in lanes])[0]
 
-            # 展開補正済み2着確率
-            sec_probs = _expansion_second_probs(probs, first, attack_lane, survive_prob)
+            # 2着（着順別2着確率分布をベースに、展開補正を適用）
+            sec_probs = _expansion_second_probs(second_probs_base, first, attack_lane, survive_prob)
             sec_lanes = [l for l in lanes if l != first]
             sec_w     = [sec_probs.get(l, 0.001) for l in sec_lanes]
 
@@ -1861,9 +1863,9 @@ def _evaluate_bets(
                 continue
             second = _rand.choices(sec_lanes, weights=sec_w)[0]
 
-            # 3着（残りから均等）
+            # 3着（着順別3着確率分布を使用。1着確率の使い回しをしない）
             thi_lanes = [l for l in lanes if l != first and l != second]
-            thi_w     = [probs.get(l, 0.001) for l in thi_lanes]
+            thi_w     = [third_probs.get(l, 0.001) for l in thi_lanes]
             if not thi_lanes or sum(thi_w) <= 0:
                 continue
             third = _rand.choices(thi_lanes, weights=thi_w)[0]
@@ -1875,9 +1877,12 @@ def _evaluate_bets(
         total = sum(result_count.values()) or 1
         return {k: v / total for k, v in result_count.items()}
 
-    # ── MCシミュレーション（展開補正あり）────────────────────
+    # ── MCシミュレーション（展開補正あり） ────────────────────
+    # 【朝刊AI】has_exhibition は展示データ不使用ポリシーにより常に False
+    # だが、MCシミュレーション自体は展示の有無に関係なく実行すべきなので
+    # ここでは has_exhibition によるガードを行わない（旧実装のバグ修正）。
     mc_probs: dict[str, float] = {}
-    if has_exhibition and boats:
+    if boats:
         mc_probs = _mc_trifecta_probs(ml_probs, n_sim=3000)
 
     # ════════════════════════════════════════════════════════
@@ -2213,13 +2218,19 @@ def _evaluate_bets(
         """
         PL・MC・シナリオ・市場確率をレジーム対応の動的ウェイトでブレンドし
         キャリブレーション補正を適用した最終三連単確率
+
+        【朝刊AI・着順別評価】PL(Plackett-Luce)確率も1着・2着・3着の
+        独立した確率分布(_rank_probs)を用いる。従来は1着確率(ml_probs)を
+        2着・3着の計算にも使い回していたため、危険艇判定や艇番バイアスが
+        本来1着にしか影響すべきでないのに2着・3着まで連動して歪んでいた。
         """
-        # ── PL確率（Luce モデル）────────────────────────────
-        pa = ml_probs.get(a, 0.001)
-        rem1 = {l: p for l, p in ml_probs.items() if l != a}
+        # ── PL確率（Luce モデル、着順別の独立分布を使用）────────
+        first_p, second_p, third_p = _rank_probs["first"], _rank_probs["second"], _rank_probs["third"]
+        pa = first_p.get(a, 0.001)
+        rem1 = {l: p for l, p in second_p.items() if l != a}
         t1_  = sum(rem1.values()) or 1
         pb   = rem1.get(b, 0.001) / t1_
-        rem2 = {l: p for l, p in rem1.items() if l != b}
+        rem2 = {l: p for l, p in third_p.items() if l != a and l != b}
         t2_  = sum(rem2.values()) or 1
         pc   = rem2.get(c, 0.001) / t2_
         pl_prob = pa * pb * pc
@@ -2240,15 +2251,15 @@ def _evaluate_bets(
         prob = _calibrate_prob(prob, calib_table)
 
         # ── 個別補正 ──────────────────────────────────────────
+        # 【朝刊AI】6号艇1着の抑制は _rank_probs["first"] 側
+        # （calc_rank_probabilities_v2 の特別条件フィルタ）で既に
+        # 反映済みのため、ここでの重複ペナルティ(旧: prob *= 0.70)は行わない。
+        # 艇番バイアス(course_bonus)も同様に着順別分布へ既に織り込み済みのため、
+        # 2着・3着へ一律の艇番バイアスをかける処理（旧実装）は廃止する。
         if a != 1 and b == 1:
             prob *= 1.15
         if a == 1 and odds_map.get(combo, 0) >= 15:
             prob *= 1.12
-        if a == 6:
-            prob *= 0.70
-        course_bonus = {1: 1.25, 2: 1.10, 3: 1.05, 4: 0.95, 5: 0.85, 6: 0.75}
-        prob *= course_bonus.get(b, 1.0)
-        prob *= course_bonus.get(c, 1.0)
         if a == 4 and lane4_boost > 0:
             prob *= (1.0 + lane4_boost * 0.05)
         if a == monster_lane and monster_boost > 1.0:
