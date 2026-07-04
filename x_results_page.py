@@ -278,7 +278,7 @@ def _miss_analysis_html(miss: dict) -> str:
 
 
 
-def _brand_expectation_summary_html(records: list[dict], daily_stats: dict) -> str:
+def _brand_expectation_summary_html(records: list[dict], daily_stats: dict, date_str: str = "") -> str:
     """
     📊 本日のAI成績サマリー（ご要望の5項目）
     ① 危険艇達成率（掲載20件中、1号艇以外1着の割合）
@@ -322,7 +322,7 @@ def _brand_expectation_summary_html(records: list[dict], daily_stats: dict) -> s
     )
 
     # ⑤ AIランキング払戻一覧
-    ranking_list = _calc_ranking_payouts(records, daily_stats)
+    ranking_list = _calc_ranking_payouts(records, daily_stats, date_str)
     if ranking_list:
         ranking_rows = ""
         for i, item in enumerate(ranking_list, 1):
@@ -365,7 +365,7 @@ def generate_results_html(date_str: str, output_path: str) -> dict:
     trust = calc_brand_trust(periods["d30"]["records"])
     daily_stats = _load_daily_stats(date_str)
     daily_stats_range_30d = _load_daily_stats_range(date_str, 30)
-    brand_expectation_html = _brand_expectation_summary_html(periods["today"]["records"], daily_stats)
+    brand_expectation_html = _brand_expectation_summary_html(periods["today"]["records"], daily_stats, date_str)
     daily_review = generate_daily_review(
         periods["today"]["agg"], periods["today"]["rank_data"], miss_analysis,
     )

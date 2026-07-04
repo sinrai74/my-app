@@ -20,6 +20,8 @@ import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import requests
+
 from x_verification import (
     load_today_records, load_records_range,
     aggregate, aggregate_by_rank,
@@ -223,8 +225,19 @@ def calc_awakening_results() -> dict:
 # AIランキング払戻一覧
 # ════════════════════════════════════════════════════════════
 
-def calc_ranking_payouts(records: list[dict], daily_stats: dict) -> list[dict]:
-    """「今日のAIランキング」トップ10の各レースの実際の払戻・結果を返す。"""
+def calc_ranking_payouts(records: list[dict], daily_stats: dict, date_str: Optional[str] = None) -> list[dict]:
+    """
+    「今日のAIランキング」トップ10の各レースの実際の払戻・結果を返す。
+
+    hit_record.csv にデータがあればそれを優先して使う。
+    ない場合（AIランキング上位でも notify_arashi.py の通知基準に届かず
+    未記録のレース）は BoatraceOpenAPI の results API から直接結果を
+    取得して補完する（fetch_results_for_date を1日1回だけ呼び、
+    複数レースの検索に使い回すことでAPI呼び出し回数を抑える）。
+
+    date_str: 対象日 YYYYMMDD。省略時は records[0]["date"] から推測する
+              （records が空の場合は API 補完ができない）。
+    """
     ranking = daily_stats.get("ranking", [])
     if not ranking:
         return []
@@ -234,22 +247,118 @@ def calc_ranking_payouts(records: list[dict], daily_stats: dict) -> list[dict]:
         key = (str(r.get("venue_num", "")), str(r.get("race", "")))
         record_map[key] = r
 
+    # 対象日を特定（明示指定を優先、なければ records から推測）
+    if not date_str and records:
+        date_str = str(records[0].get("date", "")).replace("-", "")
+
+    api_results_cache: Optional[dict] = None  # 遅延取得（1日分を1回だけ）
+
     result = []
     for item in ranking:
         key = (str(item.get("venue_num", "")), str(item.get("race", "")))
         rec = record_map.get(key)
         payout, result_combo, has_data = None, "", False
+
         if rec:
             result_combo = rec.get("result_combo", "")
             if result_combo and "-" in result_combo:
                 payout = int(_safe_float(rec.get("payout")))
                 has_data = True
+
+        if not has_data and date_str:
+            # hit_record.csv に記録がない → results API から直接補完する
+            if api_results_cache is None:
+                api_results_cache = fetch_results_for_date(date_str) or {}
+            api_result = find_race_result(
+                api_results_cache,
+                int(item.get("venue_num", 0)),
+                int(item.get("race", 0)) if str(item.get("race", "")).isdigit() else 0,
+            )
+            if api_result:
+                result_combo = api_result["combo"]
+                payout = api_result["payout"]
+                has_data = True
+
         result.append({
             "venue": item.get("venue", ""), "race": item.get("race", ""),
             "match_index": item.get("match_index", 0),
             "payout": payout, "result_combo": result_combo, "has_data": has_data,
         })
     return result
+
+
+# ════════════════════════════════════════════════════════════
+# BoatraceOpenAPI results 直接取得（hit_record.csv未記録レースの補完用）
+# ════════════════════════════════════════════════════════════
+
+RESULTS_URL = "https://boatraceopenapi.github.io/results/v2"
+_HTTP_HEADERS = {"User-Agent": "Mozilla/5.0"}
+_HTTP_TIMEOUT = 15
+
+
+def fetch_results_for_date(date_str: str) -> Optional[dict]:
+    """
+    指定日1日分のレース結果をBoatraceOpenAPIから1回だけ取得する。
+    複数レースの結果検索に使い回すことで、レースごとにAPIを叩く
+    非効率を避ける。失敗時は None を返す。
+    """
+    url = f"{RESULTS_URL}/{date_str[:4]}/{date_str}.json"
+    try:
+        r = requests.get(url, headers=_HTTP_HEADERS, timeout=_HTTP_TIMEOUT)
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException:
+        # 前日分が today.json 側にしかない場合のフォールバック
+        try:
+            today_str = datetime.now(JST).strftime("%Y%m%d")
+            if date_str == today_str:
+                r = requests.get(f"{RESULTS_URL}/today.json", headers=_HTTP_HEADERS, timeout=_HTTP_TIMEOUT)
+                r.raise_for_status()
+                return r.json()
+        except requests.RequestException:
+            pass
+        return None
+
+
+def find_race_result(results_data: dict, venue_num: int, race_number: int) -> Optional[dict]:
+    """
+    fetch_results_for_date() が返した1日分の結果データから、
+    指定レースの3連単結果・払戻を検索する。
+    戻り値: {"combo": "2-3-1", "payout": 4520} or None
+    """
+    if not results_data:
+        return None
+
+    for r in results_data.get("results", []):
+        if (r.get("race_stadium_number") == venue_num
+                and r.get("race_number") == race_number):
+            combo, payout = "不明", 0
+            payouts = r.get("payouts", {})
+            if isinstance(payouts, dict):
+                trifecta = payouts.get("trifecta", [])
+                if isinstance(trifecta, list) and trifecta:
+                    try:
+                        combo  = trifecta[0].get("combination", "不明")
+                        payout = int(trifecta[0].get("payout", 0))
+                    except (ValueError, TypeError):
+                        pass
+
+            if combo == "不明":
+                boats = r.get("boats", [])
+                if isinstance(boats, dict):
+                    boats = list(boats.values())
+                order = sorted(
+                    [b for b in boats if isinstance(b, dict) and b.get("racer_place_number")],
+                    key=lambda b: b.get("racer_place_number", 99),
+                )
+                if len(order) >= 3:
+                    combo = "-".join(str(b.get("racer_boat_number", "?")) for b in order[:3])
+
+            if combo == "不明":
+                return None
+            return {"combo": combo, "payout": payout}
+
+    return None
 
 
 # ════════════════════════════════════════════════════════════
