@@ -93,6 +93,8 @@ jobs:
       # （展示情報等の後追い反映によるデータ書き換えを防ぐため）。
       - name: Update motor history
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE_ARG=""
           if [ -n "${{ github.event.inputs.date }}" ]; then
@@ -110,6 +112,8 @@ jobs:
       # 件数を確認し、不一致・空データなら最大2回、10分間隔でリトライする。
       - name: Generate rankings
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           EXPECTED_DATE="${{ github.event.inputs.date }}"
           if [ -z "$EXPECTED_DATE" ]; then
@@ -220,6 +224,7 @@ jobs:
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE_ARG=""
           [ -n "${{ github.event.inputs.date }}" ] && DATE_ARG="--date ${{ github.event.inputs.date }}"
@@ -236,6 +241,7 @@ jobs:
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE_ARG=""
           [ -n "${{ github.event.inputs.date }}" ] && DATE_ARG="--date ${{ github.event.inputs.date }}"
@@ -249,6 +255,7 @@ jobs:
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           pip install weasyprint -q 2>/dev/null || true
           DRY=""
@@ -261,33 +268,20 @@ jobs:
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DRY=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_weekly_report.py $DRY || echo "週次レポート失敗（続行）"
 
-      # ── motor_history.csv を保存 ──────────────────────
-      # 【手動確認用】workflow_dispatch で save_data=false を指定すると、
-      # 生成・送信は行うが git commit/push はスキップする（本番データを上書きしない）。
-      # 通常のスケジュール実行(cron)では常に保存する。
-      - name: Commit motor history
-        if: always() && (github.event_name != 'workflow_dispatch' || github.event.inputs.save_data != 'false')
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add motor_history.csv ranking_cache.json 2>/dev/null || true
-          [ -f manshuu_sent.json ]       && git add manshuu_sent.json       || true
-          [ -f buyscore_log.jsonl ]      && git add buyscore_log.jsonl      || true
-          [ -f buyscore_analysis.json ]  && git add buyscore_analysis.json  || true
-          [ -f buyscore_config.json ]    && git add buyscore_config.json    || true
-          [ -f daily_stats.json ]        && git add daily_stats.json        || true
-          git diff --cached --quiet || git commit -m "auto: update history $(date +%Y%m%d-%H%M)"
-          git push origin main || echo "push失敗"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ── 【運用方針】運用データ(motor_history.csv, ranking_cache.json,
+      #    manshuu_sent.json, buyscore_log.jsonl, buyscore_analysis.json,
+      #    buyscore_config.json, daily_stats.json 等)はGit管理対象外。
+      #    以前はここで自動 git add/commit/push していたが、.gitignore の
+      #    方針と矛盾するため廃止した。これらは各実行環境のローカル
+      #    ファイルシステム上でのみ保持・更新される（GitHub Actions の
+      #    ジョブ実行環境は毎回使い捨てのため、次回実行時は前回の
+      #    motor_history.csv 等を引き継がない点に注意。継続的な蓄積が
+      #    必要な場合は、GitHub Actions の cache/artifact 機能や外部
+      #    ストレージ(S3等)の利用を別途検討すること）。
 
-      - name: Skip commit (manual dry check)
-        if: always() && github.event_name == 'workflow_dispatch' && github.event.inputs.save_data == 'false'
-        run: |
-          echo "save_data=false のため、生成結果は保存(commit)しませんでした。"
-          echo "ranking_cache.json 等はこのジョブの実行環境内でのみ変更され、リポジトリには反映されていません。"
