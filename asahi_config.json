@@ -21,14 +21,15 @@
       "local_win_low":   {"weight": 2,  "reason": "当地勝率そのものが低い場合の絶対評価分。"},
       "motor_bad":       {"weight": 2,  "reason": "モーター2連率そのものが低い場合の絶対評価分。"},
       "avg_st_slow":     {"weight": 2,  "reason": "平均ST実績そのものが遅い場合の絶対評価分。"},
-      "course1_place_low": {"weight": 1, "reason": "1コース複勝率（fanファイル）そのものが低い場合の絶対評価分。展示STではなく前期実績を使用。"}
+      "course1_place_low": {"weight": 1, "reason": "1コース1着率（fanファイルのコース別1着回数÷進入回数から算出した真の値）そのものが低い場合の絶対評価分。展示STではなく前期実績を使用。"}
     },
     "solo_thresholds": {
       "win_rate_low_abs": 5.0,
       "local_win_low_abs": 5.0,
       "motor_bad_abs": 33.0,
       "avg_st_slow_abs": 0.17,
-      "course1_place_low_abs": 45.0
+      "course1_place_low_abs": 45.0,
+      "_comment_course1_place_low_abs": "1コース1着率(%)がこの値未満なら低調。全国平均は概ね50〜55%。"
     },
     "class_rank": {"A1": 4, "A2": 3, "B1": 2, "B2": 1, "": 0},
     "thresholds": {
@@ -143,12 +144,14 @@
       }
     },
     "first_place": {
-      "_comment": "1着適性＝勝ち切る能力。艇番ベースレートを土台に、勝率・モーター・ST実績・コース別ST・級別・危険艇判定で補正する。",
+      "_comment": "1着適性＝勝ち切る能力。艇番ベースレートを土台に、勝率・当地勝率・モーター・ST実績・コース別ST・コース別1着率・級別・危険艇判定で補正する。",
       "base_rate_weight": 1.0,
       "win_rate_weight": 0.9,
+      "local_win_weight": 0.3,
       "motor_weight": 0.7,
       "avg_st_weight": 0.7,
       "course_st_weight": 0.5,
+      "course_perf_weight": 0.3,
       "class_weight": 0.4,
       "danger_penalty_weight": 1.0
     },
@@ -156,9 +159,11 @@
       "_comment": "2着適性＝連対能力。危険艇判定でも1号艇を過度に排除しないよう、danger_penalty_weightを小さく設定する。",
       "base_rate_weight": 1.0,
       "win_rate_weight": 0.5,
+      "local_win_weight": 0.2,
       "motor_weight": 0.5,
       "avg_st_weight": 0.2,
       "course_st_weight": 0.3,
+      "course_perf_weight": 0.2,
       "class_weight": 0.2,
       "danger_penalty_weight": 0.15
     },
@@ -166,9 +171,11 @@
       "_comment": "3着適性＝舟券絡み率。最も幅広く評価し、危険艇判定はほぼ影響させない（1号艇は3着に自然に残す）。",
       "base_rate_weight": 1.0,
       "win_rate_weight": 0.3,
+      "local_win_weight": 0.1,
       "motor_weight": 0.4,
       "avg_st_weight": 0.1,
       "course_st_weight": 0.2,
+      "course_perf_weight": 0.1,
       "class_weight": 0.1,
       "danger_penalty_weight": 0.0
     },
@@ -180,10 +187,11 @@
     }
   },
   "featured_racers": {
-    "_comment": "危険艇速報の「注目選手」欄。危険度が高い1号艇の代わりに狙うべき艇を提示する。",
+    "_comment": "危険艇速報の「注目選手」欄。危険度が高い1号艇の代わりに狙うべき艇を提示する。danger_score(1号艇除外の判定)とmin_composite_threshold(注目選手として表示する最低ライン)は独立した閾値。1号艇が危険でなくても強い挑戦者がいれば表示され、逆に1号艇が危険でも代替候補が弱ければ無理に表示しない。",
     "max_count": 3,
     "marks": ["◎", "○", "▲"],
     "exclude_boat1_threshold": 40,
+    "min_composite_threshold": 25.0,
     "composite_weights": {
       "_comment": "注目選手を選ぶ際の合成スコア = top1_index*w1 + top2_index*w2 + top3_index*w3",
       "top1_weight": 0.5,

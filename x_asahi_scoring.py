@@ -115,21 +115,21 @@ def load_asahi_config(force_reload: bool = False) -> dict:
                 "6": {"first": 3,  "second": 10, "third": 13},
             },
             "first_place": {
-                "base_rate_weight": 1.0, "win_rate_weight": 0.9,
+                "base_rate_weight": 1.0, "win_rate_weight": 0.9, "local_win_weight": 0.3,
                 "motor_weight": 0.7, "avg_st_weight": 0.7,
-                "course_st_weight": 0.5, "class_weight": 0.4,
+                "course_st_weight": 0.5, "course_perf_weight": 0.3, "class_weight": 0.4,
                 "danger_penalty_weight": 1.0,
             },
             "second_place": {
-                "base_rate_weight": 1.0, "win_rate_weight": 0.5,
+                "base_rate_weight": 1.0, "win_rate_weight": 0.5, "local_win_weight": 0.2,
                 "motor_weight": 0.5, "avg_st_weight": 0.2,
-                "course_st_weight": 0.3, "class_weight": 0.2,
+                "course_st_weight": 0.3, "course_perf_weight": 0.2, "class_weight": 0.2,
                 "danger_penalty_weight": 0.15,
             },
             "third_place": {
-                "base_rate_weight": 1.0, "win_rate_weight": 0.3,
+                "base_rate_weight": 1.0, "win_rate_weight": 0.3, "local_win_weight": 0.1,
                 "motor_weight": 0.4, "avg_st_weight": 0.1,
-                "course_st_weight": 0.2, "class_weight": 0.1,
+                "course_st_weight": 0.2, "course_perf_weight": 0.1, "class_weight": 0.1,
                 "danger_penalty_weight": 0.0,
             },
             "lane6_first_place_conditions": {
@@ -140,6 +140,7 @@ def load_asahi_config(force_reload: bool = False) -> dict:
             "max_count": 3,
             "marks": ["◎", "○", "▲"],
             "exclude_boat1_threshold": 40,
+            "min_composite_threshold": 25.0,
             "composite_weights": {
                 "top1_weight": 0.5, "top2_weight": 0.3, "top3_weight": 0.2,
             },
@@ -262,12 +263,14 @@ def calc_danger_score_v2(boat1, all_boats: list, config: Optional[dict] = None) 
     _solo_item("motor_bad",     (boat1.motor or 0.0) < STH["motor_bad_abs"])
     _solo_item("avg_st_slow",   (boat1.avg_st or 0.0) >= STH["avg_st_slow_abs"])
 
-    # 1コース複勝率（fanファイル由来、展示STは使用しない＝前期実績のみ）
-    course1_place = None
-    if boat1.course_place_rate and boat1.course_nyuko and boat1.course_nyuko[0] > 0:
-        course1_place = boat1.course_place_rate[0]
-    if course1_place is not None:
-        _solo_item("course1_place_low", course1_place < STH["course1_place_low_abs"])
+    # 1コース1着率（fanファイル由来、展示STは使用しない＝前期実績のみ）
+    # 【調査結果】fanファイルのコース別「着順回数」ブロック(1着回数)から
+    # 1着回数÷進入回数で真の1着率を算出できることを確認済み（複勝率は代替不要）。
+    course1_win = None
+    if boat1.course_win_rate and boat1.course_nyuko and boat1.course_nyuko[0] > 0:
+        course1_win = boat1.course_win_rate[0]
+    if course1_win is not None:
+        _solo_item("course1_place_low", course1_win < STH["course1_place_low_abs"])
 
     total = round(sum(v["weighted"] for v in breakdown.values()), 2)
     total = min(total, ds_cfg["total_scale"])
@@ -499,7 +502,17 @@ def calc_lane_rank_scores_v2(
 ) -> dict:
     """
     1艇について、1着適性・2着適性・3着適性を個別に算出する。
-    戻り値: {"first": float, "second": float, "third": float}（いずれも正の相対スコア）
+
+    戻り値: {
+      "first": float, "second": float, "third": float,   # 相対スコア（従来通り）
+      "contributions": {
+        "first":  {"win_rate": x, "local_win": x, "avg_st": x, "motor": x,
+                    "class": x, "course_perf": x, "other": x},
+        "second": {...}, "third": {...}
+      }
+    }
+    contributions は各特徴量が最終スコアへ与えた加点（寄与度）。
+    将来の特徴量分析・重み学習（Phase2以降）のため hit_record.csv に保存する。
     """
     cfg = config or load_asahi_config()
     lrs = cfg["lane_rank_scores"]
@@ -509,13 +522,16 @@ def calc_lane_rank_scores_v2(
 
     # 全艇平均比で個別指標を評価する（相対評価にすることで艇番間の
     # スケールのブレを吸収する）
-    win_rates = [b.win_rate for b in all_boats if b.win_rate is not None]
-    motors    = [b.motor    for b in all_boats if b.motor    is not None]
-    avg_win_rate = sum(win_rates) / len(win_rates) if win_rates else 5.0
-    avg_motor    = sum(motors) / len(motors) if motors else 33.0
+    win_rates  = [b.win_rate  for b in all_boats if b.win_rate  is not None]
+    local_wins = [b.local_win for b in all_boats if b.local_win is not None]
+    motors     = [b.motor     for b in all_boats if b.motor     is not None]
+    avg_win_rate  = sum(win_rates)  / len(win_rates)  if win_rates  else 5.0
+    avg_local_win = sum(local_wins) / len(local_wins) if local_wins else 5.0
+    avg_motor     = sum(motors)     / len(motors)     if motors    else 33.0
 
-    win_rate_diff = (boat.win_rate - avg_win_rate) if boat.win_rate is not None else 0.0
-    motor_diff    = (boat.motor    - avg_motor)    if boat.motor    is not None else 0.0
+    win_rate_diff  = (boat.win_rate  - avg_win_rate)  if boat.win_rate  is not None else 0.0
+    local_win_diff = (boat.local_win - avg_local_win) if boat.local_win is not None else 0.0
+    motor_diff     = (boat.motor     - avg_motor)     if boat.motor     is not None else 0.0
     # 平均ST実績: 0.17秒を基準に、速いほどプラスに寄与する
     avg_st_diff = (0.17 - boat.avg_st) * 10.0 if boat.avg_st else 0.0
 
@@ -525,25 +541,40 @@ def calc_lane_rank_scores_v2(
     if boat.course_nyuko and 0 <= lane_idx < 6 and boat.course_nyuko[lane_idx] > 0:
         course_st_diff = (0.17 - boat.course_st[lane_idx]) * 10.0
 
+    # コース別1着率実績（①で新規追加。全国平均(lane_base_rateのfirst%)比）
+    course_perf_diff = 0.0
+    if boat.course_nyuko and 0 <= lane_idx < 6 and boat.course_nyuko[lane_idx] > 0 \
+            and boat.course_win_rate:
+        national_base = lrs["lane_base_rate"].get(str(boat.lane), {}).get("first", 0.0)
+        course_perf_diff = (boat.course_win_rate[lane_idx] - national_base) / 10.0
+
     # 級別（全艇平均比）
     class_rank_map = cfg.get("danger_score", {}).get("class_rank", {"A1": 4, "A2": 3, "B1": 2, "B2": 1, "": 0})
     class_ranks = [class_rank_map.get(b.racer_class or "", 0) for b in all_boats]
     avg_class_rank = sum(class_ranks) / len(class_ranks) if class_ranks else 0.0
     class_diff = class_rank_map.get(boat.racer_class or "", 0) - avg_class_rank
 
-    def _rank_score(rank_key: str, base_rate: float) -> float:
+    def _rank_score_with_contrib(rank_key: str, base_rate: float) -> tuple[float, dict]:
         w = lrs[rank_key]
-        score = base_rate * w["base_rate_weight"]
-        score += win_rate_diff  * w["win_rate_weight"]
-        score += motor_diff     * w["motor_weight"]
-        score += avg_st_diff    * w["avg_st_weight"]
-        score += course_st_diff * w.get("course_st_weight", 0.0)
-        score += class_diff     * w.get("class_weight", 0.0)
-        return score
+        base = base_rate * w["base_rate_weight"]
+        contrib = {
+            "base_rate":   round(base, 3),
+            "win_rate":    round(win_rate_diff  * w["win_rate_weight"], 3),
+            "local_win":   round(local_win_diff * w.get("local_win_weight", 0.0), 3),
+            "avg_st":      round(avg_st_diff    * w["avg_st_weight"], 3),
+            "motor":       round(motor_diff     * w["motor_weight"], 3),
+            "class":       round(class_diff     * w.get("class_weight", 0.0), 3),
+            # 【寄与度カテゴリ】コース実績寄与＝コース別1着率(fanファイル)、
+            # その他特徴量寄与＝コース別ST実績（avg_stと別軸のためこちらに分類）
+            "course_perf": round(course_perf_diff * w.get("course_perf_weight", 0.0), 3),
+            "other":       round(course_st_diff   * w.get("course_st_weight", 0.0), 3),
+        }
+        score = sum(contrib.values())
+        return score, contrib
 
-    first_score  = _rank_score("first_place",  base_rates["first"])
-    second_score = _rank_score("second_place", base_rates["second"])
-    third_score  = _rank_score("third_place",  base_rates["third"])
+    first_score,  first_contrib  = _rank_score_with_contrib("first_place",  base_rates["first"])
+    second_score, second_contrib = _rank_score_with_contrib("second_place", base_rates["second"])
+    third_score,  third_contrib  = _rank_score_with_contrib("third_place",  base_rates["third"])
 
     # ── 危険艇判定（1号艇のみ）を1着評価に強く反映し、2着・3着への
     #    影響は各着順ごとの danger_penalty_weight で個別に抑制する ──
@@ -552,14 +583,23 @@ def calc_lane_rank_scores_v2(
         # danger_score は0-100点。スコアスケール(概ね数十点)に合わせて
         # 1/10した値をペナルティ基準量とする。
         penalty_unit = danger_score / 10.0
-        first_score  -= penalty_unit * lrs["first_place"]["danger_penalty_weight"]
-        second_score -= penalty_unit * lrs["second_place"]["danger_penalty_weight"]
-        third_score  -= penalty_unit * lrs["third_place"]["danger_penalty_weight"]
+        first_penalty  = penalty_unit * lrs["first_place"]["danger_penalty_weight"]
+        second_penalty = penalty_unit * lrs["second_place"]["danger_penalty_weight"]
+        third_penalty  = penalty_unit * lrs["third_place"]["danger_penalty_weight"]
+        first_score  -= first_penalty
+        second_score -= second_penalty
+        third_score  -= third_penalty
+        first_contrib["danger_penalty"]  = round(-first_penalty, 3)
+        second_contrib["danger_penalty"] = round(-second_penalty, 3)
+        third_contrib["danger_penalty"]  = round(-third_penalty, 3)
 
     return {
         "first":  max(0.1, first_score),
         "second": max(0.1, second_score),
         "third":  max(0.1, third_score),
+        "contributions": {
+            "first": first_contrib, "second": second_contrib, "third": third_contrib,
+        },
     }
 
 
@@ -636,24 +676,33 @@ def calc_rank_index_v2(
 ) -> dict[int, dict]:
     """
     全艇について「上位進出指数」を0-100で算出する。
-    戻り値: {lane: {"top1": float, "top2": float, "top3": float}, ...}
+    戻り値: {lane: {"top1": float, "top2": float, "top3": float,
+                     "contributions": {...}}, ...}
       top1 = 1着指数（1着確率×100）
       top2 = 2着以内指数（1着+2着確率×100）
       top3 = 3着以内指数（1着+2着+3着確率×100）
+      contributions = calc_lane_rank_scores_v2 が返す各特徴量の寄与度
+        （全国勝率・当地勝率・平均ST・モーター・級別・コース実績・その他）。
+        将来の特徴量分析・重み学習のため hit_record.csv に保存する。
     """
     cfg = config or load_asahi_config()
     probs = calc_rank_probabilities_v2(boats, context, cfg)
 
+    # 寄与度は calc_lane_rank_scores_v2 から直接取得する
+    # （calc_rank_probabilities_v2 の内部でも同じ関数を呼んでいるが、
+    #  寄与度まではそちらの戻り値に含めていないため、ここで個別に再取得する）
     result: dict[int, dict] = {}
     for b in boats:
         lane = b.lane
         p1 = probs["first"].get(lane, 0.0)
         p2 = probs["second"].get(lane, 0.0)
         p3 = probs["third"].get(lane, 0.0)
+        lane_scores = calc_lane_rank_scores_v2(b, boats, cfg)
         result[lane] = {
             "top1": round(p1 * 100, 1),
             "top2": round((p1 + p2) * 100, 1),
             "top3": round((p1 + p2 + p3) * 100, 1),
+            "contributions": lane_scores.get("contributions", {}),
         }
     return result
 
@@ -670,8 +719,15 @@ def select_featured_boats(
 ) -> list[dict]:
     """
     上位進出指数から「注目選手」を最大N艇選ぶ（configで人数・マーク変更可）。
-    danger_score が閾値以上（1号艇が危険）の場合は1号艇を候補から除外し、
-    「代わりに狙うべき艇」を提示する。閾値未満なら1号艇も候補に含める。
+
+    2つの独立した閾値で判定する（④要件: 危険度だけでなく注目選手自身の
+    指数も考慮する）:
+      ・exclude_boat1_threshold: 1号艇を候補から除外するかどうかの判定
+        （danger_score がこれ以上なら1号艇は代わりの艇を探す対象から外れる）
+      ・min_composite_threshold: 注目選手として表示してよい最低ライン
+        （危険度に関わらず、この指数を満たさない艇には無理に◎○▲を付けない）
+    そのため、1号艇が危険でなくても強い挑戦者がいれば表示されるし、
+    1号艇が危険でも代替候補全員が指数不足なら注目選手は0〜少数になる。
 
     戻り値: [{"lane": int, "name": str, "mark": "◎", "composite": float,
               "top1": float, "top2": float, "top3": float}, ...]
@@ -681,6 +737,7 @@ def select_featured_boats(
     max_count = fr_cfg.get("max_count", 3)
     marks = fr_cfg.get("marks", ["◎", "○", "▲"])
     exclude_th = fr_cfg.get("exclude_boat1_threshold", 40)
+    min_composite = fr_cfg.get("min_composite_threshold", 0.0)
     cw = fr_cfg.get("composite_weights", {"top1_weight": 0.5, "top2_weight": 0.3, "top3_weight": 0.2})
 
     candidates = boats
@@ -695,6 +752,8 @@ def select_featured_boats(
             + idx["top2"] * cw.get("top2_weight", 0.3)
             + idx["top3"] * cw.get("top3_weight", 0.2)
         )
+        if composite < min_composite:
+            continue  # 指数不足の艇には無理に◎○▲を付けない
         scored.append({
             "lane": b.lane, "name": b.name, "composite": round(composite, 1),
             "top1": idx["top1"], "top2": idx["top2"], "top3": idx["top3"],

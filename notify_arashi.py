@@ -173,6 +173,7 @@ class BoatInfo:
     course_nyuko: list   = None  # 各コースの進入回数 [46, 28, ...]
     course_rank:  list   = None  # 各コースのST順位平均 [1.8, 2.7, ...]
     course_place_rate: list = None  # 各コースの複勝率(%) [52.3, 41.0, ...]（fanファイル由来）
+    course_win_rate:   list = None  # 各コースの1着率(%)。fanファイルのコース別1着回数÷進入回数から算出
 
     def __post_init__(self):
         if self.course_st is None:
@@ -183,6 +184,8 @@ class BoatInfo:
             self.course_rank = [0.0] * 6
         if self.course_place_rate is None:
             self.course_place_rate = [0.0] * 6
+        if self.course_win_rate is None:
+            self.course_win_rate = [0.0] * 6
 
 
 @dataclass
@@ -623,6 +626,10 @@ def _load_fan_file(filepath: str) -> dict[str, dict]:
       byte 79-81: 全国平均ST（3桁、例: 016 → 0.16）
       byte 82〜:  コース別データ（1コース=13byte × 6コース）
                   各コース: 進入回数(3)+複勝率(4)+ST平均(3)+ST順位(3)
+      byte 198〜: コース別「着順回数」ブロック（1コース=34byte × 6コース）
+                  各コース: 1着〜6着回数(3byte×6) + F/L0/L1/K0/K1/S0/S1/S2回数(2byte×8)
+                  → 「Nコース1着回数 ÷ Nコース進入回数」で真のコース別1着率を算出する。
+      レコード全長: 416byte（parsers.py の _FAN_RECORD_BYTES と一致）
     """
     if filepath in _FAN_CACHE:
         return _FAN_CACHE[filepath]
@@ -637,7 +644,7 @@ def _load_fan_file(filepath: str) -> dict[str, dict]:
 
     for line_raw in raw_all.split(b"\n"):
         line_raw = line_raw.rstrip(b"\r")
-        if len(line_raw) < 160:  # コース別データが揃う最小長
+        if len(line_raw) < 160:  # コース別ST・複勝率データが揃う最小長
             continue
         try:
             racer_id = line_raw[0:4].decode("ascii").strip()
@@ -653,6 +660,7 @@ def _load_fan_file(filepath: str) -> dict[str, dict]:
             course_nyuko = [0]   * 6
             course_rank  = [0.0] * 6
             course_place_rate = [0.0] * 6
+            course_win_rate   = [0.0] * 6  # コース別1着率（真値。取得不可なら0.0のまま）
 
             for c in range(6):
                 base = 82 + c * 13
@@ -674,12 +682,21 @@ def _load_fan_file(filepath: str) -> dict[str, dict]:
                     if place_raw.isdigit() and nyuko > 0:
                         course_place_rate[c] = int(place_raw) / 10
 
+                    # ── コース別「1着回数」→ 真の1着率（レコード後半、byte 198〜）
+                    # 1コースの着順回数ブロックは byte 198 起点、以後34byteごと。
+                    win_base = 198 + c * 34
+                    if nyuko > 0 and win_base + 3 <= len(line_raw):
+                        win_raw = line_raw[win_base:win_base+3].decode("ascii", errors="replace")
+                        if win_raw.isdigit():
+                            course_win_rate[c] = round(int(win_raw) / nyuko * 100, 1)
+
             result[racer_id] = {
                 "avg_st_global": avg_st_global,
                 "course_st":     course_st,
                 "course_nyuko":  course_nyuko,
                 "course_rank":   course_rank,
                 "course_place_rate": course_place_rate,
+                "course_win_rate":   course_win_rate,
             }
         except Exception:
             continue
@@ -868,6 +885,7 @@ def _extract_boats_from_program(program: dict) -> list[BoatInfo]:
         course_nyuko = fan_entry.get("course_nyuko", [0]   * 6)
         course_rank  = fan_entry.get("course_rank",  [0.0] * 6)
         course_place_rate = fan_entry.get("course_place_rate", [0.0] * 6)
+        course_win_rate   = fan_entry.get("course_win_rate",   [0.0] * 6)
 
         api_avg_st = float(b.get("racer_average_start_timing") or 0.18)
 
@@ -884,6 +902,7 @@ def _extract_boats_from_program(program: dict) -> list[BoatInfo]:
             course_nyuko  = course_nyuko,
             course_rank   = course_rank,
             course_place_rate = course_place_rate,
+            course_win_rate   = course_win_rate,
         ))
     return sorted(boats, key=lambda x: x.lane)
 
