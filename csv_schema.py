@@ -25,7 +25,7 @@ from __future__ import annotations
 # プログラムが「hit_record.csv はこのバージョンであるべき」と期待する値。
 # 実ファイルのバージョン（.schema_version ファイルで管理）がこれより古ければ
 # マイグレーションが必要と判定される。
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 # ════════════════════════════════════════════════════════════
 # バージョン別 完全列定義
@@ -54,9 +54,21 @@ _COLUMNS_V2 = _COLUMNS_V1 + [
     "feat_course_st_1c", "feat_course_rank_1c", "feat_danger_breakdown",
 ]
 
+# Version 3: 危険艇速報リニューアル（相対評価・上位進出指数・注目選手）
+# 追加列: danger_score_v3, rank_index_json, featured_boats_json
+# （危険理由の内訳自体は v2 の feat_danger_breakdown 列と同一のため重複追加しない）
+# 【設計】各艇の1着指数/2着以内指数/3着以内指数は艇数分の固定列(18列)には
+# せず、JSON文字列1列にまとめる。将来 asahi_config.json の評価項目が
+# 増えてもスキーマ変更(マイグレーション)なしで追従でき、実績からの
+# 重み学習（Phase2以降）でも1レース分のスナップショットとして扱いやすい。
+_COLUMNS_V3 = _COLUMNS_V2 + [
+    "danger_score_v3", "rank_index_json", "featured_boats_json",
+]
+
 SCHEMA_COLUMNS: dict[int, list[str]] = {
     1: _COLUMNS_V1,
     2: _COLUMNS_V2,
+    3: _COLUMNS_V3,
 }
 
 # ════════════════════════════════════════════════════════════
@@ -87,6 +99,9 @@ NEW_COLUMN_DEFAULTS: dict[str, str] = {
     "feat_course_st_1c":     "",
     "feat_course_rank_1c":   "",
     "feat_danger_breakdown": "",
+    "danger_score_v3":        "",
+    "rank_index_json":        "",
+    "featured_boats_json":    "",
 }
 
 

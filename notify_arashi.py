@@ -159,6 +159,7 @@ class BoatInfo:
     lane:      int
     name:      str       = "不明"
     win_rate:  float     = 0.0   # 全国勝率
+    local_win: float     = 0.0   # 当地勝率（racer_local_top_1_percent）
     motor:     float     = 0.0   # モーター2連率
     avg_st:    float     = 0.18  # 平均スタートタイミング（全コース合算）
     ex_time:   Optional[float] = None   # 展示タイム（直前情報）
@@ -171,6 +172,7 @@ class BoatInfo:
     course_st:   list    = None  # 各コースの平均ST [0.17, 0.19, ...]
     course_nyuko: list   = None  # 各コースの進入回数 [46, 28, ...]
     course_rank:  list   = None  # 各コースのST順位平均 [1.8, 2.7, ...]
+    course_place_rate: list = None  # 各コースの複勝率(%) [52.3, 41.0, ...]（fanファイル由来）
 
     def __post_init__(self):
         if self.course_st is None:
@@ -179,6 +181,8 @@ class BoatInfo:
             self.course_nyuko = [0] * 6
         if self.course_rank is None:
             self.course_rank = [0.0] * 6
+        if self.course_place_rate is None:
+            self.course_place_rate = [0.0] * 6
 
 
 @dataclass
@@ -648,12 +652,14 @@ def _load_fan_file(filepath: str) -> dict[str, dict]:
             course_st    = [0.0] * 6
             course_nyuko = [0]   * 6
             course_rank  = [0.0] * 6
+            course_place_rate = [0.0] * 6
 
             for c in range(6):
                 base = 82 + c * 13
                 if base + 13 > len(line_raw):
                     break
                 nyuko_raw   = line_raw[base:base+3].decode("ascii", errors="replace")
+                place_raw   = line_raw[base+3:base+7].decode("ascii", errors="replace")
                 st_raw      = line_raw[base+7:base+10].decode("ascii", errors="replace")
                 rank_raw    = line_raw[base+10:base+13].decode("ascii", errors="replace")
 
@@ -664,12 +670,16 @@ def _load_fan_file(filepath: str) -> dict[str, dict]:
                     course_st[c]    = st if nyuko > 0 else 0.0
                     course_nyuko[c] = nyuko
                     course_rank[c]  = rank if nyuko > 0 else 0.0
+                    # 複勝率は4桁(例: 0523 → 52.3%)。進入実績がなければ0のまま。
+                    if place_raw.isdigit() and nyuko > 0:
+                        course_place_rate[c] = int(place_raw) / 10
 
             result[racer_id] = {
                 "avg_st_global": avg_st_global,
                 "course_st":     course_st,
                 "course_nyuko":  course_nyuko,
                 "course_rank":   course_rank,
+                "course_place_rate": course_place_rate,
             }
         except Exception:
             continue
@@ -857,6 +867,7 @@ def _extract_boats_from_program(program: dict) -> list[BoatInfo]:
         course_st    = fan_entry.get("course_st",    [0.0] * 6)
         course_nyuko = fan_entry.get("course_nyuko", [0]   * 6)
         course_rank  = fan_entry.get("course_rank",  [0.0] * 6)
+        course_place_rate = fan_entry.get("course_place_rate", [0.0] * 6)
 
         api_avg_st = float(b.get("racer_average_start_timing") or 0.18)
 
@@ -864,6 +875,7 @@ def _extract_boats_from_program(program: dict) -> list[BoatInfo]:
             lane          = int(lane),
             name          = b.get("racer_name", f"{lane}号艇"),
             win_rate      = float(b.get("racer_national_top_1_percent") or 0),
+            local_win     = float(b.get("racer_local_top_1_percent") or 0),
             motor         = float(b.get("racer_assigned_motor_top_2_percent") or 0),
             avg_st        = api_avg_st,
             racer_class   = str(b.get("racer_class") or b.get("racer_grade") or ""),
@@ -871,6 +883,7 @@ def _extract_boats_from_program(program: dict) -> list[BoatInfo]:
             course_st     = course_st,
             course_nyuko  = course_nyuko,
             course_rank   = course_rank,
+            course_place_rate = course_place_rate,
         ))
     return sorted(boats, key=lambda x: x.lane)
 
@@ -3621,6 +3634,17 @@ def _run_main(race_date: str | None = None) -> None:
                             (detail.get("_features") or {}).get("danger_breakdown") or {},
                             ensure_ascii=False,
                         ),
+                        # 【危険艇速報リニューアル】相対評価・上位進出指数・注目選手
+                        # （危険艇速報・買い目生成・note新聞すべて同じ値を参照＝評価基盤統一）
+                        "danger_score_v3": (detail.get("_features") or {}).get("danger_score_v3", ""),
+                        "rank_index_json": _json.dumps(
+                            (detail.get("_features") or {}).get("rank_index") or {},
+                            ensure_ascii=False,
+                        ),
+                        "featured_boats_json": _json.dumps(
+                            (detail.get("_features") or {}).get("featured_boats") or [],
+                            ensure_ascii=False,
+                        ),
                         "ranking_skip": True,   # ランキング外フラグ
                     }
                     _sl, _ks = [], set()
@@ -3694,6 +3718,16 @@ def _run_main(race_date: str | None = None) -> None:
                 "feat_course_rank_1c": (detail.get("_features") or {}).get("course_rank_1c"),
                 "feat_danger_breakdown": _json.dumps(
                     (detail.get("_features") or {}).get("danger_breakdown") or {},
+                    ensure_ascii=False,
+                ),
+                # 【危険艇速報リニューアル】相対評価・上位進出指数・注目選手
+                "danger_score_v3": (detail.get("_features") or {}).get("danger_score_v3", ""),
+                "rank_index_json": _json.dumps(
+                    (detail.get("_features") or {}).get("rank_index") or {},
+                    ensure_ascii=False,
+                ),
+                "featured_boats_json": _json.dumps(
+                    (detail.get("_features") or {}).get("featured_boats") or [],
                     ensure_ascii=False,
                 ),
             }
@@ -4846,6 +4880,10 @@ def _check_yesterday_results(today_date: str) -> None:
                 "feat_course_st_1c":     pd_data.get("feat_course_st_1c", ""),
                 "feat_course_rank_1c":   pd_data.get("feat_course_rank_1c", ""),
                 "feat_danger_breakdown": pd_data.get("feat_danger_breakdown", ""),
+                # 【危険艇速報リニューアル】相対評価・上位進出指数・注目選手
+                "danger_score_v3":     pd_data.get("danger_score_v3", ""),
+                "rank_index_json":     pd_data.get("rank_index_json", ""),
+                "featured_boats_json": pd_data.get("featured_boats_json", ""),
             })
 
         if not records:
@@ -4863,6 +4901,7 @@ def _check_yesterday_results(today_date: str) -> None:
             "model_version",
             "feat_win_rate","feat_motor","feat_avg_st","feat_racer_class",
             "feat_course_st_1c","feat_course_rank_1c","feat_danger_breakdown",
+            "danger_score_v3","rank_index_json","featured_boats_json",
         ]
 
         # ── 重複書き込み防止 ──────────────────────────────────────

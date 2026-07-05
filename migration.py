@@ -80,6 +80,25 @@ def migrate_v1_to_v2(rows: list[dict]) -> list[dict]:
     return migrated
 
 
+def migrate_v2_to_v3(rows: list[dict]) -> list[dict]:
+    """
+    Version2(34列) → Version3(38列)。
+    危険艇速報リニューアル（相対評価・上位進出指数・注目選手）の記録列を追加。
+    旧データにはJSON文字列列も含め空欄で補完する（過去データは未計測のため）。
+    """
+    v3_cols = get_columns(3)
+    new_cols = [c for c in v3_cols if c not in get_columns(2)]
+
+    migrated = []
+    for row in rows:
+        new_row = dict(row)
+        for col in new_cols:
+            if not new_row.get(col):
+                new_row[col] = NEW_COLUMN_DEFAULTS.get(col, "")
+        migrated.append(new_row)
+    return migrated
+
+
 # ════════════════════════════════════════════════════════════
 # マイグレーション登録表（チェーン）
 # ════════════════════════════════════════════════════════════
@@ -87,6 +106,7 @@ def migrate_v1_to_v2(rows: list[dict]) -> list[dict]:
 # 連続する 1段ずつ を登録する。飛び級は書かない（v1→v3 は v1→v2→v3 で表現）。
 MIGRATIONS = {
     (1, 2): migrate_v1_to_v2,
+    (2, 3): migrate_v2_to_v3,
 }
 
 

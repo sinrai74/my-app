@@ -323,19 +323,16 @@ def _bd_weighted(bd: dict, key: str, default: float = 0.0) -> float:
     """
     breakdown辞書から「重み付き値(weighted)」を安全に取り出す。
 
-    【背景】x_ranking.py._calc_danger_breakdown() は各項目を
-    (raw_100, weighted) のタプルとして保存する（JSON化するとlistになる）。
-    一方こちらの表示側は単一の数値を期待しているため、
-    そのまま bd.get(key, 0.0) すると TypeError になる（list / int）。
-
-    新旧どちらの形式が来ても壊れないよう、ここで吸収する:
-      - list/tuple で長さ2以上 → 2番目の要素(weighted)を使う
-      - list/tuple で長さ1     → その要素を使う
-      - 数値（旧形式・将来の単純化後）→ そのまま使う
-      - それ以外（None・空list等）→ default
+    対応する形式:
+      - dict {"weighted": x, ...}          → x_asahi_scoring v2以降の現行形式
+      - list/tuple (raw_100, weighted)     → 旧形式（JSON化でlistになる）
+      - 数値そのもの                        → さらに古い形式
+      - None・欠損キー                      → default
     """
     val = bd.get(key, default)
-    if isinstance(val, (list, tuple)):
+    if isinstance(val, dict):
+        val = val.get("weighted", default)
+    elif isinstance(val, (list, tuple)):
         if len(val) >= 2:
             val = val[1]
         elif len(val) == 1:
@@ -348,16 +345,24 @@ def _bd_weighted(bd: dict, key: str, default: float = 0.0) -> float:
         return default
 
 
+def _bd_worse_count(bd: dict, key: str) -> Optional[tuple]:
+    """相対評価項目の (worse_count, worse_total) を取り出す。相対項目でなければNone。"""
+    val = bd.get(key)
+    if isinstance(val, dict) and val.get("kind") == "relative":
+        return val.get("worse_count", 0), val.get("worse_total", 0)
+    return None
+
+
 def _race_comment(d: dict) -> str:
     bd = d.get("breakdown", {})
     # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・満点
+    # (asahi_config.json の danger_score.relative_weights.max_weight と一致させる)
     items = [
-        ("平均ST",   _bd_weighted(bd, "avg_st_slow"),     18, "平均ST遅れリスク"),
-        ("コースST", _bd_weighted(bd, "course_st_slow"),  10, "コース別ST低調"),
-        ("機力",     _bd_weighted(bd, "motor_bad"),       22, "モーター力不足"),
-        ("等級",     _bd_weighted(bd, "class_gap"),       14, "格下等級"),
-        ("勝率",     _bd_weighted(bd, "win_rate_low"),    28, "勝率が低調"),
-        ("ST順位",   _bd_weighted(bd, "course_rank_bad"), 8,  "ST順位が低調"),
+        ("勝率",     _bd_weighted(bd, "win_rate"),    25, "全国勝率で劣勢"),
+        ("当地勝率", _bd_weighted(bd, "local_win"),   15, "当地勝率で劣勢"),
+        ("平均ST",   _bd_weighted(bd, "avg_st"),      15, "平均STで劣勢"),
+        ("機力",     _bd_weighted(bd, "motor"),       20, "モーター力で劣勢"),
+        ("級別",     _bd_weighted(bd, "racer_class"), 15, "級別で劣勢"),
     ]
     # 各項目を満点に対する比率で比較する（満点が項目ごとに異なるため）
     top = sorted(items, key=lambda x: -(x[1] / x[2] if x[2] else 0))[:2]
@@ -1266,14 +1271,13 @@ def generate_html(data: dict, output_path: str) -> None:
             comment = _race_comment(d)
             bd = d.get("breakdown", {})
             # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・
-            # 満点はここに合わせる（asahi_config.json の danger_score.weights と一致させること）
+            # 満点はここに合わせる（asahi_config.json の danger_score.relative_weights と一致させること）
             bar_items = [
-                ("勝率",     _bd_weighted(bd, "win_rate_low"),    28, "#42a5f5"),
-                ("機力",     _bd_weighted(bd, "motor_bad"),       22, "#ffa726"),
-                ("平均ST",   _bd_weighted(bd, "avg_st_slow"),     18, "#ef5350"),
-                ("等級",     _bd_weighted(bd, "class_gap"),       14, "#ab47bc"),
-                ("コースST", _bd_weighted(bd, "course_st_slow"),  10, "#ff7043"),
-                ("ST順位",   _bd_weighted(bd, "course_rank_bad"), 8,  "#26a69a"),
+                ("勝率",     _bd_weighted(bd, "win_rate"),    25, "#42a5f5"),
+                ("機力",     _bd_weighted(bd, "motor"),       20, "#ffa726"),
+                ("平均ST",   _bd_weighted(bd, "avg_st"),      15, "#ef5350"),
+                ("当地勝率", _bd_weighted(bd, "local_win"),   15, "#ab47bc"),
+                ("級別",     _bd_weighted(bd, "racer_class"), 15, "#ff7043"),
             ]
             bars = "".join(
                 f'<div class="bi"><span class="bl">{l}</span>'
@@ -1286,6 +1290,42 @@ def generate_html(data: dict, output_path: str) -> None:
             _brands = next((b for v, r, b in race_index_data[0]
                            if v == d.get('venue','') and str(r) == str(d.get('race',''))), ["danger"])
             _badges = _brand_badge_html(_brands)
+
+            # ── 注目選手（◎○▲、代わりに狙うべき艇） ──────────
+            featured = d.get("featured_boats", [])
+            featured_html = ""
+            if featured:
+                items_html = "".join(
+                    f'<div class="fr-item"><span class="fr-mark">{f.get("mark","")}</span>'
+                    f'<span class="fr-lane">{f.get("lane","")}号艇</span>'
+                    f'<span class="fr-name">{f.get("name","")}</span>'
+                    f'<span class="fr-idx">1着指数{f.get("top1",0):.1f} '
+                    f'/ 2着以内{f.get("top2",0):.1f} / 3着以内{f.get("top3",0):.1f}</span></div>'
+                    for f in featured
+                )
+                featured_html = f'<div class="rc-featured"><div class="fr-title">注目選手</div>{items_html}</div>'
+
+            # ── 各艇 上位進出指数テーブル（1着指数・2着以内指数・3着以内指数） ──
+            rank_index = d.get("rank_index", {}) or {}
+            rank_table_rows = ""
+            for lane in range(1, 7):
+                idx = rank_index.get(lane) or rank_index.get(str(lane))
+                if not idx:
+                    continue
+                rank_table_rows += (
+                    f'<tr><td>{lane}号艇</td>'
+                    f'<td>{idx.get("top1",0):.1f}</td>'
+                    f'<td>{idx.get("top2",0):.1f}</td>'
+                    f'<td>{idx.get("top3",0):.1f}</td></tr>'
+                )
+            rank_table_html = ""
+            if rank_table_rows:
+                rank_table_html = (
+                    '<table class="rc-rank-table"><thead><tr>'
+                    '<th>艇</th><th>1着指数</th><th>2着以内指数</th><th>3着以内指数</th>'
+                    f'</tr></thead><tbody>{rank_table_rows}</tbody></table>'
+                )
+
             rows += f"""
 <div class="race-card {rank_cls}" id="{_anchor}">
   <div class="rc-header">
@@ -1295,8 +1335,10 @@ def generate_html(data: dict, output_path: str) -> None:
     {_badges}
   </div>
   <div class="rc-reason">{d.get('reason','')}</div>
-  <div class="rc-comment">💬 {comment}</div>
   <div class="breakdown">{bars}</div>
+  {featured_html}
+  {rank_table_html}
+  <div class="rc-comment">💬 {comment}</div>
   {_course_st_html(d)}
 </div>"""
         return rows
@@ -1559,6 +1601,19 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 .bb{{background:#252540;border-radius:2px;height:8px;overflow:hidden}}
 .bf{{height:100%;border-radius:2px;transition:width .3s}}
 .bv{{font-size:.7em;color:var(--gray);text-align:center}}
+/* 注目選手（危険艇速報：代わりに狙うべき艇） */
+.rc-featured{{margin-top:10px;padding:8px;background:#1a2a1a;border-radius:6px;border:1px solid #2d4a2d}}
+.fr-title{{font-size:.75em;color:#7ed17e;margin-bottom:4px;font-weight:bold}}
+.fr-item{{display:flex;align-items:center;gap:6px;font-size:.8em;padding:2px 0;flex-wrap:wrap}}
+.fr-mark{{font-size:1.1em;color:#ffca28}}
+.fr-lane{{color:#eee;font-weight:bold}}
+.fr-name{{color:#ccc}}
+.fr-idx{{color:var(--gray);font-size:.85em;margin-left:auto}}
+/* 各艇 上位進出指数テーブル */
+.rc-rank-table{{width:100%;border-collapse:collapse;font-size:.75em;margin-top:8px}}
+.rc-rank-table th,.rc-rank-table td{{padding:3px 6px;border-bottom:1px solid #333;text-align:center}}
+.rc-rank-table thead th{{color:var(--gray);font-weight:normal}}
+.rc-rank-table td:first-child,.rc-rank-table th:first-child{{text-align:left}}
 /* 昨日の実績 */
 #yesterday{{background:var(--card);border:1px solid var(--border);
   border-radius:10px;padding:16px;margin-bottom:20px}}
