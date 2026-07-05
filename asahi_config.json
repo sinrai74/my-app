@@ -5,23 +5,27 @@
   "generated_at": "2026-07-03T00:00:00+09:00",
   "note": "Phase1: 実績データが不足しているため、業界知見（一般的にボートレース予想で重要とされる指標の相対的な重要度）に基づく初期値。各重みには採用理由を付記。Phase2で実績5000〜10000レース以上蓄積後、自動学習による見直しを予定。",
   "danger_score": {
-    "_comment": "危険艇速報（1号艇危険度）100点満点。②相対評価（1号艇より優れている他艇数）を中心に、①1号艇単体の絶対評価を補助的に加える。全項目・全配点はconfigで変更可能。コードに数値を直接書かない。",
+    "_comment": "危険艇速報（1号艇危険度）Ver4: 100点満点。相対評価（1号艇より優れている他艇数）を中心に、能力・コース能力・場補正・スタート能力・リスクを統合する。全項目・全配点はconfigで変更可能。コードに数値を直接書かない。",
     "total_scale": 100,
     "relative_weights": {
       "_comment": "各指標について「1号艇より優れている艇数（最大5艇）」1艇あたりの加点。5艇全てに負けていれば max_weight に達する。",
-      "win_rate":  {"per_boat": 5.0,  "max_weight": 25, "reason": "全国勝率で1号艇に勝る艇が多いほど危険。5艇×5.0=25点が上限。"},
-      "local_win": {"per_boat": 3.0,  "max_weight": 15, "reason": "当地勝率（当地実績）。全国勝率ほどではないが当地特性の指標として採用。"},
-      "avg_st":    {"per_boat": 3.0,  "max_weight": 15, "reason": "平均ST実績。1号艇よりSTが速い（数値が小さい）艇の数を評価。"},
-      "motor":     {"per_boat": 4.0,  "max_weight": 20, "reason": "モーター2連率。機力面で1号艇に勝る艇の数を評価。"},
-      "racer_class": {"per_boat": 3.0, "max_weight": 15, "reason": "級別。A1>A2>B1>B2の順位で1号艇より格上の艇の数を評価。"}
+      "win_rate":       {"per_boat": 4.0, "max_weight": 20, "reason": "全国勝率で1号艇に勝る艇が多いほど危険。"},
+      "local_win":      {"per_boat": 2.0, "max_weight": 10, "reason": "当地勝率（当地実績）。"},
+      "avg_st":         {"per_boat": 2.4, "max_weight": 12, "reason": "平均ST実績（全国）。1号艇よりSTが速い艇の数。"},
+      "motor":          {"per_boat": 3.2, "max_weight": 16, "reason": "モーター2連率。機力面で1号艇に勝る艇の数。"},
+      "racer_class":    {"per_boat": 2.0, "max_weight": 10, "reason": "級別。A1>A2>B1>B2の順位で1号艇より格上の艇の数。"},
+      "ability_trend":  {"per_boat": 1.6, "max_weight": 8,  "reason": "【Ver4新規】能力指数の推移（今期-前期）。1号艇より調子が上向いている艇の数。"},
+      "course_rentai":  {"per_boat": 2.4, "max_weight": 12, "reason": "【Ver4新規】進入コース別2連対率（信頼度補正済み・場補正込み）。1号艇より進入コースでの連対力が高い艇の数。"}
     },
     "solo_weights": {
       "_comment": "①1号艇単体の絶対評価（相対評価を補完する小さめの配点）。",
-      "win_rate_low":    {"weight": 3,  "reason": "全国勝率そのものが低い場合の絶対評価分。"},
-      "local_win_low":   {"weight": 2,  "reason": "当地勝率そのものが低い場合の絶対評価分。"},
-      "motor_bad":       {"weight": 2,  "reason": "モーター2連率そのものが低い場合の絶対評価分。"},
-      "avg_st_slow":     {"weight": 2,  "reason": "平均ST実績そのものが遅い場合の絶対評価分。"},
-      "course1_place_low": {"weight": 1, "reason": "1コース1着率（fanファイルのコース別1着回数÷進入回数から算出した真の値）そのものが低い場合の絶対評価分。展示STではなく前期実績を使用。"}
+      "win_rate_low":       {"weight": 2, "reason": "全国勝率そのものが低い場合の絶対評価分。"},
+      "local_win_low":      {"weight": 1, "reason": "当地勝率そのものが低い場合の絶対評価分。"},
+      "motor_bad":          {"weight": 2, "reason": "モーター2連率そのものが低い場合の絶対評価分。"},
+      "avg_st_slow":        {"weight": 2, "reason": "平均ST実績そのものが遅い場合の絶対評価分。"},
+      "course1_place_low":  {"weight": 1, "reason": "1コース1着率（fanファイルのコース別1着回数÷進入回数から算出した真の値）そのものが低い場合の絶対評価分。展示STではなく前期実績を使用。"},
+      "f_risk":             {"weight": 2, "reason": "【Ver4新規】1コースでのフライング率が高い場合。フライングは即座に失格となるため単体で重大なリスク。"},
+      "venue_unfavorable":  {"weight": 2, "reason": "【Ver4新規】場×コース別の実測1着率（信頼度補正済み）が全国平均より著しく低い場合。「選手能力×場特性」の場側要因。"}
     },
     "solo_thresholds": {
       "win_rate_low_abs": 5.0,
@@ -29,7 +33,11 @@
       "motor_bad_abs": 33.0,
       "avg_st_slow_abs": 0.17,
       "course1_place_low_abs": 45.0,
-      "_comment_course1_place_low_abs": "1コース1着率(%)がこの値未満なら低調。全国平均は概ね50〜55%。"
+      "_comment_course1_place_low_abs": "1コース1着率(%)がこの値未満なら低調。全国平均は概ね50〜55%。",
+      "f_risk_rate_abs": 8.0,
+      "_comment_f_risk_rate_abs": "1コースでのフライング率(%) = 1コースF回数÷1コース進入回数。この値以上で単体リスク加点。",
+      "venue_unfavorable_factor_abs": 0.85,
+      "_comment_venue_unfavorable_factor_abs": "場補正係数(get_venue_course_factor)がこの値未満（＝その場の1コース実績が全国平均の85%未満）で単体リスク加点。"
     },
     "class_rank": {"A1": 4, "A2": 3, "B1": 2, "B2": 1, "": 0},
     "thresholds": {
@@ -144,7 +152,7 @@
       }
     },
     "first_place": {
-      "_comment": "1着適性＝勝ち切る能力。艇番ベースレートを土台に、勝率・当地勝率・モーター・ST実績・コース別ST・コース別1着率・級別・危険艇判定で補正する。",
+      "_comment": "1着適性＝勝ち切る能力。艇番ベースレートを土台に、勝率・当地勝率・モーター・ST実績・コース別ST・コース別1着率・級別・能力推移・場補正・Fリスク・危険艇判定で補正する。",
       "base_rate_weight": 1.0,
       "win_rate_weight": 0.9,
       "local_win_weight": 0.3,
@@ -153,6 +161,9 @@
       "course_st_weight": 0.5,
       "course_perf_weight": 0.3,
       "class_weight": 0.4,
+      "ability_trend_weight": 0.3,
+      "venue_factor_weight": 3.0,
+      "f_risk_weight": -0.5,
       "danger_penalty_weight": 1.0
     },
     "second_place": {
@@ -165,6 +176,9 @@
       "course_st_weight": 0.3,
       "course_perf_weight": 0.2,
       "class_weight": 0.2,
+      "ability_trend_weight": 0.2,
+      "venue_factor_weight": 1.5,
+      "f_risk_weight": -0.2,
       "danger_penalty_weight": 0.15
     },
     "third_place": {
@@ -177,6 +191,9 @@
       "course_st_weight": 0.2,
       "course_perf_weight": 0.1,
       "class_weight": 0.1,
+      "ability_trend_weight": 0.1,
+      "venue_factor_weight": 1.0,
+      "f_risk_weight": -0.1,
       "danger_penalty_weight": 0.0
     },
     "lane6_first_place_conditions": {

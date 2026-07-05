@@ -25,7 +25,7 @@ from __future__ import annotations
 # プログラムが「hit_record.csv はこのバージョンであるべき」と期待する値。
 # 実ファイルのバージョン（.schema_version ファイルで管理）がこれより古ければ
 # マイグレーションが必要と判定される。
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 # ════════════════════════════════════════════════════════════
 # バージョン別 完全列定義
@@ -65,10 +65,22 @@ _COLUMNS_V3 = _COLUMNS_V2 + [
     "danger_score_v3", "rank_index_json", "featured_boats_json",
 ]
 
+# Version 4: 評価エンジンVer4（場別統計・水面タイプ・能力指数推移・
+# コース別F率/L率・サンプル数補正を統合した単一評価基盤）
+# 追加列: venue_water_type, venue_factor, ability_trend,
+#         course_f_rate_1c, course_l_rate_1c, course_rentai2_1c,
+#         course_sample_confidence
+_COLUMNS_V4 = _COLUMNS_V3 + [
+    "venue_water_type", "venue_factor", "ability_trend",
+    "course_f_rate_1c", "course_l_rate_1c", "course_rentai2_1c",
+    "course_sample_confidence",
+]
+
 SCHEMA_COLUMNS: dict[int, list[str]] = {
     1: _COLUMNS_V1,
     2: _COLUMNS_V2,
     3: _COLUMNS_V3,
+    4: _COLUMNS_V4,
 }
 
 # ════════════════════════════════════════════════════════════
@@ -102,6 +114,13 @@ NEW_COLUMN_DEFAULTS: dict[str, str] = {
     "danger_score_v3":        "",
     "rank_index_json":        "",
     "featured_boats_json":    "",
+    "venue_water_type":         "",
+    "venue_factor":             "",
+    "ability_trend":            "",
+    "course_f_rate_1c":         "",
+    "course_l_rate_1c":         "",
+    "course_rentai2_1c":        "",
+    "course_sample_confidence": "",
 }
 
 

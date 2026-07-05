@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 """
-x_asahi_scoring.py  ── 朝刊AI (Asahi AI) スコアリングエンジン
+x_asahi_scoring.py  ── 朝刊AI (Asahi AI) スコアリングエンジン Ver4
 
 previews API由来のデータ（展示タイム・展示ST・風速・風向・波高）を
 一切使用せず、朝時点で確定する以下のデータのみでスコアを算出する。
 
-  ・全国勝率 (win_rate)
+  ・全国勝率 / 当地勝率 (win_rate / local_win)
   ・モーター2連率 (motor)
   ・平均ST実績 (avg_st)
-  ・級別 (racer_class)
-  ・コース別ST実績・ST順位実績 (course_st, course_rank / fanファイル)
-  ・開催場の統計的な荒れやすさ (venue_num)
+  ・級別・級別推移・能力指数推移 (racer_class, class_prev*, ability_*)
+  ・コース別ST実績・ST順位実績・1着率・2連対率・3連対率・平均着順
+    （course_st, course_rank, course_win_rate, course_place_counts / fanファイル）
+  ・コース別F率・L率（フライング・出遅れリスク / fanファイル）
+  ・開催場×コース別統計（場補正、x_venue_stats.py で実データから自動算出）
   ・レースグレード (race_grade)
   ・ナイター場かどうか (is_night)
 
 重み・閾値は asahi_config.json で一元管理し、コードに固定値を書かない。
 展示・気象データは本モジュールの対象外（教師データとしては別途
 hit_record.csv に保存し、Phase2の学習・検証にのみ用いる）。
+
+【Ver4での変更】危険艇速報・買い目生成(BuyScore経由)・万舟警報・新聞・
+AI実績ページのすべてが本モジュールの calc_danger_score_v2 /
+calc_rank_index_v2 を単一の評価基盤として参照する。
 """
 
 from __future__ import annotations
@@ -27,9 +33,27 @@ import math
 import os
 from typing import Optional
 
+from x_venue_stats import (
+    compute_venue_course_stats,
+    get_corrected_venue_course_stat,
+    get_venue_course_factor,
+    classify_water_type,
+)
+
 log = logging.getLogger("x_asahi_scoring")
 
 ASAHI_CONFIG_FILE = "asahi_config.json"
+
+# 会場番号 → 場名（notify_arashi.py の VENUE_NAMES と同一。
+# 循環import回避のためここにも定義する。場統計(x_venue_stats)の
+# キーは場名文字列のため、venue_num からの変換に使う。）
+VENUE_NAMES: dict[int, str] = {
+    1: "桐生",   2: "戸田",   3: "江戸川", 4: "平和島", 5: "多摩川",
+    6: "浜名湖", 7: "蒲郡",   8: "常滑",   9: "津",    10: "三国",
+    11: "びわこ",12: "住之江",13: "尼崎",  14: "鳴門", 15: "丸亀",
+    16: "児島",  17: "宮島",  18: "徳山",  19: "下関", 20: "若松",
+    21: "芦屋",  22: "福岡",  23: "唐津",  24: "大村",
+}
 
 # 会場ごとの統計的な荒れやすさ（朝時点で分かる過去統計。previews由来ではない）
 VENUE_UPSET_FACTOR: dict[int, float] = {
@@ -57,27 +81,32 @@ def load_asahi_config(force_reload: bool = False) -> dict:
         return _CONFIG_CACHE
 
     defaults = {
-        "model_version": "asahi-v2.0-relative-danger",
+        "model_version": "asahi-v4.0-unified-engine",
         "danger_score": {
             "total_scale": 100,
             "relative_weights": {
-                "win_rate":    {"per_boat": 5.0, "max_weight": 25},
-                "local_win":   {"per_boat": 3.0, "max_weight": 15},
-                "avg_st":      {"per_boat": 3.0, "max_weight": 15},
-                "motor":       {"per_boat": 4.0, "max_weight": 20},
-                "racer_class": {"per_boat": 3.0, "max_weight": 15},
+                "win_rate":      {"per_boat": 4.0, "max_weight": 20},
+                "local_win":     {"per_boat": 2.0, "max_weight": 10},
+                "avg_st":        {"per_boat": 2.4, "max_weight": 12},
+                "motor":         {"per_boat": 3.2, "max_weight": 16},
+                "racer_class":   {"per_boat": 2.0, "max_weight": 10},
+                "ability_trend": {"per_boat": 1.6, "max_weight": 8},
+                "course_rentai": {"per_boat": 2.4, "max_weight": 12},
             },
             "solo_weights": {
-                "win_rate_low":      {"weight": 3},
-                "local_win_low":     {"weight": 2},
+                "win_rate_low":      {"weight": 2},
+                "local_win_low":     {"weight": 1},
                 "motor_bad":         {"weight": 2},
                 "avg_st_slow":       {"weight": 2},
                 "course1_place_low": {"weight": 1},
+                "f_risk":            {"weight": 2},
+                "venue_unfavorable": {"weight": 2},
             },
             "solo_thresholds": {
                 "win_rate_low_abs": 5.0, "local_win_low_abs": 5.0,
                 "motor_bad_abs": 33.0, "avg_st_slow_abs": 0.17,
                 "course1_place_low_abs": 45.0,
+                "f_risk_rate_abs": 8.0, "venue_unfavorable_factor_abs": 0.85,
             },
             "class_rank": {"A1": 4, "A2": 3, "B1": 2, "B2": 1, "": 0},
             "thresholds": {
@@ -118,18 +147,21 @@ def load_asahi_config(force_reload: bool = False) -> dict:
                 "base_rate_weight": 1.0, "win_rate_weight": 0.9, "local_win_weight": 0.3,
                 "motor_weight": 0.7, "avg_st_weight": 0.7,
                 "course_st_weight": 0.5, "course_perf_weight": 0.3, "class_weight": 0.4,
+                "ability_trend_weight": 0.3, "venue_factor_weight": 3.0, "f_risk_weight": -0.5,
                 "danger_penalty_weight": 1.0,
             },
             "second_place": {
                 "base_rate_weight": 1.0, "win_rate_weight": 0.5, "local_win_weight": 0.2,
                 "motor_weight": 0.5, "avg_st_weight": 0.2,
                 "course_st_weight": 0.3, "course_perf_weight": 0.2, "class_weight": 0.2,
+                "ability_trend_weight": 0.2, "venue_factor_weight": 1.5, "f_risk_weight": -0.2,
                 "danger_penalty_weight": 0.15,
             },
             "third_place": {
                 "base_rate_weight": 1.0, "win_rate_weight": 0.3, "local_win_weight": 0.1,
                 "motor_weight": 0.4, "avg_st_weight": 0.1,
                 "course_st_weight": 0.2, "course_perf_weight": 0.1, "class_weight": 0.1,
+                "ability_trend_weight": 0.1, "venue_factor_weight": 1.0, "f_risk_weight": -0.1,
                 "danger_penalty_weight": 0.0,
             },
             "lane6_first_place_conditions": {
@@ -175,14 +207,21 @@ def get_model_version() -> str:
 # ① 危険艇速報用: danger_score（100点満点、朝データのみ）
 # ════════════════════════════════════════════════════════════
 
-def calc_danger_score_v2(boat1, all_boats: list, config: Optional[dict] = None) -> tuple[float, dict]:
+def calc_danger_score_v2(
+    boat1, all_boats: list, config: Optional[dict] = None, venue: Optional[str] = None,
+) -> tuple[float, dict]:
     """
-    1号艇の危険度を100点満点で算出する（朝取得可能データのみ）。
+    1号艇の危険度を100点満点で算出する（朝取得可能データのみ）Ver4。
 
     【設計】相対評価を中心とし、絶対評価（単体）を補助的に加える。
-      ・relative: 5指標（全国勝率・当地勝率・平均ST・モーター・級別）について
-        「1号艇より優れている他艇の数」に応じて加点する（per_boat × 艇数）。
-      ・solo: 1号艇単体の値が絶対的に低い場合の小さな加点。
+      ・relative: 7指標（全国勝率・当地勝率・平均ST・モーター・級別・
+        能力指数推移・進入コース別2連対率）について「1号艇より優れている
+        他艇の数」に応じて加点する（per_boat × 艇数）。
+      ・solo: 1号艇単体の値が絶対的に低い場合の小さな加点
+        （F率リスク・場不利を含む）。
+    venue（場名）を渡すと、進入コース別2連対率に場補正
+    （x_venue_stats.get_venue_course_factor）がかかる。渡さない場合は
+    場補正なし（全国統計のみ）で算出する。
 
     戻り値: (score, breakdown)
       breakdown: {
@@ -211,6 +250,7 @@ def calc_danger_score_v2(boat1, all_boats: list, config: Optional[dict] = None) 
         return 0.0, breakdown
 
     n_other = len(other_boats)
+    venue_stats = compute_venue_course_stats() if venue else None
 
     def _relative_item(key: str, boat1_val: float, other_vals: list[float], higher_is_better: bool = True) -> None:
         """1号艇より優れている他艇数を数え、per_boat×艇数を加点する。"""
@@ -251,6 +291,33 @@ def calc_danger_score_v2(boat1, all_boats: list, config: Optional[dict] = None) 
     other_class_ranks = [class_rank.get(b.racer_class or "", 0) for b in other_boats]
     _relative_item("racer_class", boat1_class_rank, other_class_ranks, higher_is_better=True)
 
+    # ── ⑥【Ver4新規】能力指数推移（相対、今期-前期の伸び） ──────
+    def _ability_trend(b) -> float:
+        if b.ability_curr and b.ability_prev:
+            return b.ability_curr - b.ability_prev
+        return 0.0
+    _relative_item("ability_trend", _ability_trend(boat1),
+                    [_ability_trend(b) for b in other_boats], higher_is_better=True)
+
+    # ── ⑦【Ver4新規】進入コース別2連対率（相対、信頼度補正・場補正込み） ──
+    def _course_rentai(b) -> float:
+        lane_idx = b.lane - 1
+        if not (b.course_nyuko and 0 <= lane_idx < 6 and b.course_nyuko[lane_idx] > 0):
+            return 0.0
+        counts = b.course_place_counts[lane_idx] if b.course_place_counts else None
+        nyuko = b.course_nyuko[lane_idx]
+        if counts and sum(counts) > 0:
+            rentai2 = (counts[0] + counts[1]) / nyuko * 100
+        else:
+            # 着順回数まで取得できていない場合は複勝率（補助情報）で近似
+            rentai2 = b.course_place_rate[lane_idx] if b.course_place_rate else 0.0
+        if venue and venue_stats:
+            factor = get_venue_course_factor(venue, b.lane, venue_stats, cfg.get("_venue_cfg"))["factor"]
+            rentai2 *= factor
+        return rentai2
+    _relative_item("course_rentai", _course_rentai(boat1),
+                    [_course_rentai(b) for b in other_boats], higher_is_better=True)
+
     # ── 単体評価（絶対値が低い場合の小さな加点） ─────────────
     def _solo_item(key: str, cond: bool) -> None:
         w = SW.get(key)
@@ -271,6 +338,16 @@ def calc_danger_score_v2(boat1, all_boats: list, config: Optional[dict] = None) 
         course1_win = boat1.course_win_rate[0]
     if course1_win is not None:
         _solo_item("course1_place_low", course1_win < STH["course1_place_low_abs"])
+
+    # ── 【Ver4新規】1コースFリスク（単体） ────────────────────
+    if boat1.course_nyuko and boat1.course_nyuko[0] > 0 and boat1.course_f_count:
+        f_rate = boat1.course_f_count[0] / boat1.course_nyuko[0] * 100
+        _solo_item("f_risk", f_rate >= STH["f_risk_rate_abs"])
+
+    # ── 【Ver4新規】場不利（単体、選手能力×場特性） ─────────────
+    if venue:
+        vf = get_venue_course_factor(venue, 1, venue_stats)
+        _solo_item("venue_unfavorable", vf["factor"] < STH["venue_unfavorable_factor_abs"])
 
     total = round(sum(v["weighted"] for v in breakdown.values()), 2)
     total = min(total, ds_cfg["total_scale"])
@@ -368,7 +445,8 @@ def calculate_upset_score_v2(
     best_other_prob = other_probs.get(best_other_lane, 0.0)
 
     upset_prob = 1.0 - boat1_prob
-    danger_score, danger_breakdown = calc_danger_score_v2(boat1, boats, cfg)
+    venue_name = VENUE_NAMES.get(venue_num)
+    danger_score, danger_breakdown = calc_danger_score_v2(boat1, boats, cfg, venue=venue_name)
 
     # ── ①1号艇の弱さ（平均ST実績・コース別ST実績） ────────
     if boat1:
@@ -456,8 +534,37 @@ def calculate_upset_score_v2(
     # ⑦統一: 上位進出指数・注目選手も同じ boats・config から算出し、
     # 危険艇速報・買い目生成・note新聞ですべて同じ値を参照する。
     rank_index_ctx = {"match_index": min(100, upset_score * 10.5), "upset_score": upset_score}
-    rank_index = calc_rank_index_v2(boats, rank_index_ctx, cfg)
+    rank_index = calc_rank_index_v2(boats, rank_index_ctx, cfg, venue=venue_name)
     featured_boats = select_featured_boats(boats, rank_index, danger_score, cfg)
+
+    # ── Ver4追加: 水面タイプ・場補正・能力推移・F率/L率・コース連対率・
+    #    サンプル数信頼度（いずれも1号艇について。hit_record.csv保存用） ──
+    venue_water_type = ""
+    venue_factor_val = ""
+    course_sample_confidence = ""
+    if venue_name:
+        wt = classify_water_type(venue_name)
+        venue_water_type = wt["label"]
+        vf = get_venue_course_factor(venue_name, 1)
+        venue_factor_val = vf["factor"]
+        course_sample_confidence = vf["samples"]
+
+    ability_trend_1c = ""
+    if boat1 and boat1.ability_curr and boat1.ability_prev:
+        ability_trend_1c = round(boat1.ability_curr - boat1.ability_prev, 2)
+
+    course_f_rate_1c = ""
+    course_l_rate_1c = ""
+    course_rentai2_1c = ""
+    if boat1 and boat1.course_nyuko and boat1.course_nyuko[0] > 0:
+        nyuko0 = boat1.course_nyuko[0]
+        if boat1.course_f_count:
+            course_f_rate_1c = round(boat1.course_f_count[0] / nyuko0 * 100, 1)
+        if boat1.course_l_count:
+            course_l_rate_1c = round(boat1.course_l_count[0] / nyuko0 * 100, 1)
+        if boat1.course_place_counts and sum(boat1.course_place_counts[0]) > 0:
+            counts0 = boat1.course_place_counts[0]
+            course_rentai2_1c = round((counts0[0] + counts0[1]) / nyuko0 * 100, 1)
 
     detail["_features"] = {
         "win_rate":      boat1.win_rate if boat1 else None,
@@ -471,6 +578,14 @@ def calculate_upset_score_v2(
         "rank_index": rank_index,
         "featured_boats": featured_boats,
         "model_version": cfg.get("model_version", "unknown"),
+        # Ver4
+        "venue_water_type": venue_water_type,
+        "venue_factor": venue_factor_val,
+        "ability_trend": ability_trend_1c,
+        "course_f_rate_1c": course_f_rate_1c,
+        "course_l_rate_1c": course_l_rate_1c,
+        "course_rentai2_1c": course_rentai2_1c,
+        "course_sample_confidence": course_sample_confidence,
     }
 
     return upset_score, detail, target
@@ -499,20 +614,23 @@ def calc_lane_rank_scores_v2(
     boat,
     all_boats: list,
     config: Optional[dict] = None,
+    venue: Optional[str] = None,
 ) -> dict:
     """
-    1艇について、1着適性・2着適性・3着適性を個別に算出する。
+    1艇について、1着適性・2着適性・3着適性を個別に算出する。Ver4。
 
     戻り値: {
       "first": float, "second": float, "third": float,   # 相対スコア（従来通り）
       "contributions": {
         "first":  {"win_rate": x, "local_win": x, "avg_st": x, "motor": x,
-                    "class": x, "course_perf": x, "other": x},
+                    "class": x, "course_perf": x, "ability_trend": x,
+                    "venue_factor": x, "f_risk": x, "other": x},
         "second": {...}, "third": {...}
       }
     }
     contributions は各特徴量が最終スコアへ与えた加点（寄与度）。
     将来の特徴量分析・重み学習（Phase2以降）のため hit_record.csv に保存する。
+    venue（場名）を渡すと場補正（x_venue_stats）が寄与度に反映される。
     """
     cfg = config or load_asahi_config()
     lrs = cfg["lane_rank_scores"]
@@ -541,7 +659,7 @@ def calc_lane_rank_scores_v2(
     if boat.course_nyuko and 0 <= lane_idx < 6 and boat.course_nyuko[lane_idx] > 0:
         course_st_diff = (0.17 - boat.course_st[lane_idx]) * 10.0
 
-    # コース別1着率実績（①で新規追加。全国平均(lane_base_rateのfirst%)比）
+    # コース別1着率実績（全国平均(lane_base_rateのfirst%)比）
     course_perf_diff = 0.0
     if boat.course_nyuko and 0 <= lane_idx < 6 and boat.course_nyuko[lane_idx] > 0 \
             and boat.course_win_rate:
@@ -554,20 +672,43 @@ def calc_lane_rank_scores_v2(
     avg_class_rank = sum(class_ranks) / len(class_ranks) if class_ranks else 0.0
     class_diff = class_rank_map.get(boat.racer_class or "", 0) - avg_class_rank
 
+    # 【Ver4新規】能力指数推移（全艇平均比、今期-前期の伸び）
+    def _ability_trend(b) -> float:
+        if b.ability_curr and b.ability_prev:
+            return b.ability_curr - b.ability_prev
+        return 0.0
+    ability_trends = [_ability_trend(b) for b in all_boats]
+    avg_ability_trend = sum(ability_trends) / len(ability_trends) if ability_trends else 0.0
+    ability_trend_diff = _ability_trend(boat) - avg_ability_trend
+
+    # 【Ver4新規】場補正（選手能力×場特性。1.0=全国平均並み、それとの差分）
+    venue_factor_diff = 0.0
+    if venue and boat.course_nyuko and 0 <= lane_idx < 6 and boat.course_nyuko[lane_idx] > 0:
+        vf = get_venue_course_factor(venue, boat.lane)
+        venue_factor_diff = vf["factor"] - 1.0
+
+    # 【Ver4新規】Fリスク（進入コースでのフライング率%。高いほどマイナス寄与）
+    f_rate = 0.0
+    if boat.course_nyuko and 0 <= lane_idx < 6 and boat.course_nyuko[lane_idx] > 0 and boat.course_f_count:
+        f_rate = boat.course_f_count[lane_idx] / boat.course_nyuko[lane_idx] * 100
+
     def _rank_score_with_contrib(rank_key: str, base_rate: float) -> tuple[float, dict]:
         w = lrs[rank_key]
         base = base_rate * w["base_rate_weight"]
         contrib = {
-            "base_rate":   round(base, 3),
-            "win_rate":    round(win_rate_diff  * w["win_rate_weight"], 3),
-            "local_win":   round(local_win_diff * w.get("local_win_weight", 0.0), 3),
-            "avg_st":      round(avg_st_diff    * w["avg_st_weight"], 3),
-            "motor":       round(motor_diff     * w["motor_weight"], 3),
-            "class":       round(class_diff     * w.get("class_weight", 0.0), 3),
+            "base_rate":     round(base, 3),
+            "win_rate":      round(win_rate_diff  * w["win_rate_weight"], 3),
+            "local_win":     round(local_win_diff * w.get("local_win_weight", 0.0), 3),
+            "avg_st":        round(avg_st_diff    * w["avg_st_weight"], 3),
+            "motor":         round(motor_diff     * w["motor_weight"], 3),
+            "class":         round(class_diff     * w.get("class_weight", 0.0), 3),
             # 【寄与度カテゴリ】コース実績寄与＝コース別1着率(fanファイル)、
             # その他特徴量寄与＝コース別ST実績（avg_stと別軸のためこちらに分類）
-            "course_perf": round(course_perf_diff * w.get("course_perf_weight", 0.0), 3),
-            "other":       round(course_st_diff   * w.get("course_st_weight", 0.0), 3),
+            "course_perf":   round(course_perf_diff * w.get("course_perf_weight", 0.0), 3),
+            "ability_trend": round(ability_trend_diff * w.get("ability_trend_weight", 0.0), 3),
+            "venue_factor":  round(venue_factor_diff  * w.get("venue_factor_weight", 0.0), 3),
+            "f_risk":        round(f_rate / 10.0 * w.get("f_risk_weight", 0.0), 3),
+            "other":         round(course_st_diff   * w.get("course_st_weight", 0.0), 3),
         }
         score = sum(contrib.values())
         return score, contrib
@@ -579,7 +720,7 @@ def calc_lane_rank_scores_v2(
     # ── 危険艇判定（1号艇のみ）を1着評価に強く反映し、2着・3着への
     #    影響は各着順ごとの danger_penalty_weight で個別に抑制する ──
     if boat.lane == 1:
-        danger_score, _ = calc_danger_score_v2(boat, all_boats, cfg)
+        danger_score, _ = calc_danger_score_v2(boat, all_boats, cfg, venue=venue)
         # danger_score は0-100点。スコアスケール(概ね数十点)に合わせて
         # 1/10した値をペナルティ基準量とする。
         penalty_unit = danger_score / 10.0
@@ -607,6 +748,7 @@ def calc_rank_probabilities_v2(
     boats: list,
     context: Optional[dict] = None,
     config: Optional[dict] = None,
+    venue: Optional[str] = None,
 ) -> dict:
     """
     レース全体について、1着・2着・3着それぞれの確率分布を個別に算出する。
@@ -614,6 +756,7 @@ def calc_rank_probabilities_v2(
     context: {"match_index": float, "upset_score": float} を渡すと、
              6号艇1着の特別条件判定に使う（省略時は特別条件なしとして
              通常の減衰を適用する＝6号艇1着を控えめに評価する）。
+    venue: 場名を渡すと場補正（x_venue_stats）が寄与度・スコアに反映される。
 
     戻り値: {
       "first":  {lane: prob, ...},   # 1着確率分布（6号艇は条件次第で減衰）
@@ -626,7 +769,7 @@ def calc_rank_probabilities_v2(
     context = context or {}
     lrs = cfg["lane_rank_scores"]
 
-    scores = {b.lane: calc_lane_rank_scores_v2(b, boats, cfg) for b in boats}
+    scores = {b.lane: calc_lane_rank_scores_v2(b, boats, cfg, venue=venue) for b in boats}
 
     def _softmax_normalize(score_map: dict) -> dict:
         total = sum(score_map.values())
@@ -673,20 +816,23 @@ def calc_rank_index_v2(
     boats: list,
     context: Optional[dict] = None,
     config: Optional[dict] = None,
+    venue: Optional[str] = None,
 ) -> dict[int, dict]:
     """
-    全艇について「上位進出指数」を0-100で算出する。
+    全艇について「上位進出指数」を0-100で算出する。Ver4。
     戻り値: {lane: {"top1": float, "top2": float, "top3": float,
                      "contributions": {...}}, ...}
       top1 = 1着指数（1着確率×100）
       top2 = 2着以内指数（1着+2着確率×100）
       top3 = 3着以内指数（1着+2着+3着確率×100）
       contributions = calc_lane_rank_scores_v2 が返す各特徴量の寄与度
-        （全国勝率・当地勝率・平均ST・モーター・級別・コース実績・その他）。
+        （全国勝率・当地勝率・平均ST・モーター・級別・コース実績・
+          能力推移・場補正・Fリスク・その他）。
         将来の特徴量分析・重み学習のため hit_record.csv に保存する。
+    venue: 場名を渡すと場補正（x_venue_stats）が寄与度に反映される。
     """
     cfg = config or load_asahi_config()
-    probs = calc_rank_probabilities_v2(boats, context, cfg)
+    probs = calc_rank_probabilities_v2(boats, context, cfg, venue=venue)
 
     # 寄与度は calc_lane_rank_scores_v2 から直接取得する
     # （calc_rank_probabilities_v2 の内部でも同じ関数を呼んでいるが、
@@ -697,7 +843,7 @@ def calc_rank_index_v2(
         p1 = probs["first"].get(lane, 0.0)
         p2 = probs["second"].get(lane, 0.0)
         p3 = probs["third"].get(lane, 0.0)
-        lane_scores = calc_lane_rank_scores_v2(b, boats, cfg)
+        lane_scores = calc_lane_rank_scores_v2(b, boats, cfg, venue=venue)
         result[lane] = {
             "top1": round(p1 * 100, 1),
             "top2": round((p1 + p2) * 100, 1),

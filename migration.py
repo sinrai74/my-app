@@ -82,12 +82,32 @@ def migrate_v1_to_v2(rows: list[dict]) -> list[dict]:
 
 def migrate_v2_to_v3(rows: list[dict]) -> list[dict]:
     """
-    Version2(34列) → Version3(38列)。
+    Version2(34列) → Version3(37列)。
     危険艇速報リニューアル（相対評価・上位進出指数・注目選手）の記録列を追加。
     旧データにはJSON文字列列も含め空欄で補完する（過去データは未計測のため）。
     """
     v3_cols = get_columns(3)
     new_cols = [c for c in v3_cols if c not in get_columns(2)]
+
+    migrated = []
+    for row in rows:
+        new_row = dict(row)
+        for col in new_cols:
+            if not new_row.get(col):
+                new_row[col] = NEW_COLUMN_DEFAULTS.get(col, "")
+        migrated.append(new_row)
+    return migrated
+
+
+def migrate_v3_to_v4(rows: list[dict]) -> list[dict]:
+    """
+    Version3(37列) → Version4(44列)。
+    評価エンジンVer4（場別統計・水面タイプ・能力指数推移・コース別F率/L率・
+    サンプル数補正を統合した単一評価基盤）の記録列を追加。
+    旧データは未計測のため空欄で補完する。
+    """
+    v4_cols = get_columns(4)
+    new_cols = [c for c in v4_cols if c not in get_columns(3)]
 
     migrated = []
     for row in rows:
@@ -107,6 +127,7 @@ def migrate_v2_to_v3(rows: list[dict]) -> list[dict]:
 MIGRATIONS = {
     (1, 2): migrate_v1_to_v2,
     (2, 3): migrate_v2_to_v3,
+    (3, 4): migrate_v3_to_v4,
 }
 
 

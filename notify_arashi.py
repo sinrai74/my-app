@@ -172,8 +172,22 @@ class BoatInfo:
     course_st:   list    = None  # 各コースの平均ST [0.17, 0.19, ...]
     course_nyuko: list   = None  # 各コースの進入回数 [46, 28, ...]
     course_rank:  list   = None  # 各コースのST順位平均 [1.8, 2.7, ...]
-    course_place_rate: list = None  # 各コースの複勝率(%) [52.3, 41.0, ...]（fanファイル由来）
+    course_place_rate: list = None  # 各コースの複勝率(%) [52.3, 41.0, ...]（fanファイル由来・補助情報）
     course_win_rate:   list = None  # 各コースの1着率(%)。fanファイルのコース別1着回数÷進入回数から算出
+    # 【Ver4追加】コース別 着順回数（各コース×1〜6着、fanファイル由来）
+    # course_place_counts[c][r-1] = c+1コースでr着した回数（c,rとも0-index）
+    course_place_counts: list = None
+    # 【Ver4追加】コース別 F/L/K/S回数（リスク評価用）
+    course_f_count:  list = None  # 各コースのフライング回数
+    course_l_count:  list = None  # 各コースの出遅れ回数（L0+L1合算）
+    course_k_count:  list = None  # 各コースの妨害失格回数（K0+K1合算）
+    course_s_count:  list = None  # 各コースの転覆・沈没等回数（S0+S1+S2合算）
+    # 【Ver4追加】級別履歴・能力指数（fanファイル由来）
+    class_prev:   str   = ""    # 前期級
+    class_prev2:  str   = ""    # 前々期級
+    class_prev3:  str   = ""    # 前々々期級
+    ability_prev: float = 0.0   # 前期能力指数
+    ability_curr: float = 0.0   # 今期能力指数
 
     def __post_init__(self):
         if self.course_st is None:
@@ -186,6 +200,16 @@ class BoatInfo:
             self.course_place_rate = [0.0] * 6
         if self.course_win_rate is None:
             self.course_win_rate = [0.0] * 6
+        if self.course_place_counts is None:
+            self.course_place_counts = [[0] * 6 for _ in range(6)]
+        if self.course_f_count is None:
+            self.course_f_count = [0] * 6
+        if self.course_l_count is None:
+            self.course_l_count = [0] * 6
+        if self.course_k_count is None:
+            self.course_k_count = [0] * 6
+        if self.course_s_count is None:
+            self.course_s_count = [0] * 6
 
 
 @dataclass
@@ -620,16 +644,27 @@ def _get_fan_file() -> str:
 def _load_fan_file(filepath: str) -> dict[str, dict]:
     """
     fanファイルをパースして {登録番号: コース別STデータ} の辞書を返す。
-    公式仕様書に基づくバイトオフセット:
-      byte 0-3:   登録番号
-      byte 58-61: 全国勝率（確認用）
-      byte 79-81: 全国平均ST（3桁、例: 016 → 0.16）
-      byte 82〜:  コース別データ（1コース=13byte × 6コース）
-                  各コース: 進入回数(3)+複勝率(4)+ST平均(3)+ST順位(3)
-      byte 198〜: コース別「着順回数」ブロック（1コース=34byte × 6コース）
-                  各コース: 1着〜6着回数(3byte×6) + F/L0/L1/K0/K1/S0/S1/S2回数(2byte×8)
-                  → 「Nコース1着回数 ÷ Nコース進入回数」で真のコース別1着率を算出する。
+    公式仕様書に基づくバイトオフセット（Ver4: 提供された公式フィールド定義書と照合済み）:
+      byte 0-3:     登録番号
+      byte 58-61:   通算勝率（確認用）
+      byte 62-65:   通算複勝率（確認用・補助情報）
+      byte 79-81:   全国平均ST（3桁、例: 016 → 0.16）
+      byte 82〜159: コース別データ（1コース=13byte × 6コース）
+                    各コース: 進入回数(3)+複勝率(4)+ST平均(3)+ST順位(3)
+      byte 160-165: 前期級(2)+前々期級(2)+前々々期級(2)
+      byte 166-173: 前期能力指数(4)+今期能力指数(4)
+      byte 198〜:   コース別「着順回数＋リスク回数」ブロック（1コース=34byte × 6コース）
+                    各コース: 1〜6着回数(3byte×6=18byte)
+                              + F/L0/L1/K0/K1/S0/S1/S2回数(2byte×8=16byte)
       レコード全長: 416byte（parsers.py の _FAN_RECORD_BYTES と一致）
+
+    戻り値の各選手エントリ:
+      avg_st_global, course_st, course_nyuko, course_rank,
+      course_place_rate（複勝率・補助情報）, course_win_rate（1着率・優先指標）,
+      course_place_counts（[コース][着順0-5]の回数、2連対率/3連対率/平均着順の算出に使用）,
+      course_f_count / course_l_count / course_k_count / course_s_count（リスク評価用）,
+      class_prev / class_prev2 / class_prev3（級別推移）,
+      ability_prev / ability_curr（能力指数）
     """
     if filepath in _FAN_CACHE:
         return _FAN_CACHE[filepath]
@@ -655,12 +690,17 @@ def _load_fan_file(filepath: str) -> dict[str, dict]:
             avg_st_raw = line_raw[79:82].decode("ascii", errors="replace")
             avg_st_global = int(avg_st_raw) / 100 if avg_st_raw.isdigit() else 0.18
 
-            # コース別データ（1〜6コース）
+            # コース別データ（1〜6コース、byte 82〜159）
             course_st    = [0.0] * 6
             course_nyuko = [0]   * 6
             course_rank  = [0.0] * 6
             course_place_rate = [0.0] * 6
-            course_win_rate   = [0.0] * 6  # コース別1着率（真値。取得不可なら0.0のまま）
+            course_win_rate   = [0.0] * 6
+            course_place_counts = [[0] * 6 for _ in range(6)]
+            course_f_count = [0] * 6
+            course_l_count = [0] * 6
+            course_k_count = [0] * 6
+            course_s_count = [0] * 6
 
             for c in range(6):
                 base = 82 + c * 13
@@ -682,13 +722,42 @@ def _load_fan_file(filepath: str) -> dict[str, dict]:
                     if place_raw.isdigit() and nyuko > 0:
                         course_place_rate[c] = int(place_raw) / 10
 
-                    # ── コース別「1着回数」→ 真の1着率（レコード後半、byte 198〜）
-                    # 1コースの着順回数ブロックは byte 198 起点、以後34byteごと。
+                    # ── コース別「着順回数＋リスク回数」ブロック（byte 198〜、34byte/コース）
                     win_base = 198 + c * 34
-                    if nyuko > 0 and win_base + 3 <= len(line_raw):
-                        win_raw = line_raw[win_base:win_base+3].decode("ascii", errors="replace")
-                        if win_raw.isdigit():
-                            course_win_rate[c] = round(int(win_raw) / nyuko * 100, 1)
+                    if nyuko > 0 and win_base + 34 <= len(line_raw):
+                        # 1〜6着回数（3byte×6）
+                        for r in range(6):
+                            r_raw = line_raw[win_base + r*3 : win_base + r*3 + 3].decode("ascii", errors="replace")
+                            if r_raw.isdigit():
+                                course_place_counts[c][r] = int(r_raw)
+                        if course_place_counts[c][0]:
+                            course_win_rate[c] = round(course_place_counts[c][0] / nyuko * 100, 1)
+
+                        # F/L0/L1/K0/K1/S0/S1/S2回数（2byte×8、着順回数の直後=win_base+18）
+                        risk_base = win_base + 18
+                        risk_raw = {}
+                        for i, key in enumerate(["F", "L0", "L1", "K0", "K1", "S0", "S1", "S2"]):
+                            rb = risk_base + i * 2
+                            v_raw = line_raw[rb:rb+2].decode("ascii", errors="replace")
+                            risk_raw[key] = int(v_raw) if v_raw.isdigit() else 0
+                        course_f_count[c] = risk_raw["F"]
+                        course_l_count[c] = risk_raw["L0"] + risk_raw["L1"]
+                        course_k_count[c] = risk_raw["K0"] + risk_raw["K1"]
+                        course_s_count[c] = risk_raw["S0"] + risk_raw["S1"] + risk_raw["S2"]
+
+            # ── 級別履歴・能力指数（byte 160〜173） ──────────────────
+            class_prev = class_prev2 = class_prev3 = ""
+            ability_prev = ability_curr = 0.0
+            if len(line_raw) >= 174:
+                class_prev  = line_raw[160:162].decode("ascii", errors="replace").strip()
+                class_prev2 = line_raw[162:164].decode("ascii", errors="replace").strip()
+                class_prev3 = line_raw[164:166].decode("ascii", errors="replace").strip()
+                ap_raw = line_raw[166:170].decode("ascii", errors="replace")
+                ac_raw = line_raw[170:174].decode("ascii", errors="replace")
+                if ap_raw.isdigit():
+                    ability_prev = int(ap_raw) / 100
+                if ac_raw.isdigit():
+                    ability_curr = int(ac_raw) / 100
 
             result[racer_id] = {
                 "avg_st_global": avg_st_global,
@@ -697,6 +766,16 @@ def _load_fan_file(filepath: str) -> dict[str, dict]:
                 "course_rank":   course_rank,
                 "course_place_rate": course_place_rate,
                 "course_win_rate":   course_win_rate,
+                "course_place_counts": course_place_counts,
+                "course_f_count": course_f_count,
+                "course_l_count": course_l_count,
+                "course_k_count": course_k_count,
+                "course_s_count": course_s_count,
+                "class_prev":  class_prev,
+                "class_prev2": class_prev2,
+                "class_prev3": class_prev3,
+                "ability_prev": ability_prev,
+                "ability_curr": ability_curr,
             }
         except Exception:
             continue
@@ -886,6 +965,11 @@ def _extract_boats_from_program(program: dict) -> list[BoatInfo]:
         course_rank  = fan_entry.get("course_rank",  [0.0] * 6)
         course_place_rate = fan_entry.get("course_place_rate", [0.0] * 6)
         course_win_rate   = fan_entry.get("course_win_rate",   [0.0] * 6)
+        course_place_counts = fan_entry.get("course_place_counts", [[0]*6 for _ in range(6)])
+        course_f_count = fan_entry.get("course_f_count", [0] * 6)
+        course_l_count = fan_entry.get("course_l_count", [0] * 6)
+        course_k_count = fan_entry.get("course_k_count", [0] * 6)
+        course_s_count = fan_entry.get("course_s_count", [0] * 6)
 
         api_avg_st = float(b.get("racer_average_start_timing") or 0.18)
 
@@ -903,6 +987,16 @@ def _extract_boats_from_program(program: dict) -> list[BoatInfo]:
             course_rank   = course_rank,
             course_place_rate = course_place_rate,
             course_win_rate   = course_win_rate,
+            course_place_counts = course_place_counts,
+            course_f_count = course_f_count,
+            course_l_count = course_l_count,
+            course_k_count = course_k_count,
+            course_s_count = course_s_count,
+            class_prev    = fan_entry.get("class_prev", ""),
+            class_prev2   = fan_entry.get("class_prev2", ""),
+            class_prev3   = fan_entry.get("class_prev3", ""),
+            ability_prev  = fan_entry.get("ability_prev", 0.0),
+            ability_curr  = fan_entry.get("ability_curr", 0.0),
         ))
     return sorted(boats, key=lambda x: x.lane)
 
@@ -3664,6 +3758,15 @@ def _run_main(race_date: str | None = None) -> None:
                             (detail.get("_features") or {}).get("featured_boats") or [],
                             ensure_ascii=False,
                         ),
+                        # 【評価エンジンVer4】場別統計・水面タイプ・能力指数推移・
+                        # コース別F率/L率・コース連対率・サンプル数信頼度
+                        "venue_water_type":  (detail.get("_features") or {}).get("venue_water_type", ""),
+                        "venue_factor":      (detail.get("_features") or {}).get("venue_factor", ""),
+                        "ability_trend":     (detail.get("_features") or {}).get("ability_trend", ""),
+                        "course_f_rate_1c":  (detail.get("_features") or {}).get("course_f_rate_1c", ""),
+                        "course_l_rate_1c":  (detail.get("_features") or {}).get("course_l_rate_1c", ""),
+                        "course_rentai2_1c": (detail.get("_features") or {}).get("course_rentai2_1c", ""),
+                        "course_sample_confidence": (detail.get("_features") or {}).get("course_sample_confidence", ""),
                         "ranking_skip": True,   # ランキング外フラグ
                     }
                     _sl, _ks = [], set()
@@ -3749,6 +3852,15 @@ def _run_main(race_date: str | None = None) -> None:
                     (detail.get("_features") or {}).get("featured_boats") or [],
                     ensure_ascii=False,
                 ),
+                # 【評価エンジンVer4】場別統計・水面タイプ・能力指数推移・
+                # コース別F率/L率・コース連対率・サンプル数信頼度
+                "venue_water_type":  (detail.get("_features") or {}).get("venue_water_type", ""),
+                "venue_factor":      (detail.get("_features") or {}).get("venue_factor", ""),
+                "ability_trend":     (detail.get("_features") or {}).get("ability_trend", ""),
+                "course_f_rate_1c":  (detail.get("_features") or {}).get("course_f_rate_1c", ""),
+                "course_l_rate_1c":  (detail.get("_features") or {}).get("course_l_rate_1c", ""),
+                "course_rentai2_1c": (detail.get("_features") or {}).get("course_rentai2_1c", ""),
+                "course_sample_confidence": (detail.get("_features") or {}).get("course_sample_confidence", ""),
             }
             try:
                 _sent_lines = []
@@ -4903,6 +5015,15 @@ def _check_yesterday_results(today_date: str) -> None:
                 "danger_score_v3":     pd_data.get("danger_score_v3", ""),
                 "rank_index_json":     pd_data.get("rank_index_json", ""),
                 "featured_boats_json": pd_data.get("featured_boats_json", ""),
+                # 【評価エンジンVer4】場別統計・水面タイプ・能力指数推移・
+                # コース別F率/L率・コース連対率・サンプル数信頼度
+                "venue_water_type":         pd_data.get("venue_water_type", ""),
+                "venue_factor":             pd_data.get("venue_factor", ""),
+                "ability_trend":            pd_data.get("ability_trend", ""),
+                "course_f_rate_1c":         pd_data.get("course_f_rate_1c", ""),
+                "course_l_rate_1c":         pd_data.get("course_l_rate_1c", ""),
+                "course_rentai2_1c":        pd_data.get("course_rentai2_1c", ""),
+                "course_sample_confidence": pd_data.get("course_sample_confidence", ""),
             })
 
         if not records:
@@ -4921,6 +5042,9 @@ def _check_yesterday_results(today_date: str) -> None:
             "feat_win_rate","feat_motor","feat_avg_st","feat_racer_class",
             "feat_course_st_1c","feat_course_rank_1c","feat_danger_breakdown",
             "danger_score_v3","rank_index_json","featured_boats_json",
+            "venue_water_type","venue_factor","ability_trend",
+            "course_f_rate_1c","course_l_rate_1c","course_rentai2_1c",
+            "course_sample_confidence",
         ]
 
         # ── 重複書き込み防止 ──────────────────────────────────────
