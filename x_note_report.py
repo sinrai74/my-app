@@ -355,14 +355,16 @@ def _bd_worse_count(bd: dict, key: str) -> Optional[tuple]:
 
 def _race_comment(d: dict) -> str:
     bd = d.get("breakdown", {})
-    # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・満点
+    # 【朝刊AI Ver4】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・満点
     # (asahi_config.json の danger_score.relative_weights.max_weight と一致させる)
     items = [
-        ("勝率",     _bd_weighted(bd, "win_rate"),    25, "全国勝率で劣勢"),
-        ("当地勝率", _bd_weighted(bd, "local_win"),   15, "当地勝率で劣勢"),
-        ("平均ST",   _bd_weighted(bd, "avg_st"),      15, "平均STで劣勢"),
-        ("機力",     _bd_weighted(bd, "motor"),       20, "モーター力で劣勢"),
-        ("級別",     _bd_weighted(bd, "racer_class"), 15, "級別で劣勢"),
+        ("勝率",       _bd_weighted(bd, "win_rate"),      20, "全国勝率で劣勢"),
+        ("当地勝率",   _bd_weighted(bd, "local_win"),     10, "当地勝率で劣勢"),
+        ("平均ST",     _bd_weighted(bd, "avg_st"),        12, "平均STで劣勢"),
+        ("機力",       _bd_weighted(bd, "motor"),         16, "モーター力で劣勢"),
+        ("級別",       _bd_weighted(bd, "racer_class"),   10, "級別で劣勢"),
+        ("コース連対", _bd_weighted(bd, "course_rentai"), 12, "進入コースでの連対率が低調"),
+        ("能力推移",   _bd_weighted(bd, "ability_trend"),  8, "能力指数が下降傾向"),
     ]
     # 各項目を満点に対する比率で比較する（満点が項目ごとに異なるため）
     top = sorted(items, key=lambda x: -(x[1] / x[2] if x[2] else 0))[:2]
@@ -1270,14 +1272,16 @@ def generate_html(data: dict, output_path: str) -> None:
             score = d.get("score", 0)
             comment = _race_comment(d)
             bd = d.get("breakdown", {})
-            # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・
+            # 【朝刊AI Ver4】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・
             # 満点はここに合わせる（asahi_config.json の danger_score.relative_weights と一致させること）
             bar_items = [
-                ("勝率",     _bd_weighted(bd, "win_rate"),    25, "#42a5f5"),
-                ("機力",     _bd_weighted(bd, "motor"),       20, "#ffa726"),
-                ("平均ST",   _bd_weighted(bd, "avg_st"),      15, "#ef5350"),
-                ("当地勝率", _bd_weighted(bd, "local_win"),   15, "#ab47bc"),
-                ("級別",     _bd_weighted(bd, "racer_class"), 15, "#ff7043"),
+                ("勝率",       _bd_weighted(bd, "win_rate"),      20, "#42a5f5"),
+                ("機力",       _bd_weighted(bd, "motor"),         16, "#ffa726"),
+                ("平均ST",     _bd_weighted(bd, "avg_st"),        12, "#ef5350"),
+                ("当地勝率",   _bd_weighted(bd, "local_win"),     10, "#ab47bc"),
+                ("級別",       _bd_weighted(bd, "racer_class"),   10, "#ff7043"),
+                ("コース連対", _bd_weighted(bd, "course_rentai"), 12, "#26c6da"),
+                ("能力推移",   _bd_weighted(bd, "ability_trend"),  8, "#66bb6a"),
             ]
             bars = "".join(
                 f'<div class="bi"><span class="bl">{l}</span>'
@@ -1290,6 +1294,13 @@ def generate_html(data: dict, output_path: str) -> None:
             _brands = next((b for v, r, b in race_index_data[0]
                            if v == d.get('venue','') and str(r) == str(d.get('race',''))), ["danger"])
             _badges = _brand_badge_html(_brands)
+
+            # ── Ver4: 水面タイプバッジ（実データ自動算出。参考値の場合は明示） ──
+            wt = d.get("water_type") or {}
+            water_type_html = ""
+            if wt.get("label"):
+                _wt_note = "（参考）" if wt.get("source") == "cold_start_hint" else ""
+                water_type_html = f'<span class="rc-watertype">{wt["label"]}{_wt_note}</span>'
 
             # ── 注目選手（◎○▲、代わりに狙うべき艇） ──────────
             featured = d.get("featured_boats", [])
@@ -1332,6 +1343,7 @@ def generate_html(data: dict, output_path: str) -> None:
     <span class="badge {rank_cls}">{rank_label(score)}</span>
     <strong class="rc-name">{d.get('venue','')}{d.get('race','')}R</strong>
     <span class="rc-racer">{d.get('racer','?')} {d.get('racer_class','')}</span>
+    {water_type_html}
     {_badges}
   </div>
   <div class="rc-reason">{d.get('reason','')}</div>
@@ -1581,6 +1593,7 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 .badge.c{{background:var(--c);color:#fff}}
 .rc-name{{font-size:1.05em}}
 .rc-racer{{color:var(--gray);font-size:.88em}}
+.rc-watertype{{display:inline-block;font-size:.7em;padding:1px 6px;border-radius:8px;background:#2a3a4a;color:#8ecae6;margin-left:4px}}
 .rc-reason{{color:#bbb;font-size:.85em;margin:4px 0}}
 .rc-comment{{color:var(--accent);font-size:.85em;margin-top:4px}}
 .course-st-block{{margin-top:10px;border-top:1px solid #333;padding-top:8px}}

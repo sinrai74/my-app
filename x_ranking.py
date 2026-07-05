@@ -51,6 +51,7 @@ from x_asahi_scoring import (
     load_asahi_config,
     get_model_version as _asahi_model_version,
 )
+from x_venue_stats import classify_water_type
 
 # ════════════════════════════════════════════════════════════
 # 定数・設定
@@ -253,11 +254,13 @@ def _calc_danger_breakdown(
     boat1: Optional[BoatInfo],
     all_boats: list[BoatInfo],
     weather: Optional[WeatherInfo] = None,
+    venue: Optional[str] = None,
 ) -> dict:
     """
     危険度スコアの内訳を辞書で返す（【朝刊AI】共通スコアリングエンジン使用）。
     x_asahi_scoring.calc_danger_score_v2 に委譲し、朝データのみで算出する。
     weather 引数は互換性のため残すが使用しない（previews由来のため）。
+    venue（場名）を渡すと Ver4 の場補正（venue_unfavorable）が有効になる。
     note レポートのスコア内訳表示・AIコメント生成に使用。
 
     戻り値: calc_danger_score_v2 の breakdown（各項目 {"weighted":, "kind":,
@@ -267,7 +270,7 @@ def _calc_danger_breakdown(
     if not boat1:
         return {"total": 0}
 
-    total, raw_breakdown = calc_danger_score_v2(boat1, all_boats)
+    total, raw_breakdown = calc_danger_score_v2(boat1, all_boats, venue=venue)
     result = {"total": round(total)}
     result.update(raw_breakdown)
     return result
@@ -297,16 +300,27 @@ def _score_to_rank_short(score: int) -> str:
 
 
 _DANGER_REASON_LABELS = {
-    "win_rate":    "全国勝率",
-    "local_win":   "当地勝率",
-    "avg_st":      "平均ST",
-    "motor":       "モーター",
-    "racer_class": "級別",
-    "win_rate_low":      "全国勝率(絶対的に低調)",
-    "local_win_low":     "当地勝率(絶対的に低調)",
-    "motor_bad":         "モーター(絶対的に低調)",
-    "avg_st_slow":       "平均ST(絶対的に遅い)",
-    "course1_place_low": "1コース複勝率(前期実績)",
+    "win_rate":       "全国勝率",
+    "local_win":      "当地勝率",
+    "avg_st":         "平均ST",
+    "motor":          "モーター",
+    "racer_class":    "級別",
+    "ability_trend":  "能力指数推移",
+    "course_rentai":  "進入コース2連対率",
+    "win_rate_low":       "全国勝率(絶対的に低調)",
+    "local_win_low":      "当地勝率(絶対的に低調)",
+    "motor_bad":          "モーター(絶対的に低調)",
+    "avg_st_slow":        "平均ST(絶対的に遅い)",
+    "course1_place_low":  "1コース1着率(前期実績)",
+    "f_risk":             "1コースFリスク",
+    "venue_unfavorable":  "当地水面(場×コース実績)",
+}
+
+# solo（単体評価）項目のうち、汎用文言「〜が基準未満」より具体的な
+# 説明の方が分かりやすいものは個別に文言を用意する。
+_SOLO_REASON_TEMPLATES = {
+    "f_risk":            "1コースでのフライング率が高い",
+    "venue_unfavorable": "当地の1コース実績が全国平均より低調",
 }
 
 
@@ -331,6 +345,8 @@ def _danger_reason(boat1: Optional[BoatInfo], all_boats: list[BoatInfo], breakdo
             total_other = v["worse_total"]
             rank = worse + 1  # 1号艇含めた順位（1号艇より優れている艇数+1位）
             reasons.append(f"{label}で{worse}艇に劣る（{total_other + 1}艇中{rank}位）")
+        elif key in _SOLO_REASON_TEMPLATES:
+            reasons.append(_SOLO_REASON_TEMPLATES[key])
         else:
             reasons.append(f"{label}が基準未満")
 
@@ -733,8 +749,8 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
 
         boat1 = next((b for b in boats if b.lane == 1), None)
 
-        # ── ① 危険な1号艇（【朝刊AI】共通エンジンで算出）────
-        breakdown  = _calc_danger_breakdown(boat1, boats, weather)
+        # ── ① 危険な1号艇（【朝刊AI】共通エンジンで算出、Ver4: 場補正込み）────
+        breakdown  = _calc_danger_breakdown(boat1, boats, weather, venue=venue_name)
         d_score    = breakdown["total"]
         if d_score >= 40:
             # コース別ST情報をまとめる（新聞表示・ST順位計算用）
@@ -766,9 +782,13 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
             else:
                 boat1_1c_rank = None
 
-            # ── 上位進出指数（0-100、危険艇速報・買い目生成・万舟警報で共通） ──
-            rank_index = calc_rank_index_v2(boats)
+            # ── 上位進出指数（0-100、危険艇速報・買い目生成・万舟警報で共通、Ver4: 場補正込み） ──
+            rank_index = calc_rank_index_v2(boats, venue=venue_name)
             featured_boats = select_featured_boats(boats, rank_index, d_score)
+
+            # ── Ver4: 水面タイプ（実データ自動算出。データ不足時は
+            #    著名な場のみ参考値、それ以外は「標準」） ──
+            water_type = classify_water_type(venue_name)
 
             danger_list.append({
                 "venue":        venue_name,
@@ -792,6 +812,8 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
                 # 上位進出指数（各艇: top1/top2/top3、0-100）と注目選手
                 "rank_index":     rank_index,
                 "featured_boats": featured_boats,
+                # 【Ver4】水面タイプ
+                "water_type": water_type,
             })
 
         # ── ③ 万舟警報 ───────────────────────────────────

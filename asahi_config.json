@@ -1,7 +1,7 @@
 {
   "_comment": "朝刊AI (Asahi AI) v1.0 特徴量重み設定。previews API由来のデータ（展示タイム・展示ST・風速・風向・波高）は一切使用しない。全て朝時点で確定する出走表・選手データ・fanファイル・モーター履歴のみで構成する。",
-  "model_version": "asahi-v1.0-phase1",
-  "phase": 1,
+  "model_version": "asahi-v4.0-unified-engine",
+  "phase": 4,
   "generated_at": "2026-07-03T00:00:00+09:00",
   "note": "Phase1: 実績データが不足しているため、業界知見（一般的にボートレース予想で重要とされる指標の相対的な重要度）に基づく初期値。各重みには採用理由を付記。Phase2で実績5000〜10000レース以上蓄積後、自動学習による見直しを予定。",
   "danger_score": {

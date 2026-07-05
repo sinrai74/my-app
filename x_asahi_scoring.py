@@ -910,3 +910,119 @@ def select_featured_boats(
     for i, item in enumerate(top_n):
         item["mark"] = marks[i] if i < len(marks) else ""
     return top_n
+
+
+# ════════════════════════════════════════════════════════════
+# 共通データ構造 ── Ver4評価エンジンの統一インターフェース
+# ════════════════════════════════════════════════════════════
+#
+# 【設計目的】
+# 危険艇速報・買い目生成(BuyScore)・万舟警報・新聞・AI実績ページの
+# すべてが「同じ評価基盤・同じ特徴量」を使うことを保証するため、
+# calc_danger_score_v2 / calc_rank_index_v2 / select_featured_boats /
+# x_venue_stats の全出力を1回の呼び出しでまとめて取得できる関数を
+# ここに用意する。
+#
+# 【今回のスコープ】
+# 本関数はこの統一構造を「提供する」ところまでを実装する。
+# x_buyscore.py（BuyScore本体の判定ロジック・重み・閾値）は今回
+# 一切変更しない。Ver4評価エンジン単独での効果検証を優先するため。
+#
+# 【将来の接続方法】
+# 次フェーズでBuyScoreをVer4評価エンジンへ移行する際は、
+# calc_buyscore() の呼び出し前に本関数を呼び、戻り値の
+# "contributions_first"（1着適性の寄与度）や "danger_breakdown"
+# （危険度内訳）を calc_buyscore() の入力特徴量として渡すだけで
+# 接続できる。BuyScore側のスコア合成式・閾値には触れずに済む
+# ように、本関数は「素材（特徴量・寄与度）」を渡すに留め、
+# BuyScore固有の重み付け判断は一切行わない。
+
+def build_race_evaluation_v4(
+    boats: list,
+    venue: Optional[str] = None,
+    race_grade: int = 0,
+    venue_num: int = 0,
+    is_night: bool = False,
+    config: Optional[dict] = None,
+) -> dict:
+    """
+    Ver4評価エンジンの全出力を1つの共通データ構造にまとめて返す。
+
+    危険艇速報・新聞・AI実績ページ・学習用CSV出力は、個別に
+    calc_danger_score_v2 等を呼ぶのではなく、本関数の戻り値を
+    参照することで「同じ評価基盤」を保証する。
+
+    戻り値:
+      {
+        "model_version": str,
+        "venue": str, "venue_num": int,
+        "boat1": {"lane": 1, "name": str, "racer_class": str, ...},
+
+        # 危険度（1号艇）
+        "danger_score": float,              # 0-100
+        "danger_breakdown": dict,           # calc_danger_score_v2 の内訳
+        "water_type": {"type": str, "label": str, "course1_win_rate": float,
+                        "source": str, "samples": int},
+        "venue_factor_1c": dict,            # get_venue_course_factor(venue, 1) の結果
+
+        # 上位進出指数（全艇）
+        "rank_index": {lane: {"top1":, "top2":, "top3":, "contributions": {...}}, ...},
+
+        # 注目選手
+        "featured_boats": [{"lane":, "name":, "mark":, "composite":, ...}, ...],
+
+        # 荒れ確率（万舟警報・従来のupset_score系と同一の計算式）
+        "upset_score": float,
+        "upset_detail": dict,
+
+        # Ver4追加の1号艇個別特徴量（学習用CSV・BuyScore接続用の「素材」）
+        "boat1_features": {
+          "ability_trend": float|None,       # 今期-前期 能力指数
+          "course_f_rate_1c": float|None,    # 1コースF率(%)
+          "course_l_rate_1c": float|None,    # 1コースL率(%)
+          "course_rentai2_1c": float|None,   # 1コース2連対率(%)
+          "course_sample_confidence": int,   # 1コース進入回数（信頼度の目安）
+        },
+      }
+    """
+    cfg = config or load_asahi_config()
+    boat1 = next((b for b in boats if b.lane == 1), None)
+
+    upset_score, upset_detail, _target = calculate_upset_score_v2(
+        boats, race_grade=race_grade, venue_num=venue_num, is_night=is_night, config=cfg,
+    )
+    feats = upset_detail.get("_features", {})
+
+    water_type = classify_water_type(venue) if venue else {
+        "type": "unknown", "label": "不明", "course1_win_rate": 0.0,
+        "source": "no_venue", "samples": 0,
+    }
+    venue_factor_1c = get_venue_course_factor(venue, 1) if venue else {
+        "factor": 1.0, "venue_win_rate": 0.0, "national_win_rate": 0.0,
+        "samples": 0, "water_type": "unknown",
+    }
+
+    return {
+        "model_version": cfg.get("model_version", "unknown"),
+        "venue": venue or "", "venue_num": venue_num,
+        "boat1": {
+            "lane": 1,
+            "name": boat1.name if boat1 else "",
+            "racer_class": boat1.racer_class if boat1 else "",
+        },
+        "danger_score": feats.get("danger_score_v3", 0.0),
+        "danger_breakdown": feats.get("danger_breakdown", {}),
+        "water_type": water_type,
+        "venue_factor_1c": venue_factor_1c,
+        "rank_index": feats.get("rank_index", {}),
+        "featured_boats": feats.get("featured_boats", []),
+        "upset_score": upset_score,
+        "upset_detail": upset_detail,
+        "boat1_features": {
+            "ability_trend":            feats.get("ability_trend"),
+            "course_f_rate_1c":         feats.get("course_f_rate_1c"),
+            "course_l_rate_1c":         feats.get("course_l_rate_1c"),
+            "course_rentai2_1c":        feats.get("course_rentai2_1c"),
+            "course_sample_confidence": feats.get("course_sample_confidence"),
+        },
+    }

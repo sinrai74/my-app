@@ -68,13 +68,15 @@ jobs:
           SCHEDULE="${{ github.event.schedule }}"
           if [ -n "$INPUT" ] && [ "$INPUT" != "all" ]; then
             TYPE="$INPUT"
-          elif [ "$SCHEDULE" = "15 21 * * *" ]; then
+          elif [ "$SCHEDULE" = "0 11 * * 0" ]; then
+            TYPE="weekly"
+          elif [ "$SCHEDULE" = "0 23 * * *" ]; then
             TYPE="danger"
-          elif [ "$SCHEDULE" = "0 1 * * *" ]; then
+          elif [ "$SCHEDULE" = "0 4 * * *" ]; then
             TYPE="hot"
-          elif [ "$SCHEDULE" = "0 6 * * *" ]; then
+          elif [ "$SCHEDULE" = "0 11 * * *" ]; then
             TYPE="awakening"
-          elif [ "$SCHEDULE" = "0 12 * * *" ]; then
+          elif [ "$SCHEDULE" = "15 19 * * *" ]; then
             TYPE="verification"
           elif [ -n "$SCHEDULE" ]; then
             TYPE="danger"
@@ -167,7 +169,7 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type danger $IMG $DRY
 
-      # ── 激走モーターを送信（11:00）────────────────────
+      # ── 激走モーターを送信（JST 13:00 = UTC 4:00）────────
       - name: Send - Hot Motor
         if: steps.post_type.outputs.type == 'hot' || steps.post_type.outputs.type == 'all'
         env:
@@ -193,7 +195,7 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type manshuu $IMG $DRY
 
-      # ── 覚醒モーターを送信（16:00/覚醒度90以上のみ）──
+      # ── 覚醒モーターを送信（JST 20:00 = UTC 11:00 / 覚醒度90以上のみ）──
       - name: Send - Awakening Motor
         if: steps.post_type.outputs.type == 'awakening' || steps.post_type.outputs.type == 'all'
         env:
@@ -212,7 +214,7 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type awakening $IMG $DRY
 
-      # ── 検証結果を送信（21:00）────────────────────────
+      # ── 検証結果を送信（JST 翌04:15 = UTC 19:15 / 前日全レース終了後）──
       - name: Send - Verification
         if: steps.post_type.outputs.type == 'verification' || steps.post_type.outputs.type == 'all'
         env:
@@ -225,6 +227,7 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_verification.py $DATE_ARG $DRY || echo "検証スクリプト失敗（スキップ）"
           python x_buyscore_tuner.py || echo "BuyScoreチューニング失敗（スキップ）"
+          python x_training_export.py || echo "学習用CSV出力失敗（スキップ）"
 
       # ── AI実績ページ生成・送信（朝の危険艇と同時）────
       # 前日の実績を朝にまとめて確認できるよう、danger送信と同タイミングで実行する
@@ -240,7 +243,7 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_results_page.py $DATE_ARG $DRY || echo "実績ページ失敗（スキップ）"
 
-      # ── noteレポート生成・送信（07:30 = danger直後）──
+      # ── noteレポート生成・送信（JST 08:00 = UTC 23:00 / danger直後）──
       - name: Send Note Report
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         env:
@@ -254,7 +257,7 @@ jobs:
 
       # ── 週次レポート（日曜のみ）─────────────────────────
       - name: Send Weekly Report
-        if: github.event.schedule == '0 12 * * 0' || github.event.inputs.post_type == 'weekly'
+        if: github.event.schedule == '0 11 * * 0' || github.event.inputs.post_type == 'weekly'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
