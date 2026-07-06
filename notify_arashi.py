@@ -41,6 +41,10 @@ from x_asahi_scoring import (
 # 【購入判定分離】BuyScoreによる「予想」と「購入」の分離エンジン
 from x_buyscore import apply_buyscore as _apply_buyscore
 
+# 【データ保存アーキテクチャ】hit_record.csv 等の長期保存データを
+# GitHub Releasesで永続化する共通ストレージ層
+import x_release_storage
+
 # ════════════════════════════════════════════════════════════
 # ロギング設定
 # ════════════════════════════════════════════════════════════
@@ -2695,6 +2699,7 @@ def _get_bet_multiplier() -> float:
     try:
         import csv as _csv
         csv_file = "hit_record.csv"
+        x_release_storage.download_file(csv_file, csv_file)
         if not os.path.exists(csv_file):
             return 1.0
         with open(csv_file, "r", encoding="utf-8") as f:
@@ -4883,7 +4888,16 @@ def _check_yesterday_results(today_date: str) -> None:
         yesterday = (today - timedelta(days=1)).strftime("%Y%m%d")
         sent_file = f"sent_{yesterday}.txt"
 
+        # 【デバッグログ】原因特定用。ロジックには一切影響しない。
+        _dbg_exists = os.path.exists(sent_file)
+        _dbg_size = os.path.getsize(sent_file) if _dbg_exists else -1
+        log.info(
+            "[DEBUG sent_file] path=%s exists=%s size=%s",
+            sent_file, _dbg_exists, _dbg_size,
+        )
+
         if not os.path.exists(sent_file):
+            log.info("[DEBUG sent_file] return_route=A (ファイル不存在)")
             return
 
         import json as _json
@@ -4900,9 +4914,17 @@ def _check_yesterday_results(today_date: str) -> None:
                     # 旧形式（キーのみ）
                     sent_entries.append({"key": _line})
 
+        # 【デバッグログ】原因特定用。ロジックには一切影響しない。
+        log.info(
+            "[DEBUG sent_file] loaded_entries=%d",
+            len(sent_entries),
+        )
+
         if not sent_entries:
+            log.info("[DEBUG sent_file] return_route=B (ファイルは存在するがエントリ0件)")
             return
 
+        log.info("[DEBUG sent_file] return_route=C (前日結果照合へ進む)")
         log.info("前日結果照合: %d レース", len(sent_entries))
         records = []
         for entry in sent_entries:
@@ -5031,6 +5053,10 @@ def _check_yesterday_results(today_date: str) -> None:
 
         import csv
         csv_file = "hit_record.csv"
+        # 追記の前に、Releaseに保存されている最新版をローカルへ反映しておく
+        # （GitHub Actionsのジョブ実行環境は毎回使い捨てのため、これがないと
+        #  過去の蓄積データが失われ、既存キー判定・追記が正しく行えない）。
+        x_release_storage.download_file(csv_file, csv_file)
         fieldnames = [
             "date","venue","venue_num","race","night",
             "race_type","why_bet","confidence",
@@ -5091,17 +5117,14 @@ def _check_yesterday_results(today_date: str) -> None:
         # ── キャリブレーション簡易分析 ───────────────────────────
         _run_calibration_check(csv_file)
 
-        # GitHub Actions上のみgit操作（ローカル実行時はスキップ）
-        gh_token = os.getenv("GITHUB_TOKEN", "")
-        gh_repo  = os.getenv("GITHUB_REPO", "sinrai74/my-app")
-        if gh_token:
-            os.system('git config user.email "action@render.com"')
-            os.system('git config user.name "Render Bot"')
-            os.system(f"git add {csv_file}")
-            os.system(f'git commit -m "update hit record {yesterday} [skip ci]"')
-            os.system(f"git push https://{gh_token}@github.com/{gh_repo}.git main")
-        else:
-            log.debug("ローカル実行: git push スキップ（hit_recordはローカルに保存済み）")
+        # 【データ保存アーキテクチャ移行】hit_record.csv の永続化は
+        # GitHub Releases（x_release_storage.py）に一本化した。
+        # 以前はここで os.system() による直接の git add/commit/push を
+        # 行っていたが、「Gitはソースコード・設定ファイルのみを管理し、
+        # 運用データはGitHub Releasesで永続化する」という方針に統一した
+        # ため廃止した。
+        if not x_release_storage.upload_file(csv_file, csv_file):
+            log.warning("[hit_record] %s のRelease反映に失敗しました（ローカルには保存済み）", csv_file)
 
         log.info("結果照合完了: %s に記録", csv_file)
 
@@ -5166,6 +5189,7 @@ def _check_losing_streak() -> None:
     try:
         import csv
         csv_file = "hit_record.csv"
+        x_release_storage.download_file(csv_file, csv_file)
         if not os.path.exists(csv_file):
             return
 
