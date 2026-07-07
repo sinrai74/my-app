@@ -3904,6 +3904,28 @@ def _run_main(race_date: str | None = None) -> None:
 
     log.info("▶ 完了 通知件数=%d / 確認レース=%d", notified, len(race_list))
 
+    # ── 「評価済みだが送信対象0件」マーカー ──────────────────────
+    # EVフィルタで全レースの買い目が除外された日は、sent_{当日}.txt が
+    # 一度も作られない。この場合、翌日の _check_yesterday_results() は
+    # 「ファイル不存在（未評価）」と「評価した結果0件だった」を区別できず、
+    # 前者と同じ扱い（早期return）になってしまう。
+    # ここで両者を区別できるよう、レースは1件以上確認した
+    # (len(race_list) > 0) にもかかわらず sent_file が一度も
+    # 作られなかった場合にのみ、専用のマーカー行を1行だけ書き込む。
+    # マーカーの key は既存の records 構築ロジック（3分割できない
+    # key は continue でスキップする安全弁）に自然に無視されるため、
+    # hit_record.csv への記録や通常の実績照合ロジックには影響しない。
+    _today_sent_file = f"sent_{race_date}.txt"
+    if len(race_list) > 0 and not os.path.exists(_today_sent_file):
+        try:
+            import json as _json_marker
+            _marker = {"key": "__no_bets_evaluated__", "checked_races": len(race_list)}
+            with open(_today_sent_file, "w", encoding="utf-8") as _mf:
+                _mf.write(_json_marker.dumps(_marker, ensure_ascii=False))
+            log.info("[sent_file] 送信対象0件のためマーカーを記録: %s", _today_sent_file)
+        except Exception as _me:
+            log.warning("[sent_file] マーカー記録失敗: %s", _me)
+
     # ── 前日の結果照合 ────────────────────────────────────────
     _check_yesterday_results(race_date)
 
