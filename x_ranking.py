@@ -86,8 +86,18 @@ def _yesterday_jst() -> str:
 
 
 def _boat_motor_no(boat_raw: dict) -> Optional[int]:
-    """出走表の boat 辞書からモーター番号を取得する"""
-    val = boat_raw.get("motor_number") or boat_raw.get("racer_motor_number")
+    """
+    出走表の boat 辞書からモーター番号を取得する。
+
+    【原因調査で確定した事実】BoatraceOpenAPI（programs）の実際のレスポンスでは
+    モーター番号は "racer_assigned_motor_number" というキーで提供される
+    （モーター2連率 "racer_assigned_motor_top_2_percent" と同じ
+    "racer_assigned_motor_" 接頭辞のパターン）。
+    旧実装は "motor_number"/"racer_motor_number" という誤ったキー名を
+    参照しており、実データには存在しないため常に motor_no=None になり、
+    motor_history.csv への追記・激走/覚醒モーター判定が全件スキップされていた。
+    """
+    val = boat_raw.get("racer_assigned_motor_number")
     try:
         return int(val) if val is not None else None
     except (ValueError, TypeError):
