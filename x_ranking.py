@@ -53,6 +53,8 @@ from x_asahi_scoring import (
 )
 from x_venue_stats import classify_water_type
 
+import x_release_storage
+
 # ════════════════════════════════════════════════════════════
 # 定数・設定
 # ════════════════════════════════════════════════════════════
@@ -113,6 +115,7 @@ def _is_valid_ex(val) -> bool:
 
 def load_motor_history() -> dict[tuple[int, int], list[dict]]:
     """motor_history.csv を読み込んで {(venue_num, motor_no): [rows]} を返す"""
+    x_release_storage.download_file(MOTOR_HISTORY, MOTOR_HISTORY)
     history: dict[tuple[int, int], list[dict]] = {}
     if not os.path.exists(MOTOR_HISTORY):
         log.info("[履歴] %s が見つかりません（初回起動）", MOTOR_HISTORY)
@@ -133,6 +136,11 @@ def update_motor_history(race_date: str) -> int:
     指定日の結果データからモーター履歴を motor_history.csv に追記する。
     追記件数を返す。
     """
+    # 追記の前に、Releaseに保存されている最新版をローカルへ反映しておく
+    # （GitHub Actionsのジョブ実行環境は毎回使い捨てのため、これがないと
+    #  過去の蓄積データが失われ、追記のたびに空ファイルへの1回分だけになる）。
+    x_release_storage.download_file(MOTOR_HISTORY, MOTOR_HISTORY)
+
     # 結果 API 取得
     url = f"{RESULTS_URL}/{race_date[:4]}/{race_date}.json"
     data = _safe_get(url)
@@ -243,6 +251,10 @@ def update_motor_history(race_date: str) -> int:
         writer.writerows(rows)
 
     log.info("[履歴] 追記: %d件 (%s)", len(rows), race_date)
+
+    if not x_release_storage.upload_file(MOTOR_HISTORY, MOTOR_HISTORY):
+        log.warning("[履歴] %s のRelease反映に失敗しました（ローカルには保存済み）", MOTOR_HISTORY)
+
     return len(rows)
 
 
@@ -566,19 +578,26 @@ def _upset_reasons(boats: list, boat1) -> list[str]:
 
     reasons: list[str] = []
 
-    # 【朝刊AI】コース別ST実績: 1号艇以外で最も速い艇（展示タイムの代替）
-    course_st_valid = [
-        b for b in boats
-        if b.course_nyuko and b.course_nyuko[0] > 0 and b.course_st[0] > 0
-    ]
+    # 【朝刊AI】コース別ST実績: 各艇の実際の進入コース(自艇の艇番)における
+    # ST実績で比較する。全艇を1コースのST実績(course_st[0])で比べるのは、
+    # 2〜6号艇にとって無関係なコースの実績を見ることになり誤り。
+    # 1号艇はcourse_st[0]（1コース実績）、2号艇はcourse_st[1]（2コース実績）
+    # …というように、各艇の lane に対応するインデックスを使う。
+    def _own_course_st(b) -> Optional[float]:
+        idx = b.lane - 1
+        if b.course_nyuko and 0 <= idx < 6 and b.course_nyuko[idx] > 0 and b.course_st[idx] > 0:
+            return b.course_st[idx]
+        return None
+
+    course_st_valid = [b for b in boats if _own_course_st(b) is not None]
     if course_st_valid:
-        all_sorted = sorted(course_st_valid, key=lambda b: b.course_st[0])
+        all_sorted = sorted(course_st_valid, key=lambda b: _own_course_st(b))
         fastest = all_sorted[0]
         if fastest.lane != 1:
-            reasons.append(f"🔥 {fastest.lane}号艇が1コースST実績{fastest.course_st[0]:.2f}で最速")
+            reasons.append(f"🔥 {fastest.lane}号艇が進入コースST実績{_own_course_st(fastest):.2f}で最速")
         elif len(all_sorted) > 1 and all_sorted[1].lane != 1:
             second = all_sorted[1]
-            reasons.append(f"🔥 {second.lane}号艇が1コースST実績{second.course_st[0]:.2f}で2番手")
+            reasons.append(f"🔥 {second.lane}号艇が進入コースST実績{_own_course_st(second):.2f}で2番手")
 
     # 1号艇より勝率上の選手
     wr1 = boat1.win_rate or 0 if boat1 else 0
@@ -622,12 +641,16 @@ def _pick_key_racer(boats: list, boat1) -> tuple:
     if not others:
         return ("不明", "データなし")
 
-    # 【朝刊AI】コース別ST実績を展示の代替として使用
-    course_st_valid = [
-        b for b in others
-        if b.course_nyuko and b.course_nyuko[0] > 0 and b.course_st[0] > 0
-    ]
-    ex_best  = min(course_st_valid, key=lambda b: b.course_st[0]) if course_st_valid else None
+    # 【朝刊AI】コース別ST実績: 各艇の実際の進入コース(自艇の艇番)における
+    # ST実績を展示の代替として使用する（全艇を1コース実績で比べない）。
+    def _own_course_st_kr(b) -> Optional[float]:
+        idx = b.lane - 1
+        if b.course_nyuko and 0 <= idx < 6 and b.course_nyuko[idx] > 0 and b.course_st[idx] > 0:
+            return b.course_st[idx]
+        return None
+
+    course_st_valid = [b for b in others if _own_course_st_kr(b) is not None]
+    ex_best  = min(course_st_valid, key=lambda b: _own_course_st_kr(b)) if course_st_valid else None
     wr_best  = max(others, key=lambda b: b.win_rate or 0)
     motor_best = max(others, key=lambda b: b.motor or 0)
 
