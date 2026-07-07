@@ -33,6 +33,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
+import x_release_storage
+
 from x_brand_config import (
     BRANDS, BRAND_ICONS, BRAND_NAMES, BRAND_SHORT, BRAND_COLOR,
     brand_icon, brand_name, brand_short, brand_color,
@@ -1199,6 +1201,16 @@ def _render_top5_section(data: dict) -> str:
     if not race_scores:
         return ""
 
+    # 【危険艇速報/万舟警報 未掲載レースの参考情報】
+    # TOP5は危険艇速報・万舟警報・転がし・激走/覚醒モーターの統合指数で
+    # 選ばれるため、転がしや激走/覚醒モーターの評価だけでTOP5入りした
+    # レースは、危険艇速報・万舟警報のどちらのセクションにも掲載されない
+    # ことがある。この場合、危険度・万舟指数は閾値未満でも
+    # x_ranking.py 側で計算済みの数値を all_scores から参考値として拾い、
+    # 「参考: 危険度XX点」のように表示する（新聞の他セクションへの
+    # 掲載条件・閾値そのものは一切変更しない）。
+    all_scores = data.get("all_scores", {})
+
     ranked = sorted(race_scores.items(), key=lambda kv: -kv[1]["match_index"])[:5]
 
     rows = ""
@@ -1207,13 +1219,26 @@ def _render_top5_section(data: dict) -> str:
         brands = next((b for v, r, b in sorted_index if (v, r) == key), [])
         anchor = _anchor_for(venue, race, brands)
         icons  = " ".join(BRAND_ICONS.get(b, "") for b in brands)
+
+        # 危険艇速報・万舟警報どちらにも掲載されていない場合の参考情報
+        ref_html = ""
+        if "danger" not in brands and "manshuu" not in brands:
+            ref = all_scores.get(f"{venue}|{race}", {})
+            ref_parts = []
+            if ref.get("danger_score") is not None:
+                ref_parts.append(f"危険度{ref['danger_score']:.0f}点")
+            if ref.get("upset_score") is not None:
+                ref_parts.append(f"荒れ指数{ref['upset_score']:.0f}点")
+            if ref_parts:
+                ref_html = f'<div class="top5-ref">参考: {" / ".join(ref_parts)}（速報・警報の掲載基準未満）</div>'
+
         rows += f"""
 <a href="#{anchor}" class="top5-row">
   <span class="top5-rank">{i}</span>
   <span class="top5-race">{venue}{race}R</span>
   <span class="top5-icons">{icons}</span>
   <span class="top5-score">一致指数{s['match_index']}</span>
-</a>"""
+</a>{ref_html}"""
 
     return f"""
 <section id="top5">
@@ -1553,6 +1578,7 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
 .top5-race{{font-weight:bold;flex:1}}
 .top5-icons{{font-size:.95em;letter-spacing:1px}}
 .top5-score{{font-size:.82em;color:var(--gray)}}
+.top5-ref{{font-size:.78em;color:var(--gray);padding:2px 10px 6px 34px;font-style:italic}}
 /* ブランドバッジ */
 .brand-badges{{margin-left:auto;display:inline-flex;gap:2px}}
 .brand-badge{{font-size:.95em}}
@@ -2657,6 +2683,7 @@ def _save_daily_stats(data: dict, date_str: str) -> None:
     }
 
     daily_stats_file = "daily_stats.json"
+    x_release_storage.download_file(daily_stats_file, daily_stats_file)
     existing = {}
     if os.path.exists(daily_stats_file):
         try:
@@ -2676,6 +2703,8 @@ def _save_daily_stats(data: dict, date_str: str) -> None:
             json.dump(existing, f, ensure_ascii=False, indent=2)
         log.info("[daily_stats] 保存: %s 危険艇%d件 万舟%d件 AIランキング%d件",
                  date_str, len(all_danger), len(all_manshuu), len(ranking_top10))
+        if not x_release_storage.upload_file(daily_stats_file, daily_stats_file):
+            log.warning("[daily_stats] Release反映に失敗しました（ローカルには保存済み）")
     except Exception as e:
         log.warning("[daily_stats] 保存失敗: %s", e)
 

@@ -746,6 +746,12 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
 
     danger_list: list[dict] = []
     upset_list:  list[dict] = []
+    # 【本日の注目レースTOP5】用: 危険度・万舟指数は40点未満でも
+    # 既に全レースで計算済みのため、閾値に関わらず数値だけを軽量に
+    # 保存しておく（詳細計算・危険艇速報/万舟警報セクションへの掲載は
+    # 従来通り40点以上のみ。ここでは新聞のTOP5に「参考値」として
+    # 表示するための最小限のデータのみを保持する）。
+    all_scores: dict[tuple, dict] = {}
     motor_seen:  dict[tuple, dict] = {}   # (venue_num, motor_no) → info
 
     for prog in programs:
@@ -775,6 +781,10 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
         # ── ① 危険な1号艇（【朝刊AI】共通エンジンで算出、Ver4: 場補正込み）────
         breakdown  = _calc_danger_breakdown(boat1, boats, weather, venue=venue_name)
         d_score    = breakdown["total"]
+
+        # 【本日の注目レースTOP5】閾値未満でも危険度の数値だけは軽量に保持する
+        all_scores.setdefault((venue_name, rno), {})["danger_score"] = d_score
+
         if d_score >= 40:
             # コース別ST情報をまとめる（新聞表示・ST順位計算用）
             boats_course_st = []
@@ -841,6 +851,10 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
 
         # ── ③ 万舟警報 ───────────────────────────────────
         u_score = calc_upset_index(boats, weather)
+
+        # 【本日の注目レースTOP5】閾値未満でも万舟指数の数値だけは軽量に保持する
+        all_scores.setdefault((venue_name, rno), {})["upset_score"] = u_score
+
         if u_score >= 40:
             key_racer, key_reason = _pick_key_racer(boats, boat1)
             upset_list.append({
@@ -927,6 +941,9 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
         # note用: スコア40以上の全レース（ランク問わず）
         "all_danger":      sorted(danger_list, key=lambda x: -x["score"]),
         "all_manshuu":     sorted(upset_list,  key=lambda x: -x["score"]),
+        # 【本日の注目レースTOP5】危険度・万舟指数を閾値に関わらず全レース分。
+        # キーは "venue|race" の文字列（JSON化のためタプルは使わない）。
+        "all_scores": {f"{v}|{r}": s for (v, r), s in all_scores.items()},
     }
 
     # ranking_cache.json に保存
