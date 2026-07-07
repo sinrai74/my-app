@@ -194,10 +194,25 @@ def update_motor_history(race_date: str) -> int:
 
     # 結果データを走査してレコード構築
     rows: list[dict] = []
+
+    # 【デバッグログ】原因特定用。ロジックには一切影響しない。
+    _dbg_results = data.get("results", [])
+    _dbg_skip1_count = 0   # ①race_stadium_number/race_number取得失敗
+    _dbg_skip1_samples: list[str] = []
+    _dbg_skip2_count = 0   # ②racer_place_number等取得失敗
+    _dbg_skip2_samples: list[str] = []
+    _dbg_skip3_count = 0   # ③motor_no is None
+    _dbg_skip3_samples: list[str] = []
+    _dbg_append_count = 0
+    log.info("[DEBUG motor_history] results件数=%d (date=%s)", len(_dbg_results), race_date)
+
     for r in data.get("results", []):
         vn  = r.get("race_stadium_number")
         rno = r.get("race_number")
         if vn is None or rno is None:
+            _dbg_skip1_count += 1
+            if len(_dbg_skip1_samples) < 5:
+                _dbg_skip1_samples.append(f"race_stadium_number={vn} race_number={rno}")
             continue
         vn, rno = int(vn), int(rno)
         venue = VENUE_NAMES.get(vn, f"場{vn}")
@@ -213,6 +228,11 @@ def update_motor_history(race_date: str) -> int:
             st      = b.get("racer_start_timing")
 
             if boat_no is None or place is None:
+                _dbg_skip2_count += 1
+                if len(_dbg_skip2_samples) < 5:
+                    _dbg_skip2_samples.append(
+                        f"venue={vn} race={rno} racer_boat_number={boat_no} racer_place_number={place}"
+                    )
                 continue
             boat_no = int(boat_no)
 
@@ -223,8 +243,14 @@ def update_motor_history(race_date: str) -> int:
             ex_time    = ex_map.get(boat_no)
 
             if motor_no is None:
+                _dbg_skip3_count += 1
+                if len(_dbg_skip3_samples) < 5:
+                    _dbg_skip3_samples.append(
+                        f"venue={vn} race={rno} boat_no={boat_no} prog_boats_keys={list(prog_boats.keys())}"
+                    )
                 continue  # モーター番号不明はスキップ
 
+            _dbg_append_count += 1
             rows.append({
                 "date":         race_date,
                 "venue_num":    vn,
@@ -238,6 +264,19 @@ def update_motor_history(race_date: str) -> int:
                 "start_timing": float(st) if st is not None else "",
                 "race_number":  rno,
             })
+
+    # 【デバッグログ】原因特定用。ロジックには一切影響しない。
+    log.info(
+        "[DEBUG motor_history] skip1(vn/rno不明)=%d件 skip2(boat_no/place不明)=%d件 "
+        "skip3(motor_no不明)=%d件 append=%d件 最終rows=%d件",
+        _dbg_skip1_count, _dbg_skip2_count, _dbg_skip3_count, _dbg_append_count, len(rows),
+    )
+    if _dbg_skip1_samples:
+        log.info("[DEBUG motor_history] skip1サンプル: %s", _dbg_skip1_samples)
+    if _dbg_skip2_samples:
+        log.info("[DEBUG motor_history] skip2サンプル: %s", _dbg_skip2_samples)
+    if _dbg_skip3_samples:
+        log.info("[DEBUG motor_history] skip3サンプル: %s", _dbg_skip3_samples)
 
     if not rows:
         log.info("[履歴] 追記レコードなし: %s", race_date)
