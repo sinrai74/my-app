@@ -68,7 +68,15 @@ def _headers() -> Optional[dict]:
 
 def is_available() -> bool:
     """本モジュールが動作可能な環境か（トークン・リポジトリ情報が揃っているか）。"""
-    return bool(_get_token() and _get_repo())
+    _token = _get_token()
+    _repo = _get_repo()
+    _result = bool(_token and _repo)
+    # 【デバッグログ】原因特定用。ロジックには一切影響しない。値そのものは伏せる。
+    log.info(
+        "[DEBUG release_storage] is_available: GITHUB_TOKEN存在=%s GITHUB_REPOSITORY存在=%s → 結果=%s",
+        bool(_token), bool(_repo), _result,
+    )
+    return _result
 
 
 # ════════════════════════════════════════════════════════════
@@ -82,7 +90,17 @@ def _get_or_create_release() -> Optional[dict]:
     """
     headers = _headers()
     repo = _get_repo()
+    # 【デバッグログ】原因特定用。ロジックには一切影響しない。
+    log.info(
+        "[DEBUG release_storage] _get_or_create_release: 処理開始 headers取得=%s repo=%s",
+        bool(headers), repo,
+    )
     if not headers or not repo:
+        log.info(
+            "[DEBUG release_storage] _get_or_create_release: headers/repo不足のため終了 "
+            "(headers取得=%s repo取得=%s)",
+            bool(headers), bool(repo),
+        )
         return None
 
     url = f"{API_BASE}/repos/{repo}/releases/tags/{DATA_STORE_TAG}"
@@ -91,6 +109,9 @@ def _get_or_create_release() -> Optional[dict]:
     except requests.RequestException as e:
         log.warning("[release_storage] Release取得失敗（通信エラー）: %s", e)
         return None
+
+    # 【デバッグログ】原因特定用。ロジックには一切影響しない。
+    log.info("[DEBUG release_storage] GET %s → status=%s", url, resp.status_code)
 
     if resp.status_code == 200:
         return resp.json()
