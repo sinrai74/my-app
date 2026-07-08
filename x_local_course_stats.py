@@ -33,6 +33,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from x_kfile_race_parser import parse_k_race_file
+import k_race_history_schema as _schema
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("x_local_course_stats")
@@ -41,12 +42,9 @@ K_RACE_HISTORY_CSV   = "k_race_history.csv"
 LOCAL_COURSE_STATS_CSV = "local_course_stats.csv"
 PROGRESS_FILE        = "k_race_history_progress.json"
 
-HISTORY_FIELDNAMES = [
-    "date", "venue_code", "venue_name", "race_no",
-    "racer_no", "racer_name", "boat_no", "course", "order",
-    "motor_no", "boat_equip_no", "exhibition_time", "start_timing",
-    "race_time", "source_file",
-]
+# 【単一の真実の源】列定義は k_race_history_schema.py が正。
+# ここではハードコードせず、常にスキーマモジュールの現在バージョンを参照する。
+HISTORY_FIELDNAMES = _schema.current_columns()
 
 STATS_FIELDNAMES = [
     "racer_no", "venue_code", "venue_name", "course",
@@ -100,9 +98,26 @@ def append_to_history(records: list[dict]) -> int:
     """
     records を k_race_history.csv に重複除去して追記する。
     実際に追記された件数を返す。
+
+    書き込み前に必ずスキーマチェックを行う（将来列が増えた場合、
+    既存の古いスキーマのファイルへ新しい列構成で書き込んでしまう
+    事故を防ぐため）。判定不能な場合はサイレントに続行せず、
+    追記を中止して 0 を返す。
     """
     if not records:
         return 0
+
+    schema_status = _schema.ensure_schema(K_RACE_HISTORY_CSV, auto=True)
+    if schema_status.get("fatal"):
+        log.error(
+            "[履歴] k_race_history.csv のスキーマ状態が安全に判定できません: %s "
+            "→ 追記を中止します。`python k_race_history_schema.py` 相当の手動確認が必要です。",
+            schema_status.get("reason", "詳細不明"),
+        )
+        return 0
+    if schema_status.get("migration"):
+        log.info("[履歴] k_race_history.csv をマイグレーションしました: %s",
+                  schema_status["migration"].get("reason"))
 
     existing_keys = _load_existing_keys()
     new_records = [r for r in records if _dedup_key(r) not in existing_keys]
@@ -132,11 +147,23 @@ def rebuild_local_course_stats(today: int | None = None) -> int:
     local_course_stats.csv を洗い替え生成する。
     生成した行数を返す。
 
+    【履歴DBが唯一の正】この関数は k_race_history.csv から毎回
+    まるごと再計算する。local_course_stats.csv 自体は手で編集
+    しないこと（次回実行時に無条件で上書きされる）。
+
     【差分更新ではなく毎回全体再集計する理由】design.md 4節参照。
     データ量が将来大きく育った場合はこの関数の設計を見直すこと。
     """
     if not os.path.exists(K_RACE_HISTORY_CSV):
         log.warning("[集計] %s が存在しません", K_RACE_HISTORY_CSV)
+        return 0
+
+    schema_status = _schema.ensure_schema(K_RACE_HISTORY_CSV, auto=True)
+    if schema_status.get("fatal"):
+        log.error(
+            "[集計] k_race_history.csv のスキーマ状態が安全に判定できません: %s → 集計を中止します。",
+            schema_status.get("reason", "詳細不明"),
+        )
         return 0
 
     # (racer_no, venue_code, course) -> {1: count, 2: count, ..., 6: count}
