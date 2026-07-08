@@ -31,7 +31,7 @@ import json
 import logging
 import os
 import time
-from collections import defaultdict
+from collections import defaultdict, Counter
 from pathlib import Path
 
 from x_kfile_race_parser import parse_k_race_file_with_stats
@@ -240,6 +240,50 @@ def rebuild_local_course_stats(today: int | None = None) -> int:
     return len(rows_out)
 
 
+def print_local_course_stats_summary(csv_file: str = LOCAL_COURSE_STATS_CSV) -> dict:
+    """
+    Phase2向け: local_course_stats.csv 生成後の統計サマリーを表示する。
+    選手数・開催場数・コース別件数・平均/最大/最小出走数を出力する。
+    """
+    if not os.path.exists(csv_file):
+        log.warning("[Phase2] %s が存在しません", csv_file)
+        return {}
+
+    with open(csv_file, "r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    racers = set(r["racer_no"] for r in rows)
+    venues = set(r["venue_code"] for r in rows)
+    course_counts = Counter(r["course"] for r in rows)
+    starts_list = [int(r["starts"]) for r in rows if r.get("starts", "").isdigit()]
+
+    summary = {
+        "total_rows": len(rows),
+        "racer_count": len(racers),
+        "venue_count": len(venues),
+        "course_counts": dict(sorted(course_counts.items())),
+        "avg_starts": round(sum(starts_list) / len(starts_list), 2) if starts_list else 0,
+        "max_starts": max(starts_list) if starts_list else 0,
+        "min_starts": min(starts_list) if starts_list else 0,
+    }
+
+    print("=" * 60)
+    print(" local_course_stats.csv 統計サマリー（Phase2）")
+    print("=" * 60)
+    print(f" 総行数（選手×場×コース） : {summary['total_rows']}")
+    print(f" 選手数（ユニーク）        : {summary['racer_count']}")
+    print(f" 開催場数（ユニーク）      : {summary['venue_count']}")
+    print(" コース別件数              :")
+    for course, count in summary["course_counts"].items():
+        print(f"   {course}コース: {count}件")
+    print(f" 平均出走数                : {summary['avg_starts']}")
+    print(f" 最大出走数                : {summary['max_starts']}")
+    print(f" 最小出走数                : {summary['min_starts']}")
+    print("=" * 60)
+
+    return summary
+
+
 # ════════════════════════════════════════════════════════════
 # 品質レポート
 # ════════════════════════════════════════════════════════════
@@ -365,6 +409,7 @@ def init_build(k_dir: str, today: int | None = None) -> dict:
 
     # 全ファイル処理が終わってから最後に1回だけ集計する
     rebuild_local_course_stats(today=today)
+    print_local_course_stats_summary()
 
     integrity_result = _integrity.validate_history(K_RACE_HISTORY_CSV)
     print_quality_report(report, integrity_result)
@@ -415,6 +460,7 @@ def main() -> None:
         daily_update(args.k_file, today=args.today)
     elif args.rebuild_only:
         rebuild_local_course_stats(today=args.today)
+        print_local_course_stats_summary()
     else:
         parser.print_help()
 
