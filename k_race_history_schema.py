@@ -39,7 +39,7 @@ VERSION_FILE = ".k_race_history_schema_version"
 # ════════════════════════════════════════════════════════════
 # 現在の期待スキーマバージョン
 # ════════════════════════════════════════════════════════════
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 # ════════════════════════════════════════════════════════════
 # バージョン別 完全列定義
@@ -52,18 +52,26 @@ _COLUMNS_V1 = [
     "race_time", "source_file",
 ]
 
+# Version 2: parser_version 列を追加（品質保証・トレーサビリティ強化）
+# どのバージョンのパーサーで生成されたレコードかを追跡できるようにする。
+_COLUMNS_V2 = _COLUMNS_V1 + ["parser_version"]
+
 SCHEMA_COLUMNS: dict[int, list[str]] = {
     1: _COLUMNS_V1,
+    2: _COLUMNS_V2,
 }
 
 # ════════════════════════════════════════════════════════════
 # 新規追加列の初期値（旧データを変換するときの補完値）
 # ════════════════════════════════════════════════════════════
 # 「あるバージョンで初めて登場した列」の初期値をここで定義する。
-# 例（将来 Version2 で "weather" 列を追加する場合）:
+# 例（将来 Version3 で "weather" 列を追加する場合）:
 #   NEW_COLUMN_DEFAULTS["weather"] = ""
 NEW_COLUMN_DEFAULTS: dict[str, str] = {
-    # v1 → v2 以降、ここに追記していく
+    # v1→v2 時点で存在した全レコードは、当時唯一存在したパーサー
+    # (x_kfile_race_parser.py 1.0.0) で生成されたものであることが
+    # 確実なため、推測ではなく事実として "1.0.0" を補完する。
+    "parser_version": "1.0.0",
 }
 
 
@@ -87,13 +95,29 @@ def detect_version_from_header(header: list[str]) -> "int | None":
     return None
 
 
+def _migrate_v1_to_v2(rows: list[dict]) -> list[dict]:
+    """
+    Version1(15列) → Version2(16列)。
+    parser_version 列を追加する。旧データ（この列がまだ存在しなかった
+    時点のレコード）は、当時唯一存在したパーサーのバージョンで
+    生成されたことが確実なため "1.0.0" を補完する。
+    """
+    default = NEW_COLUMN_DEFAULTS["parser_version"]
+    for row in rows:
+        if not row.get("parser_version"):
+            row["parser_version"] = default
+    return rows
+
+
 # ════════════════════════════════════════════════════════════
 # マイグレーション登録表（チェーン）
 # ════════════════════════════════════════════════════════════
 # (from_version, to_version): 変換関数
-# 将来 Version2 を追加する際は、ここに以下のように1行足す:
-#   MIGRATIONS[(1, 2)] = migrate_v1_to_v2
-MIGRATIONS: dict[tuple[int, int], "callable"] = {}
+# 将来 Version3 を追加する際は、ここに以下のように1行足す:
+#   MIGRATIONS[(2, 3)] = migrate_v2_to_v3
+MIGRATIONS: dict[tuple[int, int], "callable"] = {
+    (1, 2): _migrate_v1_to_v2,
+}
 
 
 # ════════════════════════════════════════════════════════════

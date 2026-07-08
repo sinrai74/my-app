@@ -4,12 +4,13 @@ x_local_course_stats.py  ── 当地コース別成績 独立モジュール
 
 【独立モジュール】既存Bot（notify_arashi.py・x_ranking.py・x_asahi_scoring.py等）
 には一切組み込まれていない。既存コードへの統合は行わず、
-本モジュール単体で完結する（design.md 参照）。
+本モジュール単体で完結する（local_course_stats_design.md 参照）。
 
 【生成するファイル】
-  k_race_history.csv       Kファイルから抽出した「選手×レース」の生履歴（永続蓄積）
+  k_race_history.csv       Kファイルから抽出した「選手×レース」の生履歴（永続蓄積・唯一の正）
   local_course_stats.csv   選手×場×コース別の集計結果（k_race_historyから毎回再生成）
   k_race_history_progress.json  初回一括構築の進捗（中断・再開用）
+  .k_race_history_schema_version  実ファイルのスキーマバージョン記録
 
 【使い方】
   # 初回一括構築（2023年〜現在まで、指定フォルダ内の全Kファイルを処理）
@@ -29,11 +30,13 @@ import csv
 import json
 import logging
 import os
+import time
 from collections import defaultdict
 from pathlib import Path
 
-from x_kfile_race_parser import parse_k_race_file
+from x_kfile_race_parser import parse_k_race_file_with_stats
 import k_race_history_schema as _schema
+import k_race_history_integrity as _integrity
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("x_local_course_stats")
@@ -94,18 +97,19 @@ def _load_existing_keys() -> set:
     return keys
 
 
-def append_to_history(records: list[dict]) -> int:
+def append_to_history(records: list[dict]) -> dict:
     """
     records を k_race_history.csv に重複除去して追記する。
-    実際に追記された件数を返す。
 
     書き込み前に必ずスキーマチェックを行う（将来列が増えた場合、
     既存の古いスキーマのファイルへ新しい列構成で書き込んでしまう
     事故を防ぐため）。判定不能な場合はサイレントに続行せず、
-    追記を中止して 0 を返す。
+    追記を中止する。
+
+    戻り値: {"appended": int, "duplicates": int, "fatal": bool}
     """
     if not records:
-        return 0
+        return {"appended": 0, "duplicates": 0, "fatal": False}
 
     schema_status = _schema.ensure_schema(K_RACE_HISTORY_CSV, auto=True)
     if schema_status.get("fatal"):
@@ -114,17 +118,18 @@ def append_to_history(records: list[dict]) -> int:
             "→ 追記を中止します。`python k_race_history_schema.py` 相当の手動確認が必要です。",
             schema_status.get("reason", "詳細不明"),
         )
-        return 0
+        return {"appended": 0, "duplicates": 0, "fatal": True}
     if schema_status.get("migration"):
         log.info("[履歴] k_race_history.csv をマイグレーションしました: %s",
                   schema_status["migration"].get("reason"))
 
     existing_keys = _load_existing_keys()
     new_records = [r for r in records if _dedup_key(r) not in existing_keys]
+    duplicates = len(records) - len(new_records)
 
     if not new_records:
         log.info("[履歴] 追記対象なし（すべて既存レコードと重複）")
-        return 0
+        return {"appended": 0, "duplicates": duplicates, "fatal": False}
 
     write_header = not os.path.exists(K_RACE_HISTORY_CSV)
     with open(K_RACE_HISTORY_CSV, "a", encoding="utf-8", newline="") as f:
@@ -133,8 +138,8 @@ def append_to_history(records: list[dict]) -> int:
             writer.writeheader()
         writer.writerows(new_records)
 
-    log.info("[履歴] %d件追記（%d件は重複のためスキップ）", len(new_records), len(records) - len(new_records))
-    return len(new_records)
+    log.info("[履歴] %d件追記（%d件は重複のためスキップ）", len(new_records), duplicates)
+    return {"appended": len(new_records), "duplicates": duplicates, "fatal": False}
 
 
 # ════════════════════════════════════════════════════════════
@@ -236,21 +241,106 @@ def rebuild_local_course_stats(today: int | None = None) -> int:
 
 
 # ════════════════════════════════════════════════════════════
+# 品質レポート
+# ════════════════════════════════════════════════════════════
+
+def _new_report() -> dict:
+    """処理開始時に呼ぶ。品質レポート集計用の初期状態を返す。"""
+    return {
+        "files_total": 0,
+        "files_processed": 0,
+        "files_error": 0,
+        "races_seen": set(),      # (date, venue_code, race_no)
+        "racers_seen": set(),     # racer_no
+        "records_generated": 0,   # append_to_history で実際に追記された件数
+        "duplicates_skipped": 0,
+        "skipped_invalid_course": 0,  # 欠場等でコース情報が読み取れず除外した件数
+        "parse_errors": 0,
+        "venue_counts": defaultdict(int),  # venue_name -> 抽出レコード数
+        "fatal": False,
+        "start_time": time.time(),
+    }
+
+
+def _process_one_file(fp: "str | Path", report: dict) -> None:
+    """1つのKファイルを処理し、report を書き換える（副作用のみ、戻り値なし）。"""
+    report["files_total"] += 1
+    try:
+        records, stats = parse_k_race_file_with_stats(fp)
+    except Exception as e:
+        report["files_error"] += 1
+        log.error("[品質] ファイル処理中にエラー: %s (%s)", fp, e)
+        return
+
+    report["files_processed"] += 1
+    report["races_seen"] |= stats["races_seen"]
+    report["racers_seen"] |= stats["racers_seen"]
+    report["skipped_invalid_course"] += stats["skipped_invalid_course"]
+    report["parse_errors"] += stats["parse_errors"]
+    for r in records:
+        report["venue_counts"][r["venue_name"]] += 1
+
+    result = append_to_history(records)
+    report["records_generated"] += result["appended"]
+    report["duplicates_skipped"] += result["duplicates"]
+    if result["fatal"]:
+        report["fatal"] = True
+
+
+def print_quality_report(report: dict, integrity_result: "dict | None" = None) -> bool:
+    """
+    品質レポートを表示する。「正常終了」判定結果（bool）を返す。
+    正常終了の条件: files_error == 0, fatal でない, 整合性チェックがある場合は ok であること。
+    """
+    elapsed = time.time() - report["start_time"]
+    is_ok = (
+        report["files_error"] == 0
+        and not report["fatal"]
+        and (integrity_result is None or integrity_result.get("ok", True))
+    )
+
+    print("=" * 60)
+    print(" k_race_history.csv 品質レポート")
+    print("=" * 60)
+    print(f" 処理ファイル数     : {report['files_total']}（成功 {report['files_processed']} / 失敗 {report['files_error']}）")
+    print(f" 処理レース数       : {len(report['races_seen'])}")
+    print(f" 処理選手数（延べ） : {len(report['racers_seen'])}")
+    print(f" 生成レコード数     : {report['records_generated']}")
+    print(f" 重複スキップ件数   : {report['duplicates_skipped']}")
+    print(f" 欠場スキップ件数   : {report['skipped_invalid_course']}")
+    print(f" パース失敗件数     : {report['parse_errors']}")
+    print(f" エラー件数（ファイル単位）: {report['files_error']}")
+    print(" 開催場別件数       :")
+    for venue, count in sorted(report["venue_counts"].items(), key=lambda kv: -kv[1]):
+        print(f"   {venue}: {count}件")
+    print(f" 処理時間           : {elapsed:.2f}秒")
+    if integrity_result is not None:
+        print(f" データ整合性チェック: {'OK' if integrity_result.get('ok') else '異常あり（詳細はログ参照）'}")
+    print("=" * 60)
+    print(f" 結果: {'✅ 正常終了' if is_ok else '⚠️ 異常終了（ログを確認してください）'}")
+    print("=" * 60)
+    return is_ok
+
+
+# ════════════════════════════════════════════════════════════
 # 初回一括構築
 # ════════════════════════════════════════════════════════════
 
-def init_build(k_dir: str, today: int | None = None) -> None:
-    """指定フォルダ内の全Kファイルを日付順に処理し、履歴を一括構築する。"""
+def init_build(k_dir: str, today: int | None = None) -> dict:
+    """
+    指定フォルダ内の全Kファイルを日付順に処理し、履歴を一括構築する。
+    最後に品質レポートを表示する。レポート辞書を返す。
+    """
     k_dir_path = Path(k_dir)
     if not k_dir_path.is_dir():
         log.error("[初回構築] フォルダが見つかりません: %s", k_dir)
-        return
+        return {}
 
     all_files = sorted(k_dir_path.glob("K*.TXT")) + sorted(k_dir_path.glob("K*.txt"))
     all_files = sorted(set(all_files))
     if not all_files:
         log.warning("[初回構築] Kファイルが見つかりません: %s", k_dir)
-        return
+        return {}
 
     progress = _load_progress()
     processed = set(progress.get("processed_files", []))
@@ -259,11 +349,10 @@ def init_build(k_dir: str, today: int | None = None) -> None:
     log.info("[初回構築] 対象ファイル数=%d（処理済み=%d、残り=%d）",
               len(all_files), len(processed), len(remaining))
 
-    total_appended = 0
+    report = _new_report()
+
     for i, fp in enumerate(remaining, 1):
-        records = parse_k_race_file(fp)
-        appended = append_to_history(records)
-        total_appended += appended
+        _process_one_file(fp, report)
         processed.add(fp.name)
 
         # 【中断・再開対応】一定件数ごとに進捗を保存する
@@ -272,24 +361,34 @@ def init_build(k_dir: str, today: int | None = None) -> None:
             _save_progress(progress)
             log.info("[初回構築] 進捗 %d/%d ファイル処理済み", i, len(remaining))
 
-    log.info("[初回構築] 完了。累計追記件数=%d", total_appended)
+    log.info("[初回構築] 完了。累計追記件数=%d", report["records_generated"])
 
     # 全ファイル処理が終わってから最後に1回だけ集計する
     rebuild_local_course_stats(today=today)
+
+    integrity_result = _integrity.validate_history(K_RACE_HISTORY_CSV)
+    print_quality_report(report, integrity_result)
+    return report
 
 
 # ════════════════════════════════════════════════════════════
 # 毎日の更新
 # ════════════════════════════════════════════════════════════
 
-def daily_update(k_file: str, today: int | None = None) -> None:
-    """前日分のKファイル1つを処理し、履歴に追記後、集計を再生成する。"""
+def daily_update(k_file: str, today: int | None = None) -> dict:
+    """前日分のKファイル1つを処理し、履歴に追記後、集計を再生成する。品質レポートを返す。"""
     if not os.path.exists(k_file):
         log.error("[日次更新] ファイルが見つかりません: %s", k_file)
-        return
-    records = parse_k_race_file(k_file)
-    append_to_history(records)
+        return {}
+
+    report = _new_report()
+    _process_one_file(k_file, report)
+
     rebuild_local_course_stats(today=today)
+
+    integrity_result = _integrity.validate_history(K_RACE_HISTORY_CSV)
+    print_quality_report(report, integrity_result)
+    return report
 
 
 # ════════════════════════════════════════════════════════════

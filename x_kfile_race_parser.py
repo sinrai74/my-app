@@ -51,6 +51,14 @@ from pathlib import Path
 from typing import Optional
 
 # ════════════════════════════════════════════════════════════
+# パーサーバージョン（履歴データの生成元トレーサビリティ用）
+# ════════════════════════════════════════════════════════════
+# 固定長カラム位置・パースロジックを変更したら必ずインクリメントする。
+# k_race_history.csv の parser_version 列に記録され、
+# 「どのバージョンのパーサーで生成されたデータか」を後から判別できる。
+PARSER_VERSION = "1.0.0"
+
+# ════════════════════════════════════════════════════════════
 # 場コード対応表（PC-KYOTEIコード表・既存プロジェクトのVENUE_NAMESと同一）
 # ════════════════════════════════════════════════════════════
 VENUE_CODE_MAP: dict[str, str] = {
@@ -131,17 +139,46 @@ def parse_k_race_file(filepath: "str | Path") -> list[dict]:
         "racer_no": str, "racer_name": str, "boat_no": int, "course": int,
         "order": int|str, "motor_no": int|None, "boat_equip_no": int|None,
         "exhibition_time": float|None, "start_timing": float|None,
-        "race_time": str|None, "source_file": str,
+        "race_time": str|None, "source_file": str, "parser_version": str,
       }
 
     パースできなかった行は静かにスキップする（他レコードの取得を止めない）。
     """
+    records, _stats = parse_k_race_file_with_stats(filepath)
+    return records
+
+
+def parse_k_race_file_with_stats(filepath: "str | Path") -> tuple[list[dict], dict]:
+    """
+    parse_k_race_file() と同じ抽出を行い、加えて品質レポート用の
+    統計情報を返す。
+
+    戻り値: (records, stats)
+      stats = {
+        "racer_lines_seen": int,      # 選手行らしき行に遭遇した数（正常+異常着順の合計）
+        "records_extracted": int,     # 正常に抽出できたレコード数
+        "skipped_invalid_course": int,# 進入コース欄が読み取れず除外した数（欠場等）
+        "parse_errors": int,          # 例外が発生してスキップした数
+        "races_seen": set[tuple],     # 遭遇した (date, venue_code, race_no) の集合
+        "venues_seen": set[str],      # 遭遇した場コードの集合
+        "racers_seen": set[str],      # 遭遇した登録番号の集合（正常抽出分のみ）
+      }
+    """
     filepath = Path(filepath)
+    stats = {
+        "racer_lines_seen": 0,
+        "records_extracted": 0,
+        "skipped_invalid_course": 0,
+        "parse_errors": 0,
+        "races_seen": set(),
+        "venues_seen": set(),
+        "racers_seen": set(),
+    }
     try:
         with open(filepath, "rb") as f:
             raw = f.read()
     except OSError:
-        return []
+        return [], stats
 
     text = raw.decode("shift_jis", errors="replace")
     lines = text.split("\r\n") if "\r\n" in text else text.split("\n")
@@ -192,6 +229,10 @@ def parse_k_race_file(filepath: "str | Path") -> list[dict]:
         if not _is_racer_line(line):
             continue
 
+        stats["racer_lines_seen"] += 1
+        stats["venues_seen"].add(venue_code)
+        stats["races_seen"].add((current_date, venue_code, current_race_no))
+
         try:
             order_raw   = line[0:4]
             boat_no     = int(line[6:7])
@@ -205,6 +246,7 @@ def parse_k_race_file(filepath: "str | Path") -> list[dict]:
             race_time_s = line[52:].strip()
 
             if not course_s.isdigit() or not (1 <= int(course_s) <= 6):
+                stats["skipped_invalid_course"] += 1
                 continue
 
             records.append({
@@ -223,11 +265,15 @@ def parse_k_race_file(filepath: "str | Path") -> list[dict]:
                 "start_timing":    _parse_float_safe(st_s),
                 "race_time":       race_time_s if race_time_s and race_time_s not in (".", ". .", " .  . ") else None,
                 "source_file":     filepath.name,
+                "parser_version":  PARSER_VERSION,
             })
+            stats["records_extracted"] += 1
+            stats["racers_seen"].add(racer_no)
         except (ValueError, TypeError, IndexError):
+            stats["parse_errors"] += 1
             continue
 
-    return records
+    return records, stats
 
 
 def parse_k_race_files(filepaths: list["str | Path"]) -> list[dict]:
