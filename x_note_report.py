@@ -384,10 +384,10 @@ def generate_csvs(data: dict, prefix: str = "") -> list[str]:
     hot_motor = data.get("hot_motor", [])
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["日付","会場","モーター番号","激走指数","直近5走","公式2連率","実績2連率","公式比"])
+        w.writerow(["日付","会場","モーター番号","本日の出走","激走指数","直近5走","公式2連率","実績2連率","公式比"])
         for m in hot_motor:
             w.writerow([
-                date_str, m.get("venue",""), m.get("motor_no",""),
+                date_str, m.get("venue",""), m.get("motor_no",""), m.get("races_today_str",""),
                 m.get("score",""), m.get("recent5","---"),
                 m.get("official_2rate",""), m.get("recent10_2rate",""),
                 m.get("gap",""),
@@ -399,10 +399,10 @@ def generate_csvs(data: dict, prefix: str = "") -> list[str]:
     awake_motor = data.get("awakening_motor", [])
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["日付","会場","モーター番号","覚醒指数","直近10走","旧2連率","新2連率","展示平均"])
+        w.writerow(["日付","会場","モーター番号","本日の出走","覚醒指数","直近10走","旧2連率","新2連率","展示平均"])
         for a in awake_motor:
             w.writerow([
-                date_str, a.get("venue",""), a.get("motor_no",""),
+                date_str, a.get("venue",""), a.get("motor_no",""), a.get("races_today_str",""),
                 a.get("score",""), a.get("recent10","---"),
                 a.get("old_2rate",""), a.get("new_2rate",""),
                 a.get("ex_avg",""),
@@ -1252,10 +1252,10 @@ def generate_html(data: dict, output_path: str) -> None:
             rows += f"<tr><td>{i}</td>{cells}</tr>"
         return f'<table class="mt"><thead><tr><th>#</th>{header}</tr></thead><tbody>{rows}</tbody></table>'
 
-    hot_cols  = (["会場","モーター","直近5走","公式比"],
-                 ["venue","motor_no","recent5","gap"])
-    awake_cols = (["会場","モーター","直近10走","2連率変化","展示平均"],
-                  ["venue","motor_no","recent10","old_2rate","ex_avg"])
+    hot_cols  = (["会場","モーター","本日の出走","直近5走","公式比"],
+                 ["venue","motor_no","races_today_str","recent5","gap"])
+    awake_cols = (["会場","モーター","本日の出走","直近10走","2連率変化","展示平均"],
+                  ["venue","motor_no","races_today_str","recent10","old_2rate","ex_avg"])
 
     # 昨日の実績を取得
     yesterday_block = ""
@@ -1870,7 +1870,8 @@ def generate_pdf(html_path: str, pdf_path: str) -> bool:
 
         def draw_motor_row(draw, m, is_awake=False):
             draw.rectangle([0, y[0], W, y[0]+46], fill=C_CARD)
-            venue_t = f"{m.get('venue','')} {m.get('motor_no','')}号機"
+            races = m.get("races_today_str", "")
+            venue_t = f"{m.get('venue','')} {m.get('motor_no','')}号機" + (f"  本日{races}" if races else "")
             draw.text((16, y[0]+4), venue_t, font=fmd, fill=C_WHITE)
             if is_awake:
                 detail = f"直近10走: {m.get('recent10','---')}  {m.get('old_2rate','')}%→{m.get('new_2rate','')}%  展示{m.get('ex_avg','')}秒"
@@ -2069,7 +2070,8 @@ def generate_markdown(data: dict, output_path: str) -> None:
         "",
     ]
     for m in hot_motor:
-        lines.append(f"- {m.get('venue','')} {m.get('motor_no','')}号機（直近5走: {m.get('recent5','---')}）")
+        races = f" 本日{m.get('races_today_str','')}" if m.get("races_today_str") else ""
+        lines.append(f"- {m.get('venue','')} {m.get('motor_no','')}号機{races}（直近5走: {m.get('recent5','---')}）")
 
     lines += [
         "",
@@ -2081,7 +2083,8 @@ def generate_markdown(data: dict, output_path: str) -> None:
         "",
     ]
     for a in awake_motor:
-        lines.append(f"- {a.get('venue','')} {a.get('motor_no','')}号機（直近10走: {a.get('recent10','---')}）")
+        races = f" 本日{a.get('races_today_str','')}" if a.get("races_today_str") else ""
+        lines.append(f"- {a.get('venue','')} {a.get('motor_no','')}号機{races}（直近10走: {a.get('recent10','---')}）")
 
     lines += [
         "",

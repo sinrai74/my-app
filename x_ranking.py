@@ -46,14 +46,9 @@ from notify_arashi import (
 from x_asahi_scoring import (
     calc_danger_score_v2,
     calculate_upset_score_v2,
-    calc_rank_index_v2,
-    select_featured_boats,
     load_asahi_config,
     get_model_version as _asahi_model_version,
 )
-from x_venue_stats import classify_water_type
-
-import x_release_storage
 
 # ════════════════════════════════════════════════════════════
 # 定数・設定
@@ -86,18 +81,8 @@ def _yesterday_jst() -> str:
 
 
 def _boat_motor_no(boat_raw: dict) -> Optional[int]:
-    """
-    出走表の boat 辞書からモーター番号を取得する。
-
-    【原因調査で確定した事実】BoatraceOpenAPI（programs）の実際のレスポンスでは
-    モーター番号は "racer_assigned_motor_number" というキーで提供される
-    （モーター2連率 "racer_assigned_motor_top_2_percent" と同じ
-    "racer_assigned_motor_" 接頭辞のパターン）。
-    旧実装は "motor_number"/"racer_motor_number" という誤ったキー名を
-    参照しており、実データには存在しないため常に motor_no=None になり、
-    motor_history.csv への追記・激走/覚醒モーター判定が全件スキップされていた。
-    """
-    val = boat_raw.get("racer_assigned_motor_number")
+    """出走表の boat 辞書からモーター番号を取得する"""
+    val = boat_raw.get("motor_number") or boat_raw.get("racer_motor_number")
     try:
         return int(val) if val is not None else None
     except (ValueError, TypeError):
@@ -125,7 +110,6 @@ def _is_valid_ex(val) -> bool:
 
 def load_motor_history() -> dict[tuple[int, int], list[dict]]:
     """motor_history.csv を読み込んで {(venue_num, motor_no): [rows]} を返す"""
-    x_release_storage.download_file(MOTOR_HISTORY, MOTOR_HISTORY)
     history: dict[tuple[int, int], list[dict]] = {}
     if not os.path.exists(MOTOR_HISTORY):
         log.info("[履歴] %s が見つかりません（初回起動）", MOTOR_HISTORY)
@@ -146,11 +130,6 @@ def update_motor_history(race_date: str) -> int:
     指定日の結果データからモーター履歴を motor_history.csv に追記する。
     追記件数を返す。
     """
-    # 追記の前に、Releaseに保存されている最新版をローカルへ反映しておく
-    # （GitHub Actionsのジョブ実行環境は毎回使い捨てのため、これがないと
-    #  過去の蓄積データが失われ、追記のたびに空ファイルへの1回分だけになる）。
-    x_release_storage.download_file(MOTOR_HISTORY, MOTOR_HISTORY)
-
     # 結果 API 取得
     url = f"{RESULTS_URL}/{race_date[:4]}/{race_date}.json"
     data = _safe_get(url)
@@ -204,25 +183,10 @@ def update_motor_history(race_date: str) -> int:
 
     # 結果データを走査してレコード構築
     rows: list[dict] = []
-
-    # 【デバッグログ】原因特定用。ロジックには一切影響しない。
-    _dbg_results = data.get("results", [])
-    _dbg_skip1_count = 0   # ①race_stadium_number/race_number取得失敗
-    _dbg_skip1_samples: list[str] = []
-    _dbg_skip2_count = 0   # ②racer_place_number等取得失敗
-    _dbg_skip2_samples: list[str] = []
-    _dbg_skip3_count = 0   # ③motor_no is None
-    _dbg_skip3_samples: list[str] = []
-    _dbg_append_count = 0
-    log.info("[DEBUG motor_history] results件数=%d (date=%s)", len(_dbg_results), race_date)
-
     for r in data.get("results", []):
         vn  = r.get("race_stadium_number")
         rno = r.get("race_number")
         if vn is None or rno is None:
-            _dbg_skip1_count += 1
-            if len(_dbg_skip1_samples) < 5:
-                _dbg_skip1_samples.append(f"race_stadium_number={vn} race_number={rno}")
             continue
         vn, rno = int(vn), int(rno)
         venue = VENUE_NAMES.get(vn, f"場{vn}")
@@ -238,11 +202,6 @@ def update_motor_history(race_date: str) -> int:
             st      = b.get("racer_start_timing")
 
             if boat_no is None or place is None:
-                _dbg_skip2_count += 1
-                if len(_dbg_skip2_samples) < 5:
-                    _dbg_skip2_samples.append(
-                        f"venue={vn} race={rno} racer_boat_number={boat_no} racer_place_number={place}"
-                    )
                 continue
             boat_no = int(boat_no)
 
@@ -253,14 +212,8 @@ def update_motor_history(race_date: str) -> int:
             ex_time    = ex_map.get(boat_no)
 
             if motor_no is None:
-                _dbg_skip3_count += 1
-                if len(_dbg_skip3_samples) < 5:
-                    _dbg_skip3_samples.append(
-                        f"venue={vn} race={rno} boat_no={boat_no} prog_boats_keys={list(prog_boats.keys())}"
-                    )
                 continue  # モーター番号不明はスキップ
 
-            _dbg_append_count += 1
             rows.append({
                 "date":         race_date,
                 "venue_num":    vn,
@@ -275,19 +228,6 @@ def update_motor_history(race_date: str) -> int:
                 "race_number":  rno,
             })
 
-    # 【デバッグログ】原因特定用。ロジックには一切影響しない。
-    log.info(
-        "[DEBUG motor_history] skip1(vn/rno不明)=%d件 skip2(boat_no/place不明)=%d件 "
-        "skip3(motor_no不明)=%d件 append=%d件 最終rows=%d件",
-        _dbg_skip1_count, _dbg_skip2_count, _dbg_skip3_count, _dbg_append_count, len(rows),
-    )
-    if _dbg_skip1_samples:
-        log.info("[DEBUG motor_history] skip1サンプル: %s", _dbg_skip1_samples)
-    if _dbg_skip2_samples:
-        log.info("[DEBUG motor_history] skip2サンプル: %s", _dbg_skip2_samples)
-    if _dbg_skip3_samples:
-        log.info("[DEBUG motor_history] skip3サンプル: %s", _dbg_skip3_samples)
-
     if not rows:
         log.info("[履歴] 追記レコードなし: %s", race_date)
         return 0
@@ -300,10 +240,6 @@ def update_motor_history(race_date: str) -> int:
         writer.writerows(rows)
 
     log.info("[履歴] 追記: %d件 (%s)", len(rows), race_date)
-
-    if not x_release_storage.upload_file(MOTOR_HISTORY, MOTOR_HISTORY):
-        log.warning("[履歴] %s のRelease反映に失敗しました（ローカルには保存済み）", MOTOR_HISTORY)
-
     return len(rows)
 
 
@@ -315,25 +251,34 @@ def _calc_danger_breakdown(
     boat1: Optional[BoatInfo],
     all_boats: list[BoatInfo],
     weather: Optional[WeatherInfo] = None,
-    venue: Optional[str] = None,
 ) -> dict:
     """
     危険度スコアの内訳を辞書で返す（【朝刊AI】共通スコアリングエンジン使用）。
     x_asahi_scoring.calc_danger_score_v2 に委譲し、朝データのみで算出する。
     weather 引数は互換性のため残すが使用しない（previews由来のため）。
-    venue（場名）を渡すと Ver4 の場補正（venue_unfavorable）が有効になる。
     note レポートのスコア内訳表示・AIコメント生成に使用。
-
-    戻り値: calc_danger_score_v2 の breakdown（各項目 {"weighted":, "kind":,
-            (relative項目のみ)"worse_count":, "worse_total":} のネスト辞書）に
-            "total" キーを加えたもの。
+    戻り値: {"win_rate_low": (raw, weighted), "motor_bad": (raw, weighted),
+             "avg_st_slow": ..., "class_gap": ..., "course_st_slow": ...,
+             "course_rank_bad": ..., "total": int}
     """
     if not boat1:
-        return {"total": 0}
+        empty = (0, 0)
+        return {
+            "win_rate_low": empty, "motor_bad": empty, "avg_st_slow": empty,
+            "class_gap": empty, "course_st_slow": empty, "course_rank_bad": empty,
+            "total": 0,
+        }
 
-    total, raw_breakdown = calc_danger_score_v2(boat1, all_boats, venue=venue)
+    total, raw_breakdown = calc_danger_score_v2(boat1, all_boats)
+
+    cfg = load_asahi_config()
+    weights = cfg["danger_score"]["weights"]
     result = {"total": round(total)}
-    result.update(raw_breakdown)
+    for key, weighted in raw_breakdown.items():
+        max_w = weights.get(key, {}).get("weight", 1) or 1
+        # raw を 0-100 スケールに正規化（weighted / max_weight * 100）
+        raw_100 = round(weighted / max_w * 100) if max_w else 0
+        result[key] = (raw_100, weighted)
     return result
 
 
@@ -360,56 +305,60 @@ def _score_to_rank_short(score: int) -> str:
     return "🟡B"
 
 
-_DANGER_REASON_LABELS = {
-    "win_rate":       "全国勝率",
-    "local_win":      "当地勝率",
-    "avg_st":         "平均ST",
-    "motor":          "モーター",
-    "racer_class":    "級別",
-    "ability_trend":  "能力指数推移",
-    "course_rentai":  "進入コース2連対率",
-    "win_rate_low":       "全国勝率(絶対的に低調)",
-    "local_win_low":      "当地勝率(絶対的に低調)",
-    "motor_bad":          "モーター(絶対的に低調)",
-    "avg_st_slow":        "平均ST(絶対的に遅い)",
-    "course1_place_low":  "1コース1着率(前期実績)",
-    "f_risk":             "1コースFリスク",
-    "venue_unfavorable":  "当地水面(場×コース実績)",
-}
-
-# solo（単体評価）項目のうち、汎用文言「〜が基準未満」より具体的な
-# 説明の方が分かりやすいものは個別に文言を用意する。
-_SOLO_REASON_TEMPLATES = {
-    "f_risk":            "1コースでのフライング率が高い",
-    "venue_unfavorable": "当地の1コース実績が全国平均より低調",
-}
-
-
-def _danger_reason(boat1: Optional[BoatInfo], all_boats: list[BoatInfo], breakdown: Optional[dict] = None) -> str:
-    """
-    危険理由を数値で説明する文字列を生成する（calc_danger_score_v2 の
-    breakdown＝「1号艇より優れている艇数」をそのまま文章化する）。
-    例: "全国勝率で4艇に劣る（5艇中5位）" / "モーターで3艇に劣る（5艇中4位）"
-    """
+def _danger_reason(boat1: Optional[BoatInfo], all_boats: list[BoatInfo]) -> str:
+    """危険理由を比較対象付き数字で返す（A. 改善）"""
     if not boat1:
         return "不明"
-    breakdown = breakdown or {}
-    items = [(k, v) for k, v in breakdown.items() if isinstance(v, dict) and v.get("weighted", 0) > 0]
-    # 加点が大きい順（＝危険度への寄与が大きい順）に並べる
-    items.sort(key=lambda kv: -kv[1]["weighted"])
-
     reasons: list[str] = []
-    for key, v in items:
-        label = _DANGER_REASON_LABELS.get(key, key)
-        if v.get("kind") == "relative":
-            worse = v["worse_count"]
-            total_other = v["worse_total"]
-            rank = worse + 1  # 1号艇含めた順位（1号艇より優れている艇数+1位）
-            reasons.append(f"{label}で{worse}艇に劣る（{total_other + 1}艇中{rank}位）")
-        elif key in _SOLO_REASON_TEMPLATES:
-            reasons.append(_SOLO_REASON_TEMPLATES[key])
-        else:
-            reasons.append(f"{label}が基準未満")
+    n = len(all_boats)
+
+    # ── ST: 6艇中何位か（【朝刊AI】平均ST実績・コース別ST実績のみ使用）───
+    avg_st = boat1.avg_st or 0.0
+    course_st_1c = (
+        boat1.course_st[0]
+        if boat1.course_st and boat1.course_nyuko and boat1.course_nyuko[0] > 0
+        else None
+    )
+    st_vals = [b.avg_st for b in all_boats if b.avg_st and b.avg_st > 0]
+    if st_vals and avg_st > 0:
+        # STは大きい方が遅い → 大きい順でランク付け
+        # 遅さランク: 自分より速い(小さい)艇が多いほど遅い順位が下がる
+        st_worst_rank = sum(1 for s in st_vals if s < avg_st) + 1  # 1=最も遅い
+        if avg_st >= 0.20:
+            reasons.append(f"平均ST{avg_st:.2f}（{n}艇中{st_worst_rank}位・大幅遅れ）")
+        elif avg_st >= 0.18:
+            st_str = f"平均ST{avg_st:.2f}（{n}艇中{st_worst_rank}位）"
+            if course_st_1c and course_st_1c >= 0.18:
+                st_str += f" コース実績{course_st_1c:.2f}"
+            reasons.append(st_str)
+        elif course_st_1c and course_st_1c >= 0.19:
+            reasons.append(f"1コースST実績{course_st_1c:.2f}（遅れリスク）")
+
+    # ── 等級 ─────────────────────────────────────────
+    if boat1.racer_class in ("B1", "B2"):
+        reasons.append(boat1.racer_class)
+
+    # ── モーター2連率: 平均との比較 ──────────────────
+    motor_vals = [b.motor for b in all_boats if b.motor and b.motor > 0]
+    if boat1.motor and motor_vals:
+        avg_motor = sum(motor_vals) / len(motor_vals)
+        diff = boat1.motor - avg_motor
+        if boat1.motor <= 30:
+            reasons.append(f"モーター{boat1.motor:.0f}%（平均比{diff:+.0f}%）")
+
+    # ── 勝率: 6艇平均との比較 ────────────────────────
+    wr_vals = [b.win_rate for b in all_boats if b.win_rate and b.win_rate > 0]
+    if boat1.win_rate and wr_vals and boat1.win_rate < 4.5:
+        avg_wr = sum(wr_vals) / len(wr_vals)
+        diff = boat1.win_rate - avg_wr
+        reasons.append(f"勝率{boat1.win_rate:.1f}（平均比{diff:+.1f}）")
+
+    # ── 相手にA1が多い ────────────────────────────────
+    others = [b for b in all_boats if b.lane != 1]
+    a1_count = sum(1 for b in others if b.racer_class == "A1")
+    if a1_count >= 2:
+        best_wr = max((b.win_rate or 0) for b in others if b.racer_class == "A1")
+        reasons.append(f"A1×{a1_count}人（最高勝率{best_wr:.1f}）")
 
     return " / ".join(reasons) if reasons else "総合判定"
 
@@ -627,26 +576,19 @@ def _upset_reasons(boats: list, boat1) -> list[str]:
 
     reasons: list[str] = []
 
-    # 【朝刊AI】コース別ST実績: 各艇の実際の進入コース(自艇の艇番)における
-    # ST実績で比較する。全艇を1コースのST実績(course_st[0])で比べるのは、
-    # 2〜6号艇にとって無関係なコースの実績を見ることになり誤り。
-    # 1号艇はcourse_st[0]（1コース実績）、2号艇はcourse_st[1]（2コース実績）
-    # …というように、各艇の lane に対応するインデックスを使う。
-    def _own_course_st(b) -> Optional[float]:
-        idx = b.lane - 1
-        if b.course_nyuko and 0 <= idx < 6 and b.course_nyuko[idx] > 0 and b.course_st[idx] > 0:
-            return b.course_st[idx]
-        return None
-
-    course_st_valid = [b for b in boats if _own_course_st(b) is not None]
+    # 【朝刊AI】コース別ST実績: 1号艇以外で最も速い艇（展示タイムの代替）
+    course_st_valid = [
+        b for b in boats
+        if b.course_nyuko and b.course_nyuko[0] > 0 and b.course_st[0] > 0
+    ]
     if course_st_valid:
-        all_sorted = sorted(course_st_valid, key=lambda b: _own_course_st(b))
+        all_sorted = sorted(course_st_valid, key=lambda b: b.course_st[0])
         fastest = all_sorted[0]
         if fastest.lane != 1:
-            reasons.append(f"🔥 {fastest.lane}号艇が進入コースST実績{_own_course_st(fastest):.2f}で最速")
+            reasons.append(f"🔥 {fastest.lane}号艇が1コースST実績{fastest.course_st[0]:.2f}で最速")
         elif len(all_sorted) > 1 and all_sorted[1].lane != 1:
             second = all_sorted[1]
-            reasons.append(f"🔥 {second.lane}号艇が進入コースST実績{_own_course_st(second):.2f}で2番手")
+            reasons.append(f"🔥 {second.lane}号艇が1コースST実績{second.course_st[0]:.2f}で2番手")
 
     # 1号艇より勝率上の選手
     wr1 = boat1.win_rate or 0 if boat1 else 0
@@ -690,16 +632,12 @@ def _pick_key_racer(boats: list, boat1) -> tuple:
     if not others:
         return ("不明", "データなし")
 
-    # 【朝刊AI】コース別ST実績: 各艇の実際の進入コース(自艇の艇番)における
-    # ST実績を展示の代替として使用する（全艇を1コース実績で比べない）。
-    def _own_course_st_kr(b) -> Optional[float]:
-        idx = b.lane - 1
-        if b.course_nyuko and 0 <= idx < 6 and b.course_nyuko[idx] > 0 and b.course_st[idx] > 0:
-            return b.course_st[idx]
-        return None
-
-    course_st_valid = [b for b in others if _own_course_st_kr(b) is not None]
-    ex_best  = min(course_st_valid, key=lambda b: _own_course_st_kr(b)) if course_st_valid else None
+    # 【朝刊AI】コース別ST実績を展示の代替として使用
+    course_st_valid = [
+        b for b in others
+        if b.course_nyuko and b.course_nyuko[0] > 0 and b.course_st[0] > 0
+    ]
+    ex_best  = min(course_st_valid, key=lambda b: b.course_st[0]) if course_st_valid else None
     wr_best  = max(others, key=lambda b: b.win_rate or 0)
     motor_best = max(others, key=lambda b: b.motor or 0)
 
@@ -795,12 +733,6 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
 
     danger_list: list[dict] = []
     upset_list:  list[dict] = []
-    # 【本日の注目レースTOP5】用: 危険度・万舟指数は40点未満でも
-    # 既に全レースで計算済みのため、閾値に関わらず数値だけを軽量に
-    # 保存しておく（詳細計算・危険艇速報/万舟警報セクションへの掲載は
-    # 従来通り40点以上のみ。ここでは新聞のTOP5に「参考値」として
-    # 表示するための最小限のデータのみを保持する）。
-    all_scores: dict[tuple, dict] = {}
     motor_seen:  dict[tuple, dict] = {}   # (venue_num, motor_no) → info
 
     for prog in programs:
@@ -827,13 +759,9 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
 
         boat1 = next((b for b in boats if b.lane == 1), None)
 
-        # ── ① 危険な1号艇（【朝刊AI】共通エンジンで算出、Ver4: 場補正込み）────
-        breakdown  = _calc_danger_breakdown(boat1, boats, weather, venue=venue_name)
+        # ── ① 危険な1号艇（【朝刊AI】共通エンジンで算出）────
+        breakdown  = _calc_danger_breakdown(boat1, boats, weather)
         d_score    = breakdown["total"]
-
-        # 【本日の注目レースTOP5】閾値未満でも危険度の数値だけは軽量に保持する
-        all_scores.setdefault((venue_name, rno), {})["danger_score"] = d_score
-
         if d_score >= 40:
             # コース別ST情報をまとめる（新聞表示・ST順位計算用）
             boats_course_st = []
@@ -864,14 +792,6 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
             else:
                 boat1_1c_rank = None
 
-            # ── 上位進出指数（0-100、危険艇速報・買い目生成・万舟警報で共通、Ver4: 場補正込み） ──
-            rank_index = calc_rank_index_v2(boats, venue=venue_name)
-            featured_boats = select_featured_boats(boats, rank_index, d_score)
-
-            # ── Ver4: 水面タイプ（実データ自動算出。データ不足時は
-            #    著名な場のみ参考値、それ以外は「標準」） ──
-            water_type = classify_water_type(venue_name)
-
             danger_list.append({
                 "venue":        venue_name,
                 "venue_num":    vn,
@@ -883,7 +803,7 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
                 "motor":        boat1.motor       if boat1 else 0,
                 "avg_st":       boat1.avg_st      if boat1 else 0,
                 # 【朝刊AI】ex_time は previews 由来のため保存しない
-                "reason":       _danger_reason(boat1, boats, breakdown),
+                "reason":       _danger_reason(boat1, boats),
                 "stars":        _calc_stars(boat1, boats),
                 "breakdown":    breakdown,
                 # コース別ST情報（新聞の危険艇速報で表示）
@@ -891,19 +811,10 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
                 "boat1_1c_st":      boat1.course_st[0] if boat1 and boat1.course_nyuko[0] > 0 else None,
                 "boat1_1c_rank":    boat1_1c_rank,      # 6艇中の1コースST順位
                 "boat1_1c_nyuko":   boat1.course_nyuko[0] if boat1 else 0,
-                # 上位進出指数（各艇: top1/top2/top3、0-100）と注目選手
-                "rank_index":     rank_index,
-                "featured_boats": featured_boats,
-                # 【Ver4】水面タイプ
-                "water_type": water_type,
             })
 
         # ── ③ 万舟警報 ───────────────────────────────────
         u_score = calc_upset_index(boats, weather)
-
-        # 【本日の注目レースTOP5】閾値未満でも万舟指数の数値だけは軽量に保持する
-        all_scores.setdefault((venue_name, rno), {})["upset_score"] = u_score
-
         if u_score >= 40:
             key_racer, key_reason = _pick_key_racer(boats, boat1)
             upset_list.append({
@@ -934,7 +845,17 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
                     "venue_num":  vn,
                     "motor_no":   motor_no,
                     "motor_2rate": m2rate,
+                    "races_today": [],   # 【②今日の出走レース追加】このモーターが今日出走する全レース番号
                 }
+            # 同じモーターが同日複数レースに出走することがあるため、
+            # 遭遇したレース番号を毎回（初回含め）蓄積する。重複防止のためset的に扱う。
+            if rno not in motor_seen[key]["races_today"]:
+                motor_seen[key]["races_today"].append(rno)
+
+    # 【②今日の出走レース追加】表示用に昇順ソート＋"8R・12R"形式の文字列化
+    for info in motor_seen.values():
+        info["races_today"] = sorted(info["races_today"])
+        info["races_today_str"] = "・".join(f"{r}R" for r in info["races_today"])
 
     # ── ② 激走モーター ───────────────────────────────────
     hot_list: list[dict] = []
@@ -990,9 +911,6 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
         # note用: スコア40以上の全レース（ランク問わず）
         "all_danger":      sorted(danger_list, key=lambda x: -x["score"]),
         "all_manshuu":     sorted(upset_list,  key=lambda x: -x["score"]),
-        # 【本日の注目レースTOP5】危険度・万舟指数を閾値に関わらず全レース分。
-        # キーは "venue|race" の文字列（JSON化のためタプルは使わない）。
-        "all_scores": {f"{v}|{r}": s for (v, r), s in all_scores.items()},
     }
 
     # ranking_cache.json に保存
@@ -1123,7 +1041,9 @@ def format_hot_motor_tweet(data: dict) -> str:
         recent = m.get("recent5", "---")
         gap    = m.get("gap", 0)
         gap_str = f"+{gap:.0f}%" if gap > 0 else f"{gap:.0f}%"
-        lines.append(f"{i}位 {m['venue']}{m['motor_no']}号機")
+        races = m.get("races_today_str", "")
+        race_txt = f"　本日{races}" if races else ""
+        lines.append(f"{i}位 {m['venue']}{m['motor_no']}号機{race_txt}")
         lines.append(f"   直近5走: {recent}  公式比{gap_str}")
 
     lines += [
@@ -1190,7 +1110,9 @@ def format_awakening_tweet(data: dict) -> str:
         old_r   = a.get("old_2rate")
         new_r   = a.get("new_2rate")
         ex_avg  = a.get("ex_avg")
-        lines.append(f"{i}位 {a['venue']}{a['motor_no']}号機")
+        races = a.get("races_today_str", "")
+        race_txt = f"　本日{races}" if races else ""
+        lines.append(f"{i}位 {a['venue']}{a['motor_no']}号機{race_txt}")
         detail = []
         if old_r is not None and new_r is not None:
             detail.append(f"2連率 {old_r:.0f}%→{new_r:.0f}%")

@@ -266,6 +266,9 @@ def generate_hot_motor_image(data: dict, output_path: str) -> None:
         draw.text((210, y + 10),
                   f"{m.get('venue','')} {m.get('motor_no','')}号機",
                   font=font_row, fill=C_WHITE)
+        races = m.get("races_today_str", "")
+        if races:
+            draw.text((900, y + 13), f"本日{races}", font=_get_font(18), fill=C_ACCENT)
         y += ROW_H
 
     for j in range(10 - len(items)):
@@ -395,6 +398,9 @@ def generate_awakening_image(data: dict, output_path: str) -> None:
         draw.text((210, y + 10),
                   f"{a.get('venue','')} {a.get('motor_no','')}号機",
                   font=font_row, fill=C_WHITE)
+        races = a.get("races_today_str", "")
+        if races:
+            draw.text((900, y + 13), f"本日{races}", font=_get_font(18), fill=(0, 188, 212))
         y += ROW_H
 
     for j in range(10 - len(items)):
