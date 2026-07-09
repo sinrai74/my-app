@@ -40,6 +40,7 @@ from notify_arashi import (
     _PREVIEW_RAW_CACHE,
     BoatInfo,
     WeatherInfo,
+    is_local_racer,
 )
 
 # 【朝刊AI】共通スコアリングエンジン（previews由来データ不使用）
@@ -81,8 +82,20 @@ def _yesterday_jst() -> str:
 
 
 def _boat_motor_no(boat_raw: dict) -> Optional[int]:
-    """出走表の boat 辞書からモーター番号を取得する"""
-    val = boat_raw.get("motor_number") or boat_raw.get("racer_motor_number")
+    """
+    出走表の boat 辞書からモーター番号を取得する。
+    【バグ修正】実際のBoatraceOpenAPIのフィールド名は
+    "racer_assigned_motor_number" だが、旧実装は "motor_number" /
+    "racer_motor_number" しか見ておらず、常に None を返していた
+    （motor_seen が常に空になり、激走・覚醒モーター判定に使う
+    「今日出走するモーター一覧」が機能していなかった）。
+    正しいフィールド名を優先しつつ、旧フィールド名も後方互換で残す。
+    """
+    val = (
+        boat_raw.get("racer_assigned_motor_number")
+        or boat_raw.get("motor_number")
+        or boat_raw.get("racer_motor_number")
+    )
     try:
         return int(val) if val is not None else None
     except (ValueError, TypeError):
@@ -257,26 +270,38 @@ def _calc_danger_breakdown(
     x_asahi_scoring.calc_danger_score_v2 に委譲し、朝データのみで算出する。
     weather 引数は互換性のため残すが使用しない（previews由来のため）。
     note レポートのスコア内訳表示・AIコメント生成に使用。
-    戻り値: {"win_rate_low": (raw, weighted), "motor_bad": (raw, weighted),
-             "avg_st_slow": ..., "class_gap": ..., "course_st_slow": ...,
-             "course_rank_bad": ..., "total": int}
+
+    【バグ修正】calc_danger_score_v2 が Ver4 に更新され、breakdownの
+    キー構成・値の形が旧実装から変わっていた
+    （旧: {"win_rate_low": 数値, ...} 固定6キー
+     新: {"win_rate": {"weighted":.., "kind":"relative", ...},
+          "win_rate_low": {"weighted":.., "kind":"solo"}, ...} 可変キー）。
+    旧実装は cfg["danger_score"]["weights"] という、Ver4では存在しない
+    キーを直接参照しておりKeyErrorになっていた。Ver4のrelative_weights/
+    solo_weights を使い、キー名を固定せず動的に処理するよう修正する。
+
+    戻り値: {"総合": {kind別のキー名}: (raw_100, weighted), ..., "total": int}
+    キー構成はレースごとに variable（該当した項目のみ含まれる）。
     """
     if not boat1:
-        empty = (0, 0)
-        return {
-            "win_rate_low": empty, "motor_bad": empty, "avg_st_slow": empty,
-            "class_gap": empty, "course_st_slow": empty, "course_rank_bad": empty,
-            "total": 0,
-        }
+        return {"total": 0}
 
     total, raw_breakdown = calc_danger_score_v2(boat1, all_boats)
 
     cfg = load_asahi_config()
-    weights = cfg["danger_score"]["weights"]
-    result = {"total": round(total)}
-    for key, weighted in raw_breakdown.items():
-        max_w = weights.get(key, {}).get("weight", 1) or 1
-        # raw を 0-100 スケールに正規化（weighted / max_weight * 100）
+    ds_cfg = cfg.get("danger_score", {})
+    RW = ds_cfg.get("relative_weights", {})
+    SW = ds_cfg.get("solo_weights", {})
+
+    result: dict = {"total": round(total)}
+    for key, info in raw_breakdown.items():
+        if not isinstance(info, dict):
+            continue
+        weighted = info.get("weighted", 0.0)
+        if info.get("kind") == "relative":
+            max_w = RW.get(key, {}).get("max_weight", 1) or 1
+        else:
+            max_w = SW.get(key, {}).get("weight", 1) or 1
         raw_100 = round(weighted / max_w * 100) if max_w else 0
         result[key] = (raw_100, weighted)
     return result
@@ -802,6 +827,9 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
                 "win_rate":     boat1.win_rate    if boat1 else 0,
                 "motor":        boat1.motor       if boat1 else 0,
                 "avg_st":       boat1.avg_st      if boat1 else 0,
+                # 【③地元選手・情報表示のみ】1号艇が開催場の地元支部所属かどうか。
+                # スコア・ランキングには一切影響しない。
+                "is_local":     is_local_racer(vn, boat1.branch) if boat1 else False,
                 # 【朝刊AI】ex_time は previews 由来のため保存しない
                 "reason":       _danger_reason(boat1, boats),
                 "stars":        _calc_stars(boat1, boats),

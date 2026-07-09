@@ -217,44 +217,52 @@ def _course_st_html(danger_entry: dict) -> str:
     elif boats_cs:
         summary = '<div class="cs-summary">コース別ST（前期実績）</div>'
 
-    # 詳細テーブル（全6艇の1コースST比較・速い順）
+    # 【⑥担当コースSTのみに簡略化】
+    # 旧実装は「全艇の1コースST比較」を主指標にし、各艇の担当コースSTを
+    # 右端に小さく添える構成だった。1号艇以外は1コースを走らないため
+    # 「1コースST」と「担当コースST」情報が並んでいて分かりにくく、
+    # 実際に欲しいのは各艇の担当コースSTだけ、というフィードバックにより
+    # 担当コースSTを主指標（順位・平均ST・平均との差）に一本化する。
     detail_rows = ""
-    st_list = []
+    own_st_list = []
     for b in boats_cs:
+        lane = b.get("lane", 0)
+        if not (1 <= lane <= 6):
+            continue
         nyuko_list = b.get("course_nyuko", [0]*6)
         st_list_b  = b.get("course_st",   [0.0]*6)
-        nyuko_1c = nyuko_list[0] if nyuko_list else 0
-        st_1c    = st_list_b[0]  if st_list_b  else 0.0
-        if nyuko_1c > 0:
-            st_list.append((b.get("lane", 0), b.get("name", ""), st_1c, nyuko_1c,
-                             st_list_b, nyuko_list))
-
-    # 1コースST昇順（速い順）でソート
-    st_list.sort(key=lambda x: x[2])
-    for rank_i, (lane, name, st_1c, nyuko_1c, all_st, all_nyuko) in enumerate(st_list, 1):
-        # 担当コース(lane)のSTも表示
         lane_idx = lane - 1
-        st_lane  = all_st[lane_idx]  if lane_idx < len(all_st)   and all_nyuko[lane_idx] > 0 else None
-        ny_lane  = all_nyuko[lane_idx] if lane_idx < len(all_nyuko) else 0
+        nyuko_own = nyuko_list[lane_idx] if lane_idx < len(nyuko_list) else 0
+        st_own    = st_list_b[lane_idx]  if lane_idx < len(st_list_b)  else 0.0
+        if nyuko_own > 0:
+            own_st_list.append((lane, b.get("name", ""), st_own, nyuko_own))
+
+    if not own_st_list:
+        return summary
+
+    avg_st = sum(x[2] for x in own_st_list) / len(own_st_list)
+
+    # 担当コースST昇順（速い順）でソート
+    own_st_list.sort(key=lambda x: x[2])
+    for rank_i, (lane, name, st_own, nyuko_own) in enumerate(own_st_list, 1):
+        diff = st_own - avg_st
+        diff_text = f"{diff:+.2f}"
+        diff_color = "#ef5350" if diff < 0 else "#42a5f5" if diff > 0 else "#888"
         highlight = ' style="background:#1a2a1a;"' if lane == 1 else ""
-        lane_st_text = f'　{lane}コース:{st_lane:.2f}({ny_lane}回)' if st_lane and lane != 1 else ""
         detail_rows += (
             f'<tr{highlight}>'
             f'<td>{rank_i}位</td>'
             f'<td>{lane}号艇 {name}</td>'
-            f'<td><b>{st_1c:.2f}</b>（{nyuko_1c}回）</td>'
-            f'<td style="color:#888;font-size:.85em;">{lane_st_text}</td>'
+            f'<td><b>{st_own:.2f}</b>（{nyuko_own}回）</td>'
+            f'<td style="color:{diff_color};">{diff_text}</td>'
             f'</tr>'
         )
 
-    if not detail_rows:
-        return summary
-
     detail_html = (
         f'<details class="cs-detail">'
-        f'<summary>全艇1コースST比較（速い順）</summary>'
+        f'<summary>担当コースST比較（速い順）</summary>'
         f'<table class="cs-table">'
-        f'<thead><tr><th>順位</th><th>選手</th><th>1コースST(進入回)</th><th>担当コースST</th></tr></thead>'
+        f'<thead><tr><th>順位</th><th>選手</th><th>担当コース平均ST(進入回)</th><th>平均との差</th></tr></thead>'
         f'<tbody>{detail_rows}</tbody>'
         f'</table>'
         f'</details>'
@@ -310,20 +318,59 @@ def _section_comment_motor(hot_motor: list, label: str) -> str:
 # レースごとのAIコメント（1〜2行）
 # ════════════════════════════════════════════════════════════
 
+def _bd_weighted(bd: dict, key: str) -> float:
+    """
+    breakdown辞書から「重み付け後スコア」を安全に取り出す。
+    _calc_danger_breakdown()（x_ranking.py）の実際の戻り値は
+    {"key": (raw_100, weighted), ...} という (raw, weighted) タプル形式
+    だが、将来の形式変化（dict形式・単純float形式）にも耐えるよう、
+    どの形でも壊れずweighted値を取り出せるようにしておく。
+    """
+    v = bd.get(key, 0.0)
+    if isinstance(v, (tuple, list)):
+        return float(v[1]) if len(v) > 1 else float(v[0]) if v else 0.0
+    if isinstance(v, dict):
+        return float(v.get("weighted", v.get("score", v.get("value", 0.0))) or 0.0)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# 【Ver4対応】x_asahi_scoring.calc_danger_score_v2() の実際のbreakdownキー名
+# （x_ranking._calc_danger_breakdown 経由で (raw_100, weighted) タプルとして
+# 渡ってくる）。旧実装は "class_gap"/"course_st_slow"/"course_rank_bad" という
+# Ver4には存在しないキーをハードコードしており、常にヒットしていなかった。
+_DANGER_FACTOR_LABELS: dict[str, str] = {
+    "win_rate":          "全国勝率",
+    "local_win":         "当地勝率",
+    "avg_st":            "平均ST",
+    "motor":             "モーター",
+    "racer_class":       "級別",
+    "ability_trend":     "能力指数推移",
+    "course_rentai":     "進入コース2連対率",
+    "win_rate_low":      "勝率不足",
+    "local_win_low":     "当地勝率不足",
+    "motor_bad":         "モーター不振",
+    "avg_st_slow":       "ST遅れ",
+    "course1_place_low": "1コース1着率低調",
+    "f_risk":            "Fリスク",
+    "venue_unfavorable": "場不利",
+}
+
+
 def _race_comment(d: dict) -> str:
     bd = d.get("breakdown", {})
-    # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・満点
+    # {"total": ...} 以外の実キーだけを対象に、raw_100(0-100スケール)降順で
+    # 上位2項目をコメントに使う。該当キーが1つも無ければ総合判定にフォールバック。
     items = [
-        ("平均ST",   bd.get("avg_st_slow",     0.0), 18, "平均ST遅れリスク"),
-        ("コースST", bd.get("course_st_slow",  0.0), 10, "コース別ST低調"),
-        ("機力",     bd.get("motor_bad",       0.0), 22, "モーター力不足"),
-        ("等級",     bd.get("class_gap",       0.0), 14, "格下等級"),
-        ("勝率",     bd.get("win_rate_low",    0.0), 28, "勝率が低調"),
-        ("ST順位",   bd.get("course_rank_bad", 0.0), 8,  "ST順位が低調"),
+        (key, _bd_weighted(bd, key), val[0] if isinstance(val, (tuple, list)) and val else 0)
+        for key, val in bd.items()
+        if key != "total"
     ]
-    # 各項目を満点に対する比率で比較する（満点が項目ごとに異なるため）
-    top = sorted(items, key=lambda x: -(x[1] / x[2] if x[2] else 0))[:2]
-    parts = [label for label, val, maxv, _ in top if maxv and val / maxv >= 0.4]
+    items.sort(key=lambda x: -x[2])  # raw_100降順
+    top = items[:2]
+    parts = [_DANGER_FACTOR_LABELS.get(key, key) for key, weighted, raw_100 in top if raw_100 >= 40]
     if not parts:
         return "総合的な危険判定"
     return " + ".join(parts) + "が主因"
@@ -1182,21 +1229,25 @@ def generate_html(data: dict, output_path: str) -> None:
             score = d.get("score", 0)
             comment = _race_comment(d)
             bd = d.get("breakdown", {})
-            # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・
-            # 満点はここに合わせる（asahi_config.json の danger_score.weights と一致させること）
+            # 【Ver4対応】breakdownのキー構成がレースごとに可変（該当した項目
+            # のみ含まれる）ため、固定6項目のハードコードをやめ、実際に
+            # 含まれるキーをraw_100(0-100スケール)降順で上位6件まで表示する。
+            # タプルは (ラベル, 実際の加点pt, バー幅%(raw_100), 色)。
+            _bar_colors = ["#42a5f5", "#ffa726", "#ef5350", "#ab47bc", "#ff7043", "#26a69a"]
+            _bd_items_raw = [
+                (key, val) for key, val in bd.items()
+                if key != "total" and isinstance(val, (tuple, list)) and len(val) == 2
+            ]
+            _bd_items_raw.sort(key=lambda kv: -kv[1][0])  # raw_100降順
             bar_items = [
-                ("勝率",     bd.get("win_rate_low",    0.0), 28, "#42a5f5"),
-                ("機力",     bd.get("motor_bad",       0.0), 22, "#ffa726"),
-                ("平均ST",   bd.get("avg_st_slow",     0.0), 18, "#ef5350"),
-                ("等級",     bd.get("class_gap",       0.0), 14, "#ab47bc"),
-                ("コースST", bd.get("course_st_slow",  0.0), 10, "#ff7043"),
-                ("ST順位",   bd.get("course_rank_bad", 0.0), 8,  "#26a69a"),
+                (_DANGER_FACTOR_LABELS.get(key, key), float(val[1]), float(val[0]), _bar_colors[i % len(_bar_colors)])
+                for i, (key, val) in enumerate(_bd_items_raw[:6])
             ]
             bars = "".join(
                 f'<div class="bi"><span class="bl">{l}</span>'
-                f'<div class="bb"><div class="bf" style="width:{int(v/maxv*100) if maxv else 0}%;background:{c}"></div></div>'
+                f'<div class="bb"><div class="bf" style="width:{int(raw_100)}%;background:{c}"></div></div>'
                 f'<span class="bv">{v:.1f}pt</span></div>'
-                for l, v, maxv, c in bar_items
+                for l, v, raw_100, c in bar_items
             )
             rank_cls = rank_of(score).lower()
             _anchor = _race_anchor(d.get('venue',''), d.get('race',''))
@@ -1208,7 +1259,7 @@ def generate_html(data: dict, output_path: str) -> None:
   <div class="rc-header">
     <span class="badge {rank_cls}">{rank_label(score)}</span>
     <strong class="rc-name">{d.get('venue','')}{d.get('race','')}R</strong>
-    <span class="rc-racer">{d.get('racer','?')} {d.get('racer_class','')}</span>
+    <span class="rc-racer">{d.get('racer','?')} {d.get('racer_class','')}{' <span class=\"local-badge\">🏠地元</span>' if d.get('is_local') else ''}</span>
     {_badges}
   </div>
   <div class="rc-reason">{d.get('reason','')}</div>
@@ -1456,6 +1507,7 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 .badge.c{{background:var(--c);color:#fff}}
 .rc-name{{font-size:1.05em}}
 .rc-racer{{color:var(--gray);font-size:.88em}}
+.local-badge{{display:inline-block;background:#2e7d32;color:#fff;font-size:.78em;padding:1px 6px;border-radius:8px;margin-left:4px;font-weight:bold}}
 .rc-reason{{color:#bbb;font-size:.85em;margin:4px 0}}
 .rc-comment{{color:var(--accent);font-size:.85em;margin-top:4px}}
 .course-st-block{{margin-top:10px;border-top:1px solid #333;padding-top:8px}}
@@ -1621,7 +1673,8 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
   {''.join(
       f'<div class="race-card a"><div class="rc-header">'
       f'<strong class="rc-name">{d.get("racer","?")}</strong>'
-      f'<span class="rc-racer">{d.get("venue","")}{d.get("race","")}R {d.get("racer_class","")}</span>'
+      f'<span class="rc-racer">{d.get("venue","")}{d.get("race","")}R {d.get("racer_class","")}'
+      f'{" <span class=\"local-badge\">🏠地元</span>" if d.get("is_local") else ""}</span>'
       f'</div><div class="rc-reason">{d.get("reason","")}</div></div>'
       for d in sorted(all_danger, key=lambda x: -x.get("score",0))[:5]
   ) or '<p class="no-data">本日のデータはまだありません</p>'}
