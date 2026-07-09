@@ -66,6 +66,13 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add hit_record.csv sent_*.txt motor_history.csv 2>/dev/null || true
+          # 【バグ修正】buyscore_log.jsonl・buyscore_config.json・
+          # buyscore_analysis.json がgit addの対象から漏れており、
+          # GitHub Actionsのコンテナ終了と同時に毎回失われていた
+          # （今日の実際の買い目を後から確認できない原因になっていた）。
+          [ -f buyscore_log.jsonl ]     && git add buyscore_log.jsonl     || true
+          [ -f buyscore_config.json ]   && git add buyscore_config.json   || true
+          [ -f buyscore_analysis.json ] && git add buyscore_analysis.json || true
           git diff --cached --quiet || git commit -m "auto: update hit_record/sent $(date -u +%Y%m%d-%H%M)"
           git pull --rebase origin main || true
           git push origin main || echo "push失敗（競合の可能性、次回再試行）"
