@@ -140,11 +140,15 @@ def rank_label_with_emoji(score: float) -> str:
 # ════════════════════════════════════════════════════════════
 
 MATCH_INDEX_POINTS: dict[str, float] = {
-    "danger":    20,
-    "manshuu":   20,
-    "korogashi": 20,
-    "motor_hot": 15,
-    "motor_awk": 15,
+    # 【転がし分離】korogashiは新聞の合成スコアから除外。
+    # 旧配点(danger20,manshuu20,korogashi20,motor_hot15,motor_awk15,hot_high10=計100)
+    # からkorogashiの20点を、危険艇・万舟・激走・覚醒の4項目へ既存比率のまま
+    # 比例配分した（70点 → 90点、係数90/70=1.2857...）。hot_highは新聞5大
+    # ブランドに含まれないためそのまま据え置き。
+    "danger":    25.7,
+    "manshuu":   25.7,
+    "motor_hot": 19.3,
+    "motor_awk": 19.3,
     "hot_high":  10,
 }
 MATCH_INDEX_RANK_BONUS_S = 1.15
@@ -156,11 +160,14 @@ MATCH_INDEX_RANK_BONUS_A = 1.05
 # ════════════════════════════════════════════════════════════
 
 VENUE_CONDITION_WEIGHTS: dict[str, float] = {
-    "danger":    0.30,
-    "manshuu":   0.30,
-    "korogashi": 0.20,
-    "motor_hot": 0.10,
-    "motor_awk": 0.10,
+    # 【転がし分離】korogashiは新聞の合成スコアから除外。
+    # 旧重み(danger0.30,manshuu0.30,korogashi0.20,motor_hot0.10,motor_awk0.10)
+    # からkorogashiの0.20を残り4項目へ既存比率のまま比例配分した
+    # （0.80 → 1.00、係数1.25）。
+    "danger":    0.375,
+    "manshuu":   0.375,
+    "motor_hot": 0.125,
+    "motor_awk": 0.125,
 }
 
 

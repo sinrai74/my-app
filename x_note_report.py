@@ -33,8 +33,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
-import x_release_storage
-
 from x_brand_config import (
     BRANDS, BRAND_ICONS, BRAND_NAMES, BRAND_SHORT, BRAND_COLOR,
     brand_icon, brand_name, brand_short, brand_color,
@@ -166,8 +164,6 @@ def _generate_editor_note(data: dict, conditions: list) -> str:
                 lines.append(f"{c['venue']}は荒れ期待が高い")
             elif c.get("danger_count", 0) >= 2 and (c.get("danger_avg") or 0) >= 60:
                 lines.append(f"{c['venue']}は1号艇に不安あり")
-            elif c.get("korogashi_avg") is not None and c["korogashi_avg"] >= 80:
-                lines.append(f"{c['venue']}は転がし向き")
             else:
                 lines.append(f"{c['venue']}は総合的に面白い一日")
 
@@ -305,68 +301,25 @@ def _section_comment_motor(hot_motor: list, label: str) -> str:
     return f"{label}が{len(hot_motor)}件検出されました。{venue_txt}のモーターに注目です。"
 
 
-def _section_comment_korogashi(kdata: dict) -> str:
-    top10 = kdata.get("top10", [])
-    buy = [s for s in top10 if s.get("verdict") == "購入"]
-    if not top10:
-        return "本日は転がし候補の算出データがありません。"
-    if not buy:
-        return f"本日は転がし適性70未満が多く、見送り寄りの判定です（候補{len(top10)}件中）。"
-    venues = list(dict.fromkeys(s.get("venue","") for s in buy[:3]))
-    venue_txt = "・".join(venues)
-    return f"購入判定レースが{len(buy)}件あります。{venue_txt}が本日の有力候補です。"
+# 【転がし分離】_section_comment_korogashi は削除。
+# 転がしは新聞から完全に独立した別スクリプトへ移行したため、
+# 新聞本文からは一切生成しない。
 
 
 # ════════════════════════════════════════════════════════════
 # レースごとのAIコメント（1〜2行）
 # ════════════════════════════════════════════════════════════
 
-def _bd_weighted(bd: dict, key: str, default: float = 0.0) -> float:
-    """
-    breakdown辞書から「重み付き値(weighted)」を安全に取り出す。
-
-    対応する形式:
-      - dict {"weighted": x, ...}          → x_asahi_scoring v2以降の現行形式
-      - list/tuple (raw_100, weighted)     → 旧形式（JSON化でlistになる）
-      - 数値そのもの                        → さらに古い形式
-      - None・欠損キー                      → default
-    """
-    val = bd.get(key, default)
-    if isinstance(val, dict):
-        val = val.get("weighted", default)
-    elif isinstance(val, (list, tuple)):
-        if len(val) >= 2:
-            val = val[1]
-        elif len(val) == 1:
-            val = val[0]
-        else:
-            return default
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return default
-
-
-def _bd_worse_count(bd: dict, key: str) -> Optional[tuple]:
-    """相対評価項目の (worse_count, worse_total) を取り出す。相対項目でなければNone。"""
-    val = bd.get(key)
-    if isinstance(val, dict) and val.get("kind") == "relative":
-        return val.get("worse_count", 0), val.get("worse_total", 0)
-    return None
-
-
 def _race_comment(d: dict) -> str:
     bd = d.get("breakdown", {})
-    # 【朝刊AI Ver4】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・満点
-    # (asahi_config.json の danger_score.relative_weights.max_weight と一致させる)
+    # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・満点
     items = [
-        ("勝率",       _bd_weighted(bd, "win_rate"),      20, "全国勝率で劣勢"),
-        ("当地勝率",   _bd_weighted(bd, "local_win"),     10, "当地勝率で劣勢"),
-        ("平均ST",     _bd_weighted(bd, "avg_st"),        12, "平均STで劣勢"),
-        ("機力",       _bd_weighted(bd, "motor"),         16, "モーター力で劣勢"),
-        ("級別",       _bd_weighted(bd, "racer_class"),   10, "級別で劣勢"),
-        ("コース連対", _bd_weighted(bd, "course_rentai"), 12, "進入コースでの連対率が低調"),
-        ("能力推移",   _bd_weighted(bd, "ability_trend"),  8, "能力指数が下降傾向"),
+        ("平均ST",   bd.get("avg_st_slow",     0.0), 18, "平均ST遅れリスク"),
+        ("コースST", bd.get("course_st_slow",  0.0), 10, "コース別ST低調"),
+        ("機力",     bd.get("motor_bad",       0.0), 22, "モーター力不足"),
+        ("等級",     bd.get("class_gap",       0.0), 14, "格下等級"),
+        ("勝率",     bd.get("win_rate_low",    0.0), 28, "勝率が低調"),
+        ("ST順位",   bd.get("course_rank_bad", 0.0), 8,  "ST順位が低調"),
     ]
     # 各項目を満点に対する比率で比較する（満点が項目ごとに異なるため）
     top = sorted(items, key=lambda x: -(x[1] / x[2] if x[2] else 0))[:2]
@@ -470,12 +423,12 @@ def generate_csvs(data: dict, prefix: str = "") -> list[str]:
 # ════════════════════════════════════════════════════════════
 
 # AI総合注目度（PICKセクション用の加重平均、一致指数とは別軸）の重み
+# 【転がし分離】旧korogashi:0.20を残り4項目へ比例配分（0.80→1.00、係数1.25）
 OVERALL_WEIGHTS = {
-    "danger":    0.25,
-    "manshuu":   0.30,
-    "korogashi": 0.20,
-    "motor_hot": 0.15,
-    "motor_awk": 0.10,
+    "danger":    0.3125,
+    "manshuu":   0.375,
+    "motor_hot": 0.1875,
+    "motor_awk": 0.125,
 }
 
 
@@ -503,27 +456,27 @@ def _calc_match_index(brands: list[str], raw_scores: dict) -> float:
 # ════════════════════════════════════════════════════════════
 # ② AI開催場ヒートマップ／コンディション指数（開催場別）
 # 重みは x_brand_config.VENUE_CONDITION_WEIGHTS を使用
+# 【転がし分離】新聞の合成スコアからkorogashiを完全に除外した。
 # ════════════════════════════════════════════════════════════
 
 def calc_venue_conditions(data: dict) -> list[dict]:
     """
-    開催場ごとに5項目（危険艇・万舟・転がし・激走・覚醒）を個別採点し、
+    開催場ごとに4項目（危険艇・万舟・激走・覚醒）を個別採点し、
     さらに総合の「AIコンディション指数」を算出する。
     要件②: 開催場ヒートマップの土台データ。
 
     戻り値: [{
       "venue": "江戸川",
       "score": 92, "stars": "★★★★★",
-      # 5項目それぞれの 0-100点スコアと★・信号表示
+      # 4項目それぞれの 0-100点スコアと★・信号表示
       "items": {
         "danger":    {"score": 85, "stars": "★★★★☆", "heat": "🟢", "count": 3},
         "manshuu":   {"score": 70, "stars": "★★★★☆", "heat": "🟢", "count": 2},
-        "korogashi": {"score": 0,  "stars": "☆☆☆☆☆", "heat": "🔴", "count": 0},
         "motor_hot": {"score": 75, "stars": "★★★★☆", "heat": "🟢", "count": 1},
         "motor_awk": {"score": 0,  "stars": "☆☆☆☆☆", "heat": "🔴", "count": 0},
       },
       # 互換用（旧コード参照のため残す）
-      "danger_avg":, "manshuu_avg":, "korogashi_avg":,
+      "danger_avg":, "manshuu_avg":,
       "motor_hot": bool, "motor_awk": bool,
       "danger_count":, "manshuu_count":,
     }, ...]  スコア降順
@@ -532,15 +485,12 @@ def calc_venue_conditions(data: dict) -> list[dict]:
     all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
     hot_motor   = data.get("hot_motor", [])
     awake_motor = data.get("awakening_motor", [])
-    kdata       = _load_korogashi_cache()
-    korogashi_top10 = [s for s in kdata.get("top10", []) if s.get("verdict") in ("購入", "注意")]
 
     venues: set[str] = set()
     for d in all_danger:  venues.add(d.get("venue",""))
     for u in all_manshuu: venues.add(u.get("venue",""))
     for m in hot_motor:   venues.add(m.get("venue",""))
     for a in awake_motor: venues.add(a.get("venue",""))
-    for s in korogashi_top10: venues.add(s.get("venue",""))
     venues.discard("")
 
     results: list[dict] = []
@@ -549,7 +499,6 @@ def calc_venue_conditions(data: dict) -> list[dict]:
     for venue in venues:
         d_list = [d.get("score", 0) for d in all_danger  if d.get("venue") == venue]
         m_list = [u.get("score", 0) for u in all_manshuu if u.get("venue") == venue]
-        k_list = [s.get("fitness", 0) for s in korogashi_top10 if s.get("venue") == venue]
         hot_list = [m for m in hot_motor   if m.get("venue") == venue]
         awk_list = [a for a in awake_motor if a.get("venue") == venue]
         has_hot  = len(hot_list) > 0
@@ -557,7 +506,6 @@ def calc_venue_conditions(data: dict) -> list[dict]:
 
         d_avg = sum(d_list) / len(d_list) if d_list else 0
         m_avg = sum(m_list) / len(m_list) if m_list else 0
-        k_avg = sum(k_list) / len(k_list) if k_list else 0
         # 激走/覚醒はレース単位スコアがないため、件数に応じて0-100点を疑似算出
         hot_s = min(100, 60 + len(hot_list) * 10) if has_hot else 0
         awk_s = min(100, 60 + len(awk_list) * 10) if has_awk else 0
@@ -565,7 +513,6 @@ def calc_venue_conditions(data: dict) -> list[dict]:
         items = {
             "danger":    {"score": round(d_avg, 1),   "stars": _stars(d_avg),   "heat": heat_emoji(d_avg),   "count": len(d_list)},
             "manshuu":   {"score": round(m_avg, 1),   "stars": _stars(m_avg),   "heat": heat_emoji(m_avg),   "count": len(m_list)},
-            "korogashi": {"score": round(k_avg, 1),   "stars": _stars(k_avg),   "heat": heat_emoji(k_avg),   "count": len(k_list)},
             "motor_hot": {"score": round(hot_s, 1),   "stars": _stars(hot_s),   "heat": heat_emoji(hot_s),   "count": len(hot_list)},
             "motor_awk": {"score": round(awk_s, 1),   "stars": _stars(awk_s),   "heat": heat_emoji(awk_s),   "count": len(awk_list)},
         }
@@ -574,7 +521,6 @@ def calc_venue_conditions(data: dict) -> list[dict]:
         present_weights = []
         if d_list: present_weights.append(("danger", d_avg))
         if m_list: present_weights.append(("manshuu", m_avg))
-        if k_list: present_weights.append(("korogashi", k_avg))
         if has_hot: present_weights.append(("motor_hot", hot_s))
         if has_awk: present_weights.append(("motor_awk", awk_s))
 
@@ -594,7 +540,6 @@ def calc_venue_conditions(data: dict) -> list[dict]:
             # 互換用フィールド（既存コードが参照しているため残す）
             "danger_avg":    round(d_avg, 1) if d_list else None,
             "manshuu_avg":   round(m_avg, 1) if m_list else None,
-            "korogashi_avg": round(k_avg, 1) if k_list else None,
             "motor_hot":     has_hot,
             "motor_awk":     has_awk,
             "danger_count":  len(d_list),
@@ -617,8 +562,6 @@ def build_dashboard(data: dict, conditions: list) -> dict:
     all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
     hot_motor   = data.get("hot_motor", [])
     awake_motor = data.get("awakening_motor", [])
-    kdata       = _load_korogashi_cache()
-    korogashi_buy = [s for s in kdata.get("top10", []) if s.get("verdict") == "購入"]
 
     sorted_index, brand_counts, race_scores = _build_race_index(data)
 
@@ -652,7 +595,6 @@ def build_dashboard(data: dict, conditions: list) -> dict:
         "races_analyzed":     len(races_analyzed),
         "danger_s_count":     s_danger_count,
         "manshuu_s_count":    s_manshuu_count,
-        "korogashi_count":    len(korogashi_buy),
         "motor_hot_count":    len(hot_motor),
         "motor_awk_count":    len(awake_motor),
         "high_match_count":   high_match_count,
@@ -681,7 +623,6 @@ def _render_dashboard_section(data: dict, dashboard: dict) -> str:
     <div class="dash-cell"><div class="dc-num">{d['races_analyzed']}</div><div class="dc-label">解析レース数</div></div>
     <div class="dash-cell s"><div class="dc-num">{d['danger_s_count']}</div><div class="dc-label">🚨危険艇S</div></div>
     <div class="dash-cell s"><div class="dc-num">{d['manshuu_s_count']}</div><div class="dc-label">💰万舟S</div></div>
-    <div class="dash-cell"><div class="dc-num">{d['korogashi_count']}</div><div class="dc-label">🎯転がし候補</div></div>
     <div class="dash-cell"><div class="dc-num">{d['motor_hot_count']}</div><div class="dc-label">⚡激走モーター</div></div>
     <div class="dash-cell"><div class="dc-num">{d['motor_awk_count']}</div><div class="dc-label">📈覚醒モーター</div></div>
     <div class="dash-cell hi"><div class="dc-num">{d['high_match_count']}</div><div class="dc-label">一致指数95+</div></div>
@@ -695,13 +636,13 @@ def _render_dashboard_section(data: dict, dashboard: dict) -> str:
 def _render_condition_section(data: dict) -> str:
     """
     ② 本日のAI開催場ヒートマップ セクション（開催場別）
-    要件②: 危険艇・万舟・転がし・激走・覚醒の5項目を一覧表で色分け表示する。
+    要件②: 危険艇・万舟・激走・覚醒の4項目を一覧表で色分け表示する。
     """
     conditions = calc_venue_conditions(data)
     if not conditions:
         return ""
 
-    item_keys = ["danger", "manshuu", "korogashi", "motor_hot", "motor_awk"]
+    item_keys = ["danger", "manshuu", "motor_hot", "motor_awk"]
 
     header_cells = "".join(
         f'<th>{brand_icon(k)}{brand_short(k)}</th>' for k in item_keys
@@ -731,7 +672,7 @@ def _render_condition_section(data: dict) -> str:
     return f"""
 <section id="condition">
   <h2>📈 本日のAI開催場ヒートマップ</h2>
-  <div class="section-comment">開催場ごとの今日の面白さを5項目で採点しました。🟢が多い開催場ほど見どころが多い一日です。</div>
+  <div class="section-comment">開催場ごとの今日の面白さを4項目で採点しました。🟢が多い開催場ほど見どころが多い一日です。</div>
   <div class="heatmap-wrap">
     <table class="heatmap-table">
       <thead><tr><th>開催場</th><th>総合</th>{header_cells}</tr></thead>
@@ -802,17 +743,6 @@ def _race_anchor(venue: str, race) -> str:
     return f"race-{safe_venue}-{race}"
 
 
-def _load_korogashi_cache() -> dict:
-    """korogashi_cache.json を安全に読み込む"""
-    try:
-        if os.path.exists("korogashi_cache.json"):
-            with open("korogashi_cache.json", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
-
-
 def _build_race_index(data: dict) -> tuple:
     """
     全レースのブランド掲載状況とAIスコアを集計する。
@@ -822,7 +752,7 @@ def _build_race_index(data: dict) -> tuple:
       race_scores:  {(venue, race): {
           "overall":     重み付き加重平均スコア（既存・引き続き内部利用）,
           "match_index": AI一致指数（① 加点方式・100点満点）,
-          "danger":, "manshuu":, "korogashi":,
+          "danger":, "manshuu":,
           "motor_hot":, "motor_awk":, "brand_count":,
       }}
     """
@@ -849,12 +779,6 @@ def _build_race_index(data: dict) -> tuple:
         score = u.get("score", 0)
         _add(venue, race, "manshuu", score)
 
-    # 転がし候補（korogashi_cache.json があれば統合）
-    kdata = _load_korogashi_cache()
-    for s in kdata.get("top10", []):
-        if s.get("verdict") in ("購入", "注意"):
-            _add(s.get("venue",""), s.get("race",""), "korogashi", s.get("fitness", 0))
-
     # 会場名→開催場コード順、レース番号昇順でソート
     def _sort_key(item):
         (venue, race), brands = item
@@ -876,7 +800,6 @@ def _build_race_index(data: dict) -> tuple:
         # 各指標を0-100に正規化（なければ0扱い、重みは「掲載なし」を考慮）
         danger_s    = raw.get("danger", 0)
         manshuu_s   = raw.get("manshuu", 0)
-        korogashi_s = raw.get("korogashi", 0)
         # 激走/覚醒は会場単位データのためレース単位スコアはなし→掲載有無のみ反映
         motor_hot_present = any(
             m.get("venue","") == key[0]
@@ -892,7 +815,6 @@ def _build_race_index(data: dict) -> tuple:
         overall = (
             danger_s    * W["danger"]    +
             manshuu_s   * W["manshuu"]   +
-            korogashi_s * W["korogashi"] +
             motor_hot_s * W["motor_hot"] +
             motor_awk_s * W["motor_awk"]
         )
@@ -909,7 +831,6 @@ def _build_race_index(data: dict) -> tuple:
             "match_index": match_index,
             "danger":      danger_s,
             "manshuu":     manshuu_s,
-            "korogashi":   korogashi_s,
             "motor_hot":   motor_hot_s if motor_hot_present else None,
             "motor_awk":   motor_awk_s if motor_awk_present else None,
             "brand_count": len(brands),
@@ -921,7 +842,6 @@ def _build_race_index(data: dict) -> tuple:
         "manshuu":   len(all_manshuu),
         "motor_hot": len(data.get("hot_motor", [])),
         "motor_awk": len(data.get("awakening_motor", [])),
-        "korogashi": sum(1 for s in kdata.get("top10", []) if s.get("verdict") in ("購入", "注意")),
     }
 
     return sorted_index, brand_counts, race_scores
@@ -944,7 +864,6 @@ def _anchor_for_brand(venue, race, brand: str) -> str:
     manshuu     → レース詳細カード（万舟セクション）
     motor_hot   → 激走モーターセクションの先頭（レース単位データがないため）
     motor_awk   → 覚醒モーターセクションの先頭
-    korogashi   → 転がし候補セクションの先頭
     """
     base = _race_anchor(venue, race)
     if brand == "danger":
@@ -955,8 +874,6 @@ def _anchor_for_brand(venue, race, brand: str) -> str:
         return "motor"
     if brand == "motor_awk":
         return "awake"
-    if brand == "korogashi":
-        return "korogashi"
     return base
 
 
@@ -1034,7 +951,7 @@ def _render_index_section(data: dict) -> str:
 </div>"""
 
     count_rows = ""
-    for key in ["danger", "manshuu", "motor_hot", "motor_awk", "korogashi"]:
+    for key in ["danger", "manshuu", "motor_hot", "motor_awk"]:
         cnt = brand_counts.get(key, 0)
         if cnt == 0:
             continue
@@ -1063,18 +980,15 @@ def _render_index_section(data: dict) -> str:
 
 
 def _race_detail(venue: str, race, data: dict) -> Optional[dict]:
-    """指定レースの詳細データ（危険艇/万舟/転がし）を1つにまとめて返す"""
+    """指定レースの詳細データ（危険艇/万舟）を1つにまとめて返す"""
     all_danger  = data.get("all_danger",  data.get("danger_boat1", []))
     all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
-    kdata       = _load_korogashi_cache()
 
     d = next((x for x in all_danger  if x.get("venue")==venue and str(x.get("race"))==str(race)), None)
     u = next((x for x in all_manshuu if x.get("venue")==venue and str(x.get("race"))==str(race)), None)
-    k = next((x for x in kdata.get("top10", [])
-              if x.get("venue")==venue and str(x.get("race"))==str(race)), None)
-    if not (d or u or k):
+    if not (d or u):
         return None
-    return {"danger": d, "manshuu": u, "korogashi": k}
+    return {"danger": d, "manshuu": u}
 
 
 def _render_pickup_section(data: dict) -> str:
@@ -1089,7 +1003,7 @@ def _render_pickup_section(data: dict) -> str:
     brands = next((b for v, r, b in sorted_index if (v, r) == best_key), [])
 
     detail = _race_detail(venue, race, data) or {}
-    d, u, k = detail.get("danger"), detail.get("manshuu"), detail.get("korogashi")
+    d, u = detail.get("danger"), detail.get("manshuu")
 
     badges = _brand_badge_html(brands)
     stars  = _stars(s["match_index"])
@@ -1103,8 +1017,6 @@ def _render_pickup_section(data: dict) -> str:
         clean = [r.replace('🔥 ','').replace('🔥','').strip() for r in reasons if r.strip()]
         if clean:
             points.append(f"💰 万舟: {clean[0]}")
-    if k:
-        points.append(f"🎯 転がし: 適性{k.get('fitness','-')}点・{k.get('lane','-')}号艇 {k.get('racer_name','')}")
     if s.get("motor_hot"):
         points.append("⚡ 激走モーター対象会場")
     if s.get("motor_awk"):
@@ -1114,7 +1026,7 @@ def _render_pickup_section(data: dict) -> str:
 
     # 一致ブランド数による総合コメント生成（200文字程度）
     brand_names_jp = {
-        "danger": "危険艇", "manshuu": "万舟", "korogashi": "転がし",
+        "danger": "危険艇", "manshuu": "万舟",
         "motor_hot": "激走モーター", "motor_awk": "覚醒モーター",
     }
     matched_names = [brand_names_jp.get(b, b) for b in brands if b in brand_names_jp]
@@ -1123,7 +1035,6 @@ def _render_pickup_section(data: dict) -> str:
     condition_parts = []
     if d and d.get("score", 0) >= 80: condition_parts.append("危険艇Sランク")
     if u and u.get("score", 0) >= 80: condition_parts.append("万舟Sランク")
-    if k and k.get("fitness", 0) >= 90: condition_parts.append("転がし適性90以上")
     if s.get("motor_hot"): condition_parts.append("激走モーター対象")
     if s.get("motor_awk"): condition_parts.append("覚醒モーター対象")
     cond_text = "・".join(condition_parts) if condition_parts else "複数指標で高評価"
@@ -1201,16 +1112,6 @@ def _render_top5_section(data: dict) -> str:
     if not race_scores:
         return ""
 
-    # 【危険艇速報/万舟警報 未掲載レースの参考情報】
-    # TOP5は危険艇速報・万舟警報・転がし・激走/覚醒モーターの統合指数で
-    # 選ばれるため、転がしや激走/覚醒モーターの評価だけでTOP5入りした
-    # レースは、危険艇速報・万舟警報のどちらのセクションにも掲載されない
-    # ことがある。この場合、危険度・万舟指数は閾値未満でも
-    # x_ranking.py 側で計算済みの数値を all_scores から参考値として拾い、
-    # 「参考: 危険度XX点」のように表示する（新聞の他セクションへの
-    # 掲載条件・閾値そのものは一切変更しない）。
-    all_scores = data.get("all_scores", {})
-
     ranked = sorted(race_scores.items(), key=lambda kv: -kv[1]["match_index"])[:5]
 
     rows = ""
@@ -1219,26 +1120,13 @@ def _render_top5_section(data: dict) -> str:
         brands = next((b for v, r, b in sorted_index if (v, r) == key), [])
         anchor = _anchor_for(venue, race, brands)
         icons  = " ".join(BRAND_ICONS.get(b, "") for b in brands)
-
-        # 危険艇速報・万舟警報どちらにも掲載されていない場合の参考情報
-        ref_html = ""
-        if "danger" not in brands and "manshuu" not in brands:
-            ref = all_scores.get(f"{venue}|{race}", {})
-            ref_parts = []
-            if ref.get("danger_score") is not None:
-                ref_parts.append(f"危険度{ref['danger_score']:.0f}点")
-            if ref.get("upset_score") is not None:
-                ref_parts.append(f"荒れ指数{ref['upset_score']:.0f}点")
-            if ref_parts:
-                ref_html = f'<div class="top5-ref">参考: {" / ".join(ref_parts)}（速報・警報の掲載基準未満）</div>'
-
         rows += f"""
 <a href="#{anchor}" class="top5-row">
   <span class="top5-rank">{i}</span>
   <span class="top5-race">{venue}{race}R</span>
   <span class="top5-icons">{icons}</span>
   <span class="top5-score">一致指数{s['match_index']}</span>
-</a>{ref_html}"""
+</a>"""
 
     return f"""
 <section id="top5">
@@ -1279,9 +1167,6 @@ def generate_html(data: dict, output_path: str) -> None:
     top5_section    = _render_top5_section(data)
     index_section   = _render_index_section(data)
 
-    # 転がし候補データ
-    korogashi_data    = _load_korogashi_cache()
-
     s_d = len([d for d in all_danger  if rank_of(d.get("score",0)) == "S"])
     a_d = len([d for d in all_danger  if rank_of(d.get("score",0)) == "A"])
     b_d = len([d for d in all_danger  if rank_of(d.get("score",0)) == "B"])
@@ -1297,16 +1182,15 @@ def generate_html(data: dict, output_path: str) -> None:
             score = d.get("score", 0)
             comment = _race_comment(d)
             bd = d.get("breakdown", {})
-            # 【朝刊AI Ver4】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・
-            # 満点はここに合わせる（asahi_config.json の danger_score.relative_weights と一致させること）
+            # 【朝刊AI】x_asahi_scoring.calc_danger_score_v2() の breakdown キー名・
+            # 満点はここに合わせる（asahi_config.json の danger_score.weights と一致させること）
             bar_items = [
-                ("勝率",       _bd_weighted(bd, "win_rate"),      20, "#42a5f5"),
-                ("機力",       _bd_weighted(bd, "motor"),         16, "#ffa726"),
-                ("平均ST",     _bd_weighted(bd, "avg_st"),        12, "#ef5350"),
-                ("当地勝率",   _bd_weighted(bd, "local_win"),     10, "#ab47bc"),
-                ("級別",       _bd_weighted(bd, "racer_class"),   10, "#ff7043"),
-                ("コース連対", _bd_weighted(bd, "course_rentai"), 12, "#26c6da"),
-                ("能力推移",   _bd_weighted(bd, "ability_trend"),  8, "#66bb6a"),
+                ("勝率",     bd.get("win_rate_low",    0.0), 28, "#42a5f5"),
+                ("機力",     bd.get("motor_bad",       0.0), 22, "#ffa726"),
+                ("平均ST",   bd.get("avg_st_slow",     0.0), 18, "#ef5350"),
+                ("等級",     bd.get("class_gap",       0.0), 14, "#ab47bc"),
+                ("コースST", bd.get("course_st_slow",  0.0), 10, "#ff7043"),
+                ("ST順位",   bd.get("course_rank_bad", 0.0), 8,  "#26a69a"),
             ]
             bars = "".join(
                 f'<div class="bi"><span class="bl">{l}</span>'
@@ -1319,63 +1203,17 @@ def generate_html(data: dict, output_path: str) -> None:
             _brands = next((b for v, r, b in race_index_data[0]
                            if v == d.get('venue','') and str(r) == str(d.get('race',''))), ["danger"])
             _badges = _brand_badge_html(_brands)
-
-            # ── Ver4: 水面タイプバッジ（実データ自動算出。参考値の場合は明示） ──
-            wt = d.get("water_type") or {}
-            water_type_html = ""
-            if wt.get("label"):
-                _wt_note = "（参考）" if wt.get("source") == "cold_start_hint" else ""
-                water_type_html = f'<span class="rc-watertype">{wt["label"]}{_wt_note}</span>'
-
-            # ── 注目選手（◎○▲、代わりに狙うべき艇） ──────────
-            featured = d.get("featured_boats", [])
-            featured_html = ""
-            if featured:
-                items_html = "".join(
-                    f'<div class="fr-item"><span class="fr-mark">{f.get("mark","")}</span>'
-                    f'<span class="fr-lane">{f.get("lane","")}号艇</span>'
-                    f'<span class="fr-name">{f.get("name","")}</span>'
-                    f'<span class="fr-idx">1着指数{f.get("top1",0):.1f} '
-                    f'/ 2着以内{f.get("top2",0):.1f} / 3着以内{f.get("top3",0):.1f}</span></div>'
-                    for f in featured
-                )
-                featured_html = f'<div class="rc-featured"><div class="fr-title">注目選手</div>{items_html}</div>'
-
-            # ── 各艇 上位進出指数テーブル（1着指数・2着以内指数・3着以内指数） ──
-            rank_index = d.get("rank_index", {}) or {}
-            rank_table_rows = ""
-            for lane in range(1, 7):
-                idx = rank_index.get(lane) or rank_index.get(str(lane))
-                if not idx:
-                    continue
-                rank_table_rows += (
-                    f'<tr><td>{lane}号艇</td>'
-                    f'<td>{idx.get("top1",0):.1f}</td>'
-                    f'<td>{idx.get("top2",0):.1f}</td>'
-                    f'<td>{idx.get("top3",0):.1f}</td></tr>'
-                )
-            rank_table_html = ""
-            if rank_table_rows:
-                rank_table_html = (
-                    '<table class="rc-rank-table"><thead><tr>'
-                    '<th>艇</th><th>1着指数</th><th>2着以内指数</th><th>3着以内指数</th>'
-                    f'</tr></thead><tbody>{rank_table_rows}</tbody></table>'
-                )
-
             rows += f"""
 <div class="race-card {rank_cls}" id="{_anchor}">
   <div class="rc-header">
     <span class="badge {rank_cls}">{rank_label(score)}</span>
     <strong class="rc-name">{d.get('venue','')}{d.get('race','')}R</strong>
     <span class="rc-racer">{d.get('racer','?')} {d.get('racer_class','')}</span>
-    {water_type_html}
     {_badges}
   </div>
   <div class="rc-reason">{d.get('reason','')}</div>
-  <div class="breakdown">{bars}</div>
-  {featured_html}
-  {rank_table_html}
   <div class="rc-comment">💬 {comment}</div>
+  <div class="breakdown">{bars}</div>
   {_course_st_html(d)}
 </div>"""
         return rows
@@ -1578,7 +1416,6 @@ body{{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto S
 .top5-race{{font-weight:bold;flex:1}}
 .top5-icons{{font-size:.95em;letter-spacing:1px}}
 .top5-score{{font-size:.82em;color:var(--gray)}}
-.top5-ref{{font-size:.78em;color:var(--gray);padding:2px 10px 6px 34px;font-style:italic}}
 /* ブランドバッジ */
 .brand-badges{{margin-left:auto;display:inline-flex;gap:2px}}
 .brand-badge{{font-size:.95em}}
@@ -1619,7 +1456,6 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 .badge.c{{background:var(--c);color:#fff}}
 .rc-name{{font-size:1.05em}}
 .rc-racer{{color:var(--gray);font-size:.88em}}
-.rc-watertype{{display:inline-block;font-size:.7em;padding:1px 6px;border-radius:8px;background:#2a3a4a;color:#8ecae6;margin-left:4px}}
 .rc-reason{{color:#bbb;font-size:.85em;margin:4px 0}}
 .rc-comment{{color:var(--accent);font-size:.85em;margin-top:4px}}
 .course-st-block{{margin-top:10px;border-top:1px solid #333;padding-top:8px}}
@@ -1640,19 +1476,6 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 .bb{{background:#252540;border-radius:2px;height:8px;overflow:hidden}}
 .bf{{height:100%;border-radius:2px;transition:width .3s}}
 .bv{{font-size:.7em;color:var(--gray);text-align:center}}
-/* 注目選手（危険艇速報：代わりに狙うべき艇） */
-.rc-featured{{margin-top:10px;padding:8px;background:#1a2a1a;border-radius:6px;border:1px solid #2d4a2d}}
-.fr-title{{font-size:.75em;color:#7ed17e;margin-bottom:4px;font-weight:bold}}
-.fr-item{{display:flex;align-items:center;gap:6px;font-size:.8em;padding:2px 0;flex-wrap:wrap}}
-.fr-mark{{font-size:1.1em;color:#ffca28}}
-.fr-lane{{color:#eee;font-weight:bold}}
-.fr-name{{color:#ccc}}
-.fr-idx{{color:var(--gray);font-size:.85em;margin-left:auto}}
-/* 各艇 上位進出指数テーブル */
-.rc-rank-table{{width:100%;border-collapse:collapse;font-size:.75em;margin-top:8px}}
-.rc-rank-table th,.rc-rank-table td{{padding:3px 6px;border-bottom:1px solid #333;text-align:center}}
-.rc-rank-table thead th{{color:var(--gray);font-weight:normal}}
-.rc-rank-table td:first-child,.rc-rank-table th:first-child{{text-align:left}}
 /* 昨日の実績 */
 #yesterday{{background:var(--card);border:1px solid var(--border);
   border-radius:10px;padding:16px;margin-bottom:20px}}
@@ -1739,7 +1562,6 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
     <li><a href="#manshuu">💰 AI万舟警報</a></li>
     <li><a href="#motor">⚡ AI激走モーター</a></li>
     <li><a href="#awake">📈 AI覚醒モーター</a></li>
-    <li><a href="#korogashi">🎯 AI転がし候補</a></li>
     <li><a href="#racer">👤 今日の注目レーサー</a></li>
     <li><a href="#yesterday">📊 昨日の検証</a></li>
   </ul>
@@ -1791,16 +1613,6 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 <section id="awake">
   {_render_brand_header("motor_awk", f"全{len(awake_motor)}件", _section_comment_motor(awake_motor, "覚醒モーター"))}
   {motor_table(awake_motor, awake_cols)}
-</section>
-
-<!-- ⑪ 転がし候補 -->
-<section id="korogashi">
-  {_render_brand_header("korogashi", "", _section_comment_korogashi(korogashi_data))}
-  {''.join(
-      f'<a href="#" class="kr-link">{s.get("venue","")}{s.get("race","")}R　'
-      f'{s.get("lane","")}号艇 {s.get("racer_name","")}　適性{s.get("fitness","")}点　[{s.get("verdict","")}]</a>'
-      for s in korogashi_data.get("top10", [])
-  ) or '<p class="no-data">本日のデータはまだありません</p>'}
 </section>
 
 <!-- ⑫ 今日の注目レーサー -->
@@ -2185,7 +1997,6 @@ def generate_markdown(data: dict, output_path: str) -> None:
         f"- 解析レース数: **{dashboard['races_analyzed']}レース**",
         f"- 危険艇Sランク: **{dashboard['danger_s_count']}件**",
         f"- 万舟Sランク: **{dashboard['manshuu_s_count']}件**",
-        f"- 転がし候補: **{dashboard['korogashi_count']}件**",
     ]
     if dashboard["best_venue"]:
         lines.append(f"- ⭐ 最も期待: **{dashboard['best_venue']}**")
@@ -2206,8 +2017,8 @@ def generate_markdown(data: dict, output_path: str) -> None:
         "",
         "## <a id=\"heatmap\"></a>📈 開催場ヒートマップ",
         "",
-        "| 開催場 | 総合 | 🚨危険艇 | 💰万舟 | 🎯転がし | ⚡激走 | 📈覚醒 |",
-        "|---|---|---|---|---|---|---|",
+        "| 開催場 | 総合 | 🚨危険艇 | 💰万舟 | ⚡激走 | 📈覚醒 |",
+        "|---|---|---|---|---|---|",
     ]
     for c in venue_conditions:
         items = c["items"]
@@ -2216,7 +2027,7 @@ def generate_markdown(data: dict, output_path: str) -> None:
             return f"{it['heat']}{it['score']:.0f}" if it["count"] > 0 else "－"
         lines.append(
             f"| {c['venue']} | {c['stars']} | {_cell('danger')} | {_cell('manshuu')} | "
-            f"{_cell('korogashi')} | {_cell('motor_hot')} | {_cell('motor_awk')} |"
+            f"{_cell('motor_hot')} | {_cell('motor_awk')} |"
         )
 
     lines += [
@@ -2419,7 +2230,7 @@ def generate_x_teaser(data: dict) -> str:
     )
 
     brand_names_jp = {
-        "danger": "危険艇", "manshuu": "万舟", "korogashi": "転がし",
+        "danger": "危険艇", "manshuu": "万舟",
         "motor_hot": "激走", "motor_awk": "覚醒",
     }
 
@@ -2456,7 +2267,6 @@ def _brand_summary_facts(data: dict, brand: str) -> dict:
     all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
     hot_motor   = data.get("hot_motor", [])
     awake_motor = data.get("awakening_motor", [])
-    kdata       = _load_korogashi_cache()
 
     facts = {"brand": brand, "count": 0, "s_count": 0, "top": None}
 
@@ -2474,11 +2284,6 @@ def _brand_summary_facts(data: dict, brand: str) -> dict:
         facts["count"] = len(hot_motor)
     elif brand == "motor_awk":
         facts["count"] = len(awake_motor)
-    elif brand == "korogashi":
-        buy = [s for s in kdata.get("top10", []) if s.get("verdict") == "購入"]
-        facts["count"] = len(buy)
-        if buy:
-            facts["top"] = buy[0]
 
     return facts
 
@@ -2560,7 +2365,7 @@ def generate_brand_teasers_all_styles(data: dict, brand: str) -> dict:
 def generate_poll_text(data: dict, variant: str = "race") -> dict:
     """
     ⑫ Xアンケート投稿用のテキストを生成する。
-    variant: "race"(一致指数TOP3レース) / "venue"(コンディションTOP3開催場) / "korogashi"(転がし候補)
+    variant: "race"(一致指数TOP3レース) / "venue"(コンディションTOP3開催場)
     戻り値: {"question": str, "options": [str, str, str, str]}
     """
     circled = ["①", "②", "③"]
@@ -2575,18 +2380,6 @@ def generate_poll_text(data: dict, variant: str = "race") -> dict:
             options.append(f"{circled[len(options)]}該当なし")
         options.append("④その他")
         return {"question": "今日最も期待する開催場は？", "options": options}
-
-    if variant == "korogashi":
-        kdata = _load_korogashi_cache()
-        buy = [s for s in kdata.get("top10", []) if s.get("verdict") in ("購入", "注意")][:3]
-        if not buy:
-            return {"question": "今日の転がしチャレンジ、どのレースが気になる？",
-                    "options": ["①データ準備中", "②データ準備中", "③データ準備中", "④見送りでいい"]}
-        options = [f"{circled[i]}{s.get('venue','')}{s.get('race','')}R" for i, s in enumerate(buy)]
-        while len(options) < 3:
-            options.append(f"{circled[len(options)]}該当なし")
-        options.append("④見送りでいい")
-        return {"question": "今日の転がしチャレンジ、どのレースが気になる？", "options": options}
 
     # デフォルト: variant == "race"
     sorted_index, brand_counts, race_scores = _build_race_index(data)
@@ -2683,7 +2476,6 @@ def _save_daily_stats(data: dict, date_str: str) -> None:
     }
 
     daily_stats_file = "daily_stats.json"
-    x_release_storage.download_file(daily_stats_file, daily_stats_file)
     existing = {}
     if os.path.exists(daily_stats_file):
         try:
@@ -2703,8 +2495,6 @@ def _save_daily_stats(data: dict, date_str: str) -> None:
             json.dump(existing, f, ensure_ascii=False, indent=2)
         log.info("[daily_stats] 保存: %s 危険艇%d件 万舟%d件 AIランキング%d件",
                  date_str, len(all_danger), len(all_manshuu), len(ranking_top10))
-        if not x_release_storage.upload_file(daily_stats_file, daily_stats_file):
-            log.warning("[daily_stats] Release反映に失敗しました（ローカルには保存済み）")
     except Exception as e:
         log.warning("[daily_stats] 保存失敗: %s", e)
 
