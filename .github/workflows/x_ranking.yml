@@ -2,15 +2,18 @@ name: X Ranking Post
 
 'on':
   schedule:
-    - cron: '15 19 * * *'
-    - cron: '0 23 * * *'
-    - cron: '0 4 * * *'
-    - cron: '0 11 * * *'
-    - cron: '0 11 * * 0'
+    # 【全時間帯統合】以前は1日5回(danger/hot/awakening/verification/weekly)に
+    # 分かれていたが、判定用の比較文字列と実際のcron設定がずれており、
+    # 実質的に全て「danger」扱いで重複実行されていた不具合があった。
+    # 原因を個別に直すより、「毎朝7:30(JST)に1回だけ全部まとめて実行する」
+    # というシンプルな形に統合することで、この種の食い違いが起きようが
+    # ないようにする。
+    #   7:30 JST = 22:30 UTC（前日）
+    - cron: '30 22 * * *'
   workflow_dispatch:
     inputs:
       post_type:
-        description: '投稿種類 (danger / hot / awakening / verification / all)'
+        description: '投稿種類 (all=通常/danger/hot/awakening/verification/weekly)。手動実行時のみ個別指定可'
         required: false
         default: 'all'
       date:
@@ -58,43 +61,36 @@ jobs:
         run: |
           [ -f model_all.pkl ] && echo "model_all.pkl あり" || echo "model_all.pkl なし"
 
-      # ── 投稿種類の判定（cron から直接判定）──────────────
-      # 時刻判定はせず、github.event.schedule の値で判定する。
-      # GitHub Actionsの遅延で時刻がずれても正しく動作する。
+      # ── 投稿種類の判定（大幅簡略化）──────────────────────
+      # cronは1本だけになったため、スケジュール実行(workflow_dispatchの
+      # inputsが空)は常に "all"。手動実行(workflow_dispatch)でだけ
+      # post_type入力で個別の種類を指定できる。
       - name: Determine post type
         id: post_type
         run: |
           INPUT="${{ github.event.inputs.post_type }}"
-          SCHEDULE="${{ github.event.schedule }}"
-          if [ -n "$INPUT" ] && [ "$INPUT" != "all" ]; then
+          if [ -n "$INPUT" ]; then
             TYPE="$INPUT"
-          elif [ "$SCHEDULE" = "0 11 * * 0" ]; then
-            TYPE="weekly"
-          elif [ "$SCHEDULE" = "0 23 * * *" ]; then
-            TYPE="danger"
-          elif [ "$SCHEDULE" = "0 4 * * *" ]; then
-            TYPE="hot"
-          elif [ "$SCHEDULE" = "0 11 * * *" ]; then
-            TYPE="awakening"
-          elif [ "$SCHEDULE" = "15 19 * * *" ]; then
-            TYPE="verification"
-          elif [ -n "$SCHEDULE" ]; then
-            TYPE="danger"
           else
             TYPE="all"
           fi
           echo "type=$TYPE" >> $GITHUB_OUTPUT
-          echo "schedule=$SCHEDULE"
           echo "投稿種類: $TYPE"
 
+      # ── 日曜判定（週次レポート用）─────────────────────────
+      - name: Determine day of week
+        id: dow
+        run: |
+          IS_SUNDAY=$(TZ=Asia/Tokyo date +%u)  # 1=月 ... 7=日
+          if [ "$IS_SUNDAY" = "7" ]; then
+            echo "is_sunday=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_sunday=false" >> $GITHUB_OUTPUT
+          fi
+
       # ── 前日モーター履歴を蓄積 ──────────────────────────
-      # 【朝版ポリシー】ランキング生成は朝(danger)の1回のみ。
-      # 激走・覚醒の送信タイミング(hot/awakening)では再生成しない
-      # （展示情報等の後追い反映によるデータ書き換えを防ぐため）。
       - name: Update motor history
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE_ARG=""
           if [ -n "${{ github.event.inputs.date }}" ]; then
@@ -103,17 +99,14 @@ jobs:
           fi
           python x_ranking.py --update-history $DATE_ARG || echo "履歴更新失敗（続行）"
 
-      # ── ランキング生成（朝版：1日1回のみ生成し、以後は固定）──────
-      # 【朝版ポリシー】新聞・危険艇・万舟・転がし・激走・覚醒は
-      # 毎朝のデータ取得後に一度だけ生成し、当日中は再計算・書き換えを行わない。
-      # 展示ST・展示タイムはリアルタイム反映せず、翌日以降の学習用データとしてのみ使う。
-      # cronを前倒ししているため、当日の出走表がBoatraceOpenAPI側に
-      # まだ反映されていない場合がある。生成結果の date と実際のレース
-      # 件数を確認し、不一致・空データなら最大2回、10分間隔でリトライする。
+      # ── ランキング生成（1日1回・7:30に全て生成）──────────
+      # 展示ST・展示タイムはリアルタイム反映せず、翌日以降の学習用データ
+      # としてのみ使う。cronを前倒ししているため、当日の出走表が
+      # BoatraceOpenAPI側にまだ反映されていない場合がある。生成結果の
+      # dateと実際のレース件数を確認し、不一致・空データなら最大2回、
+      # 10分間隔でリトライする。
       - name: Generate rankings
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           EXPECTED_DATE="${{ github.event.inputs.date }}"
           if [ -z "$EXPECTED_DATE" ]; then
@@ -154,13 +147,13 @@ jobs:
 
           rm -f _check_ranking_date.py
 
-      # ── 画像生成（朝版：ranking_cache.json と同時に1回だけ生成）───
+      # ── 画像生成 ──────────────────────────────────────────
       - name: Generate images
         if: (steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all') && github.event.inputs.with_image != 'false'
         run: |
           python x_image.py --all --input ranking_cache.json || echo "画像生成失敗（テキストのみ）"
 
-      # ── 危険な1号艇を送信（07:00）─────────────────────
+      # ── 危険な1号艇を送信 ────────────────────────────────
       - name: Send - Danger Boat1
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         env:
@@ -173,7 +166,7 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type danger $IMG $DRY
 
-      # ── 激走モーターを送信（JST 13:00 = UTC 4:00）────────
+      # ── 激走モーターを送信 ───────────────────────────────
       - name: Send - Hot Motor
         if: steps.post_type.outputs.type == 'hot' || steps.post_type.outputs.type == 'all'
         env:
@@ -186,7 +179,7 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type hot $IMG $DRY
 
-      # ── 万舟警報を送信（朝の危険艇と同時に送信）──
+      # ── 万舟警報を送信 ───────────────────────────────────
       - name: Send - Manshuu Alert
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         env:
@@ -199,7 +192,7 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type manshuu $IMG $DRY
 
-      # ── 覚醒モーターを送信（JST 20:00 = UTC 11:00 / 覚醒度90以上のみ）──
+      # ── 覚醒モーターを送信（覚醒度90以上のみ）───────────
       - name: Send - Awakening Motor
         if: steps.post_type.outputs.type == 'awakening' || steps.post_type.outputs.type == 'all'
         env:
@@ -218,13 +211,12 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type awakening $IMG $DRY
 
-      # ── 検証結果を送信（JST 翌04:15 = UTC 19:15 / 前日全レース終了後）──
+      # ── 検証結果を送信（前日分） ─────────────────────────
       - name: Send - Verification
         if: steps.post_type.outputs.type == 'verification' || steps.post_type.outputs.type == 'all'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE_ARG=""
           [ -n "${{ github.event.inputs.date }}" ] && DATE_ARG="--date ${{ github.event.inputs.date }}"
@@ -232,16 +224,13 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_verification.py $DATE_ARG $DRY || echo "検証スクリプト失敗（スキップ）"
           python x_buyscore_tuner.py || echo "BuyScoreチューニング失敗（スキップ）"
-          python x_training_export.py || echo "学習用CSV出力失敗（スキップ）"
 
-      # ── AI実績ページ生成・送信（朝の危険艇と同時）────
-      # 前日の実績を朝にまとめて確認できるよう、danger送信と同タイミングで実行する
+      # ── AI実績ページ生成・送信 ───────────────────────────
       - name: Send - Results Page
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE_ARG=""
           [ -n "${{ github.event.inputs.date }}" ] && DATE_ARG="--date ${{ github.event.inputs.date }}"
@@ -249,13 +238,12 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_results_page.py $DATE_ARG $DRY || echo "実績ページ失敗（スキップ）"
 
-      # ── noteレポート生成・送信（JST 08:00 = UTC 23:00 / danger直後）──
+      # ── noteレポート生成・送信 ───────────────────────────
       - name: Send Note Report
         if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           pip install weasyprint -q 2>/dev/null || true
           DRY=""
@@ -263,25 +251,38 @@ jobs:
           python x_note_report.py $DRY || echo "noteレポート失敗（続行）"
 
       # ── 週次レポート（日曜のみ）─────────────────────────
+      # 【簡略化】以前はcronの曜日指定(schedule: '0 11 * * 0')で判定して
+      # いたが、cronを1本に統合したため、実行時にJSTで曜日を判定する
+      # 方式に変更した（Determine day of weekステップの結果を使う）。
       - name: Send Weekly Report
-        if: github.event.schedule == '0 11 * * 0' || github.event.inputs.post_type == 'weekly'
+        if: (steps.post_type.outputs.type == 'all' && steps.dow.outputs.is_sunday == 'true') || github.event.inputs.post_type == 'weekly'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DRY=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_weekly_report.py $DRY || echo "週次レポート失敗（続行）"
 
-      # ── 【運用方針】運用データ(motor_history.csv, ranking_cache.json,
-      #    manshuu_sent.json, buyscore_log.jsonl, buyscore_analysis.json,
-      #    buyscore_config.json, daily_stats.json 等)はGit管理対象外。
-      #    以前はここで自動 git add/commit/push していたが、.gitignore の
-      #    方針と矛盾するため廃止した。これらは各実行環境のローカル
-      #    ファイルシステム上でのみ保持・更新される（GitHub Actions の
-      #    ジョブ実行環境は毎回使い捨てのため、次回実行時は前回の
-      #    motor_history.csv 等を引き継がない点に注意。継続的な蓄積が
-      #    必要な場合は、GitHub Actions の cache/artifact 機能や外部
-      #    ストレージ(S3等)の利用を別途検討すること）。
+      # ── motor_history.csv を保存 ──────────────────────
+      - name: Commit motor history
+        if: always() && (github.event_name != 'workflow_dispatch' || github.event.inputs.save_data != 'false')
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add motor_history.csv ranking_cache.json 2>/dev/null || true
+          [ -f manshuu_sent.json ]       && git add manshuu_sent.json       || true
+          [ -f buyscore_log.jsonl ]      && git add buyscore_log.jsonl      || true
+          [ -f buyscore_analysis.json ]  && git add buyscore_analysis.json  || true
+          [ -f buyscore_config.json ]    && git add buyscore_config.json    || true
+          [ -f daily_stats.json ]        && git add daily_stats.json        || true
+          git diff --cached --quiet || git commit -m "auto: update history $(date +%Y%m%d-%H%M)"
+          git push origin main || echo "push失敗"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Skip commit (manual dry check)
+        if: always() && github.event_name == 'workflow_dispatch' && github.event.inputs.save_data == 'false'
+        run: |
+          echo "save_data=false のため、生成結果は保存(commit)しませんでした。"
+          echo "ranking_cache.json 等はこのジョブの実行環境内でのみ変更され、リポジトリには反映されていません。"
