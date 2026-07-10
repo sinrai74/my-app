@@ -1184,6 +1184,46 @@ def _render_top5_section(data: dict) -> str:
 </section>"""
 
 
+def _featured_boats_html(d: dict) -> str:
+    """
+    【復元】危険艇速報カードに「注目選手」ボックス＋全艇の上位進出指数
+    テーブルを表示する。x_ranking.py側で既に計算済みの
+    featured_boats（◎○▲の代替候補）とrank_index（全艇の1着指数/
+    2着以内指数/3着以内指数）をそのまま描画する。A/Bランクに関わらず
+    全レースで表示する（ランク別の出し分けは行わない）。
+    """
+    featured_boats = d.get("featured_boats") or []
+    rank_index = d.get("rank_index") or {}
+
+    if not rank_index:
+        return ""
+
+    fr_html = ""
+    if featured_boats:
+        items = "".join(
+            f'<div class="fr-item"><span class="fr-mark">{fb.get("mark","")}</span>'
+            f'<span class="fr-lane">{fb.get("lane","")}号艇</span>'
+            f'<span class="fr-name">{fb.get("name","")}</span>'
+            f'<span class="fr-idx">1着指数{fb.get("top1",0):.1f} / '
+            f'2着以内{fb.get("top2",0):.1f} / 3着以内{fb.get("top3",0):.1f}</span></div>'
+            for fb in featured_boats
+        )
+        fr_html = f'<div class="rc-featured"><div class="fr-title">注目選手</div>{items}</div>'
+
+    table_rows = "".join(
+        f'<tr><td>{lane}号艇</td><td>{idx.get("top1",0):.1f}</td>'
+        f'<td>{idx.get("top2",0):.1f}</td><td>{idx.get("top3",0):.1f}</td></tr>'
+        for lane, idx in sorted(rank_index.items())
+    )
+    table_html = (
+        '<table class="rank-index-table">'
+        '<thead><tr><th>艇</th><th>1着指数</th><th>2着以内指数</th><th>3着以内指数</th></tr></thead>'
+        f'<tbody>{table_rows}</tbody></table>'
+    )
+
+    return fr_html + table_html
+
+
 def generate_html(data: dict, output_path: str) -> None:
     date_str  = data.get("date", "")
     date_disp = f"{date_str[4:6]}/{date_str[6:8]}" if len(date_str) >= 8 else ""
@@ -1263,8 +1303,9 @@ def generate_html(data: dict, output_path: str) -> None:
     {_badges}
   </div>
   <div class="rc-reason">{d.get('reason','')}</div>
-  <div class="rc-comment">💬 {comment}</div>
   <div class="breakdown">{bars}</div>
+  {_featured_boats_html(d)}
+  <div class="rc-comment">💬 {comment}</div>
   {_course_st_html(d)}
 </div>"""
         return rows
@@ -1520,6 +1561,17 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 .cs-table th,.cs-table td{{padding:3px 6px;border-bottom:1px solid #333;text-align:left}}
 .cs-table thead th{{color:var(--gray);font-weight:normal}}
 .mr{{color:#bbb;font-size:.85em;margin:3px 0}}
+/* 注目選手（危険艇速報：代わりに狙うべき艇） */
+.rc-featured{{margin-top:10px;background:#132313;border:1px solid #2e7d32;border-radius:6px;padding:8px 10px}}
+.fr-title{{color:#66bb6a;font-weight:bold;font-size:.85em;margin-bottom:6px}}
+.fr-item{{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:.88em}}
+.fr-mark{{color:#ffd54f;font-weight:bold;width:1.4em;text-align:center}}
+.fr-lane{{color:#fff;font-weight:bold;width:3.4em}}
+.fr-name{{color:#fff;flex:0 0 auto;min-width:6em}}
+.fr-idx{{color:#9e9e9e;font-size:.9em;margin-left:auto}}
+.rank-index-table{{width:100%;border-collapse:collapse;font-size:.8em;margin-top:8px}}
+.rank-index-table th,.rank-index-table td{{padding:4px 8px;border-bottom:1px solid #333;text-align:left}}
+.rank-index-table thead th{{color:var(--gray);font-weight:normal}}
 /* スコアバー */
 .breakdown{{margin-top:8px;display:grid;grid-template-columns:repeat(3,1fr);gap:4px}}
 @media(min-width:480px){{.breakdown{{grid-template-columns:repeat(6,1fr)}}}}
