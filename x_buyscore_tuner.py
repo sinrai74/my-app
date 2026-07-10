@@ -33,6 +33,8 @@ import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+import x_release_storage
+
 log = logging.getLogger("x_buyscore_tuner")
 logging.basicConfig(
     level=logging.INFO,
@@ -58,6 +60,7 @@ def _safe_float(v, default: float = 0.0) -> float:
 
 
 def load_config() -> dict:
+    x_release_storage.download_file(CONFIG_FILE, CONFIG_FILE)
     if not os.path.exists(CONFIG_FILE):
         log.error("buyscore_config.json が見つかりません")
         return {}
@@ -69,6 +72,8 @@ def save_config(cfg: dict) -> None:
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     log.info("[チューニング] buyscore_config.json を更新しました")
+    if not x_release_storage.upload_file(CONFIG_FILE, CONFIG_FILE):
+        log.warning("[チューニング] buyscore_config.json のRelease反映に失敗しました（ローカルには保存済み）")
 
 
 # ════════════════════════════════════════════════════════════
@@ -76,6 +81,7 @@ def save_config(cfg: dict) -> None:
 # ════════════════════════════════════════════════════════════
 
 def load_hit_records(lookback_days: int = 30) -> list[dict]:
+    x_release_storage.download_file(HITLOG_FILE, HITLOG_FILE)
     if not os.path.exists(HITLOG_FILE):
         return []
     cutoff = (datetime.now(JST) - timedelta(days=lookback_days)).strftime("%Y%m%d")
@@ -103,6 +109,7 @@ def load_hit_records(lookback_days: int = 30) -> list[dict]:
 # ════════════════════════════════════════════════════════════
 
 def load_buyscore_logs(lookback_days: int = 30) -> list[dict]:
+    x_release_storage.download_file(BUYSCORE_LOG, BUYSCORE_LOG)
     if not os.path.exists(BUYSCORE_LOG):
         return []
     cutoff = (datetime.now(JST) - timedelta(days=lookback_days)).strftime("%Y%m%d")

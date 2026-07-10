@@ -97,9 +97,14 @@ def _load_existing_keys() -> set:
     return keys
 
 
-def append_to_history(records: list[dict]) -> dict:
+def append_to_history(records: list[dict], existing_keys: set | None = None) -> dict:
     """
     records を k_race_history.csv に重複除去して追記する。
+
+    existing_keys を渡した場合はディスクからの再読み込みを行わず、
+    渡されたset を直接更新する（3年分などファイル数が多い一括構築で
+    「ファイルごとに全件再読込」というO(n^2)の劣化を避けるため）。
+    渡さなかった場合は従来通り自前で読み込む（後方互換）。
 
     書き込み前に必ずスキーマチェックを行う（将来列が増えた場合、
     既存の古いスキーマのファイルへ新しい列構成で書き込んでしまう
@@ -123,7 +128,8 @@ def append_to_history(records: list[dict]) -> dict:
         log.info("[履歴] k_race_history.csv をマイグレーションしました: %s",
                   schema_status["migration"].get("reason"))
 
-    existing_keys = _load_existing_keys()
+    if existing_keys is None:
+        existing_keys = _load_existing_keys()
     new_records = [r for r in records if _dedup_key(r) not in existing_keys]
     duplicates = len(records) - len(new_records)
 
@@ -137,6 +143,11 @@ def append_to_history(records: list[dict]) -> dict:
         if write_header:
             writer.writeheader()
         writer.writerows(new_records)
+
+    # existing_keys を呼び出し元と共有している場合、次のファイル処理でも
+    # 今回追記した分が「既存」として認識されるよう、ここで更新しておく。
+    for r in new_records:
+        existing_keys.add(_dedup_key(r))
 
     log.info("[履歴] %d件追記（%d件は重複のためスキップ）", len(new_records), duplicates)
     return {"appended": len(new_records), "duplicates": duplicates, "fatal": False}
@@ -306,7 +317,7 @@ def _new_report() -> dict:
     }
 
 
-def _process_one_file(fp: "str | Path", report: dict) -> None:
+def _process_one_file(fp: "str | Path", report: dict, existing_keys: set) -> None:
     """1つのKファイルを処理し、report を書き換える（副作用のみ、戻り値なし）。"""
     report["files_total"] += 1
     try:
@@ -324,7 +335,7 @@ def _process_one_file(fp: "str | Path", report: dict) -> None:
     for r in records:
         report["venue_counts"][r["venue_name"]] += 1
 
-    result = append_to_history(records)
+    result = append_to_history(records, existing_keys=existing_keys)
     report["records_generated"] += result["appended"]
     report["duplicates_skipped"] += result["duplicates"]
     if result["fatal"]:
@@ -394,9 +405,10 @@ def init_build(k_dir: str, today: int | None = None) -> dict:
               len(all_files), len(processed), len(remaining))
 
     report = _new_report()
+    existing_keys = _load_existing_keys()  # ループの外で1回だけ読み込む（O(n^2)防止）
 
     for i, fp in enumerate(remaining, 1):
-        _process_one_file(fp, report)
+        _process_one_file(fp, report, existing_keys)
         processed.add(fp.name)
 
         # 【中断・再開対応】一定件数ごとに進捗を保存する
@@ -427,7 +439,8 @@ def daily_update(k_file: str, today: int | None = None) -> dict:
         return {}
 
     report = _new_report()
-    _process_one_file(k_file, report)
+    existing_keys = _load_existing_keys()
+    _process_one_file(k_file, report, existing_keys)
 
     rebuild_local_course_stats(today=today)
 

@@ -25,11 +25,31 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import x_release_storage
+
 log = logging.getLogger("x_buyscore")
 
 JST          = timezone(timedelta(hours=9))
 CONFIG_FILE  = "buyscore_config.json"
+CONFIG_DEFAULT_FILE = "buyscore_config.default.json"
 HITLOG_FILE  = "hit_record.csv"
+
+
+def _ensure_config_file() -> None:
+    """
+    buyscore_config.json をローカルに用意する。
+    優先順位: ①GitHub Releaseから取得 → ②取得できなければ
+    buyscore_config.default.json（Git管理の初回起動用テンプレート）を
+    コピー → ③どちらも無ければ何もしない（load_config()側のデフォルト値に委ねる）。
+    既存のローカルファイルが既にあってもRelease側を優先して上書きする
+    （Releaseが「実行間で引き継ぐべき最新の学習結果」のため）。
+    """
+    if x_release_storage.download_file(CONFIG_FILE, CONFIG_FILE):
+        return
+    if not os.path.exists(CONFIG_FILE) and os.path.exists(CONFIG_DEFAULT_FILE):
+        import shutil
+        shutil.copy2(CONFIG_DEFAULT_FILE, CONFIG_FILE)
+        log.info("[buyscore] Release取得不可のため %s から初期化しました", CONFIG_DEFAULT_FILE)
 
 
 # ════════════════════════════════════════════════════════════
@@ -38,6 +58,7 @@ HITLOG_FILE  = "hit_record.csv"
 
 def load_config() -> dict:
     """buyscore_config.json を読み込む。ファイルがなければデフォルト値を返す。"""
+    _ensure_config_file()
     defaults = {
         "weights": {
             "ev": 0.35, "prob": 0.20, "match_index": 0.15,
@@ -608,8 +629,11 @@ def save_buyscore_log(
         ],
     }
     try:
+        x_release_storage.download_file(BUYSCORE_LOG, BUYSCORE_LOG)
         with open(BUYSCORE_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if not x_release_storage.upload_file(BUYSCORE_LOG, BUYSCORE_LOG):
+            log.warning("[BuyScore] %s のRelease反映に失敗しました（ローカルには保存済み）", BUYSCORE_LOG)
     except Exception as e:
         log.warning("[BuyScore] ログ保存失敗: %s", e)
 
@@ -693,6 +717,32 @@ def apply_buyscore(
     # ── ベット金額にドローダウン倍率を反映 ──────────────────
     for c in ranked:
         c["amount"] = int(c.get("amount", 500) * multiplier / 100) * 100
+
+    # ── 【バグ修正】金額0円セーフティネット ──────────────────
+    # notify_arashi.py側の独自ドローダウン判定(_get_bet_multiplier)と、
+    # 本関数の資金管理チェック(get_bet_multiplier_extended)は独立した
+    # 別実装であり、判定基準が異なるため、片方だけが「停止」に該当する
+    # ケースがありうる。notify_arashi.py側で既に candidates の "amount"
+    # が 0 に設定された状態でこの関数へ渡されてくると、上の行で
+    # c.get("amount", 500) がデフォルト値500ではなく既存の0を返すため、
+    # multiplier がいくつであっても c["amount"] は 0 のまま確定する。
+    # この関数側の見送り判定(check_passthrough)は金額を見ていないため、
+    # 「購入判定(passthrough=False)されたのに実際のベット額は0円」という
+    # ゴーストレコードが hit_record.csv に purchased=1・cost=0 として
+    # 記録される実データ上の不具合が発生していた（3年分検証時に発見）。
+    # ここで金額0円の候補を除去し、全滅した場合は明示的に見送りとして
+    # 返すことで、purchasedフラグと実際の投資額を必ず一致させる。
+    ranked = [c for c in ranked if c.get("amount", 0) > 0]
+    if not ranked:
+        zero_amount_reason = "ベット金額が0円のため見送り（資金管理の多重判定による）"
+        save_buyscore_log(venue, race, date, candidates, zero_amount_reason, context, capital_reason)
+        return {
+            "buy": [],
+            "passthrough": True,
+            "passthrough_reason": zero_amount_reason,
+            "message": format_passthrough_message(zero_amount_reason, candidates[0] if candidates else None, context),
+            "capital_reason": capital_reason,
+        }
 
     # ── 除外された人気買い目の理由を生成（⑫）──────────────
     excluded = []

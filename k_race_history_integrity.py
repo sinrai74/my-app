@@ -28,16 +28,36 @@ log = logging.getLogger("k_race_history_integrity")
 K_RACE_HISTORY_CSV = "k_race_history.csv"
 
 # 着順として妥当な異常記号（欠場・フライング・出遅れ・失格等）。
-# 実データで確認済みなのは "K0"（欠場）のみ。他は将来の実例発生に備えた
-# 一般的な想定値（PC-KYOTEIコード表・一般公開情報に基づく）。
-_KNOWN_ABNORMAL_ORDERS = {"F", "L", "K", "S", "K0", "K1", "L0", "L1", "S0", "S1", "S2"}
+# 実データで確認済みなのは "K0"（欠場）と "0"（下記）。他は将来の実例
+# 発生に備えた一般的な想定値（PC-KYOTEIコード表・一般公開情報に基づく）。
+#
+# "0": レース不成立時に、フライングしなかった艇へ付与されるコード。
+#      実データ確認済み（3年分構築時、K20230202.TXT 5R で発見）:
+#        F 2 3475 ...  F0.01
+#        F 3 4926 ...  F0.02
+#        F 4 3726 ...  F0.04
+#        F 5 3681 ...  F0.02
+#        00 6 4950 ...  0.01      ← フライングしなかった6号艇の着順欄が "00"
+#        レース不成立
+#      x_kfile_race_parser.py の _parse_order() は "00".isdigit() が True
+#      のため int("00") = 0 に変換する。パーサーのバグではなく、実データの
+#      特殊コードを正しく拾えている。
+_KNOWN_ABNORMAL_ORDERS = {"F", "L", "K", "S", "K0", "K1", "L0", "L1", "S0", "S1", "S2", "0"}
 
 
 def _is_valid_order(raw: str) -> bool:
     raw = (raw or "").strip()
+    # 既知の異常記号（"0"を含む）を先に判定する。
+    # "0" は raw.isdigit() が True になるため、isdigit分岐を先に
+    # 評価してしまうと 1<=int(raw)<=6 が False になり、
+    # _KNOWN_ABNORMAL_ORDERS に "0" を追加しても絶対に参照されない
+    # （早期returnで判定順序が壊れる）バグがあったため、判定順序を
+    # 入れ替えてある。
+    if raw in _KNOWN_ABNORMAL_ORDERS:
+        return True
     if raw.isdigit():
         return 1 <= int(raw) <= 6
-    return raw in _KNOWN_ABNORMAL_ORDERS
+    return False
 
 
 def _is_valid_float_or_blank(raw: str) -> bool:

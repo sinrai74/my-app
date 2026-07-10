@@ -32,6 +32,8 @@ import os
 from collections import defaultdict
 from typing import Optional
 
+import x_release_storage
+
 log = logging.getLogger("x_venue_stats")
 
 VENUE_CONFIG_FILE = "venue_config.json"
@@ -120,6 +122,8 @@ def compute_venue_course_stats(
     global _VENUE_STATS_CACHE
     if _VENUE_STATS_CACHE is not None and not force_reload:
         return _VENUE_STATS_CACHE
+
+    x_release_storage.download_file(history_file, history_file)
 
     if not os.path.exists(history_file):
         log.info("[venue] %s が存在しないため統計算出をスキップ", history_file)

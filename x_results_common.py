@@ -22,6 +22,8 @@ from typing import Optional
 
 import requests
 
+import x_release_storage
+
 from x_verification import (
     load_today_records, load_records_range,
     aggregate, aggregate_by_rank,
@@ -71,6 +73,7 @@ def collect_all_periods(end_date: str) -> dict:
 
 def load_daily_stats(date_str: str) -> dict:
     """daily_stats.json から指定日の掲載件数・レース一覧を返す。"""
+    x_release_storage.download_file(DAILY_STATS_JSON, DAILY_STATS_JSON)
     if not os.path.exists(DAILY_STATS_JSON):
         return {}
     try:
@@ -83,6 +86,7 @@ def load_daily_stats(date_str: str) -> dict:
 
 def load_daily_stats_range(end_date: str, days: int) -> dict:
     """daily_stats.json から end_date を含む過去 days 日間の全日付分を返す。"""
+    x_release_storage.download_file(DAILY_STATS_JSON, DAILY_STATS_JSON)
     if not os.path.exists(DAILY_STATS_JSON):
         return {}
     try:
@@ -836,6 +840,7 @@ def analyze_buyscore_log(days: int = 7) -> dict:
     buyscore_log.jsonl からスコア分布・購入/見送り件数を集計する。
     ファイルがない場合は data_available=False を返す。
     """
+    x_release_storage.download_file(BUYSCORE_LOG, BUYSCORE_LOG)
     if not os.path.exists(BUYSCORE_LOG):
         return {"data_available": False, "reason": "buyscore_log.jsonl が見つかりません"}
 

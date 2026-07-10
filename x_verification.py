@@ -29,6 +29,8 @@ from typing import Optional
 
 from x_brand_config import rank_of, rank_color, trust_rank_of, SUCCESS_PAYOUT_THRESHOLDS
 
+import x_release_storage
+
 log = logging.getLogger("x_verification")
 
 JST      = timezone(timedelta(hours=9))
@@ -90,6 +92,7 @@ def load_today_records(target_date: Optional[str] = None) -> list[dict]:
     重複行は自動除去する（_dedup_records 参照）。
     """
     date_str = target_date or _yesterday_jst()
+    x_release_storage.download_file(HIT_CSV, HIT_CSV)
     if not os.path.exists(HIT_CSV):
         log.warning("[検証] %s が見つかりません", HIT_CSV)
         return []
@@ -387,6 +390,7 @@ def load_records_range(days: Optional[int] = None,
     hit_record.csv から指定日数分（end_date を含む過去 days 日間）のレコードを返す。
     days=None の場合は全期間（累計）を返す。
     """
+    x_release_storage.download_file(HIT_CSV, HIT_CSV)
     if not os.path.exists(HIT_CSV):
         log.warning("[期間集計] %s が見つかりません", HIT_CSV)
         return []

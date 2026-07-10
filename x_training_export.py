@@ -32,6 +32,8 @@ from typing import Optional
 
 log = logging.getLogger("x_training_export")
 
+import x_release_storage
+
 HIT_RECORD_CSV = "hit_record.csv"
 TRAINING_DATASET_CSV = "training_dataset.csv"
 
@@ -153,6 +155,7 @@ def export_training_dataset(
 
     戻り値: {"exported": bool, "rows": int, "columns": int, "reason": str}
     """
+    x_release_storage.download_file(hit_record_file, hit_record_file)
     if not os.path.exists(hit_record_file):
         return {"exported": False, "rows": 0, "columns": 0,
                  "reason": f"{hit_record_file} が存在しません"}
