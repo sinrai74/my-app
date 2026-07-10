@@ -128,7 +128,7 @@ def newspaper_post(
     normals = [
         f"📰本日のAI競艇新聞を公開しました。\n危険艇{danger_count}件・万舟{manshuu_count}件・モーター情報を掲載。\nnoteで全文読めます。\n{TAGS_NOTE}",
         f"📰AI競艇新聞 {datetime.now(JST).strftime('%m/%d')}号を配信しました。\n全開催場・全レースをAIが解析。\n今日の全体像はこちらから。\n{TAGS_NOTE}",
-        f"📰今日のAI競艇新聞を公開しました。\n危険艇・万舟・転がし・モーター情報を1本にまとめています。\nnoteで無料公開中です。\n{TAGS_NOTE}",
+        f"📰今日のAI競艇新聞を公開しました。\n危険艇・万舟・モーター情報を1本にまとめています。\nnoteで無料公開中です。\n{TAGS_NOTE}",
     ]
 
     buzzes = [
@@ -139,7 +139,7 @@ def newspaper_post(
 
     reps = [
         f"読むだけで今日の全体像がわかります👇\nnoteで無料公開中です。\n{TAGS_NOTE}",
-        f"危険艇から転がし候補まで全掲載しています👇\nnoteへどうぞ。\n{TAGS_NOTE}",
+        f"危険艇から万舟候補まで全掲載しています👇\nnoteへどうぞ。\n{TAGS_NOTE}",
         f"全レース解析レポートはnoteで公開しています👇\n{TAGS_NOTE}",
     ]
 
