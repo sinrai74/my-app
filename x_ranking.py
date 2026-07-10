@@ -40,7 +40,9 @@ from notify_arashi import (
     _PREVIEW_RAW_CACHE,
     BoatInfo,
     WeatherInfo,
-    is_local_racer,
+    # 【一時措置】is_local_racer は notify_arashi.py 側のVer4全面刷新
+    # (③地元選手機能を含まない形で書き換えられた) により失われたため、
+    # importから外す。③機能を再実装する際に戻すこと。
 )
 
 # 【朝刊AI】共通スコアリングエンジン（previews由来データ不使用）
@@ -829,7 +831,10 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
                 "avg_st":       boat1.avg_st      if boat1 else 0,
                 # 【③地元選手・情報表示のみ】1号艇が開催場の地元支部所属かどうか。
                 # スコア・ランキングには一切影響しない。
-                "is_local":     is_local_racer(vn, boat1.branch) if boat1 else False,
+                # 【一時措置】is_local(地元選手判定)はnotify_arashi.pyの
+                # Ver4刷新でbranchフィールド自体が失われたため、常にFalse。
+                # ③機能を再実装する際にis_local_racer(vn, boat1.branch)へ戻すこと。
+                "is_local":     False,
                 # 【朝刊AI】ex_time は previews 由来のため保存しない
                 "reason":       _danger_reason(boat1, boats),
                 "stars":        _calc_stars(boat1, boats),
