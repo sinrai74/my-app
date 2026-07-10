@@ -27,7 +27,6 @@ from x_brand_config import AI_VERSION, SYSTEM_NAME
 from x_results_common import (
     collect_all_periods, load_daily_stats, load_daily_stats_range,
     calc_brand_results, calc_brand_results_range,
-    calc_korogashi_results, calc_hot_motor_results, calc_awakening_results,
     calc_overall_roi, find_mvp_prediction, find_close_misses,
     generate_ai_comment_for_miss,
 )
@@ -105,9 +104,9 @@ def generate_public_html(date_str: str, output_path: str) -> dict:
     # ── ブランド別的中率 ──────────────────────────────────
     danger_r    = calc_brand_results(today_records, daily_stats, "danger")
     manshuu_r   = calc_brand_results(today_records, daily_stats, "manshuu")
-    korogashi_r = calc_korogashi_results()
-    hot_r       = calc_hot_motor_results()
-    awake_r     = calc_awakening_results()
+    # 【転がし分離・モーター非掲載】korogashi/hot/awakeの実績計算は
+    # 公開ページから外したため呼び出しも削除（x_results_common側の
+    # 関数自体は開発用レポート等の将来利用に備えて残してある）
 
     # ── 回収率・ROI ───────────────────────────────────────
     roi_today = calc_overall_roi(today_records)
@@ -182,9 +181,6 @@ body {{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Meiry
   <h2>🎯 ブランド別的中実績</h2>
   {_brand_row_html("🚨", "危険艇速報", danger_r)}
   {_brand_row_html("💰", "万舟警報", manshuu_r)}
-  {_brand_row_html("🎯", "転がし候補", korogashi_r)}
-  {_brand_row_html("⚡", "激走モーター", hot_r)}
-  {_brand_row_html("📈", "覚醒モーター", awake_r)}
 </div>
 
 <div class="section">

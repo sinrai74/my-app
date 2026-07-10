@@ -303,15 +303,9 @@ def _brand_expectation_summary_html(records: list[dict], daily_stats: dict, date
         f'<div class="expect-row"><span class="expect-icon">💰</span>'
         f'<span class="expect-label">万舟</span>'
         f'<span class="expect-detail">{_rate_text(manshuu_result, "1万円超")}</span></div>',
-        f'<div class="expect-row"><span class="expect-icon">🎯</span>'
-        f'<span class="expect-label">転がし候補</span>'
-        f'<span class="expect-detail">準備中（データ整備後に対応）</span></div>',
-        f'<div class="expect-row"><span class="expect-icon">⚡</span>'
-        f'<span class="expect-label">激走モーター</span>'
-        f'<span class="expect-detail">対象外（的中判定なし）</span></div>',
-        f'<div class="expect-row"><span class="expect-icon">📈</span>'
-        f'<span class="expect-label">覚醒モーター</span>'
-        f'<span class="expect-detail">対象外（的中判定なし）</span></div>',
+        # 【転がし分離】転がし候補の行は削除（公開物から転がしを完全分離）。
+        # 【激走・覚醒モーター】的中判定ができないブランドは実績ページに
+        # 掲載しない（紐付けが実装できたらここへ戻すこと）。
     ])
 
     # ③高配当は独立ブロックとしても表示（万舟20件からの内訳）

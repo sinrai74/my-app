@@ -361,10 +361,12 @@ _DANGER_FACTOR_LABELS: dict[str, str] = {
 
 def _race_comment(d: dict) -> str:
     bd = d.get("breakdown", {})
-    # {"total": ...} 以外の実キーだけを対象に、raw_100(0-100スケール)降順で
-    # 上位2項目をコメントに使う。該当キーが1つも無ければ総合判定にフォールバック。
+    # 【実行中コードで確認済み】x_ranking._calc_danger_breakdown は
+    # 各キーの値を (raw_100, weighted) のタプル/リストで返す実装。
+    # raw_100(0-100スケール)降順で上位2項目をコメントに使う。
     items = [
-        (key, _bd_weighted(bd, key), val[0] if isinstance(val, (tuple, list)) and val else 0)
+        (key, val[1] if isinstance(val, (tuple, list)) and len(val) == 2 else 0,
+         val[0] if isinstance(val, (tuple, list)) and len(val) == 2 else 0)
         for key, val in bd.items()
         if key != "total"
     ]
@@ -1269,10 +1271,8 @@ def generate_html(data: dict, output_path: str) -> None:
             score = d.get("score", 0)
             comment = _race_comment(d)
             bd = d.get("breakdown", {})
-            # 【Ver4対応】breakdownのキー構成がレースごとに可変（該当した項目
-            # のみ含まれる）ため、固定6項目のハードコードをやめ、実際に
-            # 含まれるキーをraw_100(0-100スケール)降順で上位6件まで表示する。
-            # タプルは (ラベル, 実際の加点pt, バー幅%(raw_100), 色)。
+            # 【実行中コードで確認済み】breakdownの値は (raw_100, weighted)
+            # のタプル/リスト形式。raw_100降順で上位6件を表示する。
             _bar_colors = ["#42a5f5", "#ffa726", "#ef5350", "#ab47bc", "#ff7043", "#26a69a"]
             _bd_items_raw = [
                 (key, val) for key, val in bd.items()
