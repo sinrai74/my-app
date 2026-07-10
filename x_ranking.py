@@ -51,6 +51,8 @@ from x_asahi_scoring import (
     calculate_upset_score_v2,
     load_asahi_config,
     get_model_version as _asahi_model_version,
+    calc_rank_index_v2,
+    select_featured_boats,
 )
 
 # ════════════════════════════════════════════════════════════
@@ -819,6 +821,13 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
             else:
                 boat1_1c_rank = None
 
+            # ── 上位進出指数（0-100、各艇のtop1/top2/top3）と注目選手 ──
+            # 【復元】x_asahi_scoring.calc_rank_index_v2/select_featured_boats
+            # は既に存在していたが、x_ranking.py側でimport・呼び出しされて
+            # いなかったため、danger_listに一切反映されていなかった。
+            rank_index = calc_rank_index_v2(boats)
+            featured_boats = select_featured_boats(boats, rank_index, d_score)
+
             danger_list.append({
                 "venue":        venue_name,
                 "venue_num":    vn,
@@ -844,6 +853,9 @@ def generate_all_rankings(race_date: Optional[str] = None) -> dict:
                 "boat1_1c_st":      boat1.course_st[0] if boat1 and boat1.course_nyuko[0] > 0 else None,
                 "boat1_1c_rank":    boat1_1c_rank,      # 6艇中の1コースST順位
                 "boat1_1c_nyuko":   boat1.course_nyuko[0] if boat1 else 0,
+                # 上位進出指数（各艇: top1/top2/top3、0-100）と注目選手
+                "rank_index":     rank_index,
+                "featured_boats": featured_boats,
             })
 
         # ── ③ 万舟警報 ───────────────────────────────────
