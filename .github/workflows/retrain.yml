@@ -33,7 +33,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 pandas numpy scikit-learn lightgbm
+          # 【バグ修正】バージョン指定が無く、実行のたびに最新の
+          # scikit-learn/lightgbmが入っていた。学習(ここ)と予測
+          # (notify_arashi.yml等)でscikit-learnのバージョンが食い違うと、
+          # 内部モジュール構造の変更(例: _loss)によりモデルの読み込みが
+          # 壊れる。学習・予測すべてのワークフローで同一バージョンに固定する。
+          pip install requests beautifulsoup4 pandas numpy "scikit-learn==1.5.2" "lightgbm==4.5.0"
           # 7z インストール
           sudo apt-get install -y p7zip-full
 
