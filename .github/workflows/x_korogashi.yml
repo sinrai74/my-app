@@ -39,7 +39,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install requests beautifulsoup4 scikit-learn pandas numpy
+          pip install requests beautifulsoup4 "scikit-learn==1.5.2" pandas numpy
 
       - name: Check model file
         run: |
