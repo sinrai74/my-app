@@ -46,6 +46,7 @@ def download_file(url: str, dest: Path) -> bool:
 def download_race_data(target_date: date) -> tuple[Path | None, Path | None]:
     """指定日のB/KファイルをLZH形式でダウンロードして展開"""
     import subprocess
+    import shutil
     date_str = target_date.strftime("%y%m%d")
     year = target_date.strftime("%Y")
     month = target_date.strftime("%m")
@@ -69,12 +70,28 @@ def download_race_data(target_date: date) -> tuple[Path | None, Path | None]:
     if not b_ok or not k_ok:
         return None, None
 
+    # 【バグ修正】7zの実行パスがWindows専用の固定パス
+    # ("C:/Program Files/7-Zip/7z.exe")でハードコードされており、
+    # GitHub Actions(Linux)上では常に失敗していた
+    # （FileNotFoundError→"LZH展開失敗"となり、再学習データが0件になっていた）。
+    # PATH上の7z(Linuxではp7zip-fullが入れる実行ファイル名)をまず探し、
+    # 見つからなければ従来のWindows固定パスにフォールバックする。
+    seven_zip = shutil.which("7z") or shutil.which("7za") or shutil.which("7zr")
+    if not seven_zip:
+        # Windowsでshutil.whichがPATH未登録の7zを見つけられない場合の保険
+        win_path = "C:/Program Files/7-Zip/7z.exe"
+        if os.path.exists(win_path):
+            seven_zip = win_path
+    if not seven_zip:
+        log.warning("LZH展開失敗: 7zの実行ファイルが見つかりません（PATH・Windows既定パスとも不在）")
+        return None, None
+
     # LZH展開（7zが必要）
     try:
         for lzh, txt in [(b_lzh, b_txt), (k_lzh, k_txt)]:
             if lzh.exists():
                 result = subprocess.run(
-                    ["C:/Program Files/7-Zip/7z.exe", "x", str(lzh), f"-o{DATA_DIR}", "-y"],
+                    [seven_zip, "x", str(lzh), f"-o{DATA_DIR}", "-y"],
                     capture_output=True, timeout=30
                 )
                 lzh.unlink(missing_ok=True)
