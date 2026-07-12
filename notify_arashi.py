@@ -901,18 +901,33 @@ def fetch_programs(race_date: str) -> list[dict]:
     """出走表を取得して programs リストを返す。失敗時は []。"""
     url = f"{PROGRAMS_URL}/{race_date[:4]}/{race_date}.json"
     data = _safe_get(url)
+    from datetime import datetime, timezone, timedelta
+    today_str = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+    tried_today_json = False
+
     if data is None:
         # today.jsonフォールバックは当日分のみ（翌日分取得時には使わない）
-        from datetime import datetime, timezone, timedelta
-        today_str = datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
         if race_date == today_str:
             log.info("日付URL 404 → today.json にフォールバック (date=%s)", race_date)
             data = _safe_get(f"{PROGRAMS_URL}/today.json")
+            tried_today_json = True
         else:
             log.warning("出走表が取得できませんでした（開催なし or API 障害）")
-    if data is None:
-        return []
-    programs = data.get("programs", [])
+
+    programs = data.get("programs", []) if data is not None else []
+
+    # 【バグ修正】日付別URL（/YYYY/YYYYMMDD.json）が200 OKを返しても
+    # 中身のprogramsが空のことがある（当日分の日付別アーカイブファイルの
+    # 生成が、today.jsonのライブ更新より遅れて反映されるケースがあるため）。
+    # 従来はdataがNone(404等)の場合しかtoday.jsonへフォールバックせず、
+    # 「200 OKだがprograms空」のケースを取りこぼして毎回0件になっていた。
+    # 当日分に限り、programsが空ならtoday.jsonでも試す（既に試した場合は除く）。
+    if not programs and race_date == today_str and not tried_today_json:
+        log.info("日付URL は programs 空 → today.json で再取得を試みる (date=%s)", race_date)
+        data2 = _safe_get(f"{PROGRAMS_URL}/today.json")
+        if data2 is not None:
+            programs = data2.get("programs", [])
+
     log.info("出走表取得: %d レース (date=%s)", len(programs), race_date)
     return programs
 
