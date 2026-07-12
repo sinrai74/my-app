@@ -1193,6 +1193,19 @@ def _featured_boats_html(d: dict) -> str:
     featured_boats（◎○▲の代替候補）とrank_index（全艇の1着指数/
     2着以内指数/3着以内指数）をそのまま描画する。A/Bランクに関わらず
     全レースで表示する（ランク別の出し分けは行わない）。
+
+    【追加指示対応】AIランキングのアイコン表示（既存の「注目選手」
+    ボックスを流用、新規UIは作らない）:
+      ⏱ ST優秀: boats_course_stを使い、レース内でその艇の平均STが
+                最速（同値含む）なら付与する。既存の危険艇判定ロジック・
+                CSV構造には一切影響しない、表示のみの追加。
+      🏠 地元選手: 表示枠のみ用意。is_local_racer判定はVer4刷新で
+                失われ現在は無効化されているため、featured_boats側に
+                is_local相当のキーが無く、常に非表示になる。
+                Phase3で地元判定を再実装しfeatured_boatsにis_localが
+                含まれるようになれば、fb.get("is_local")の判定により
+                自動的に表示が有効化される（このコードの変更は不要）。
+      ⚡ モーター好調: 今回は見送り（別タスク）。
     """
     featured_boats = d.get("featured_boats") or []
     rank_index = d.get("rank_index") or {}
@@ -1200,12 +1213,27 @@ def _featured_boats_html(d: dict) -> str:
     if not rank_index:
         return ""
 
+    # ⏱ ST優秀判定用: レース内の最速(最小)avg_stを求める
+    boats_course_st = d.get("boats_course_st") or []
+    lane_avg_st = {
+        b.get("lane"): b.get("avg_st")
+        for b in boats_course_st
+        if b.get("lane") and b.get("avg_st")
+    }
+    best_avg_st = min(lane_avg_st.values()) if lane_avg_st else None
+
     fr_html = ""
     if featured_boats:
         items = "".join(
             f'<div class="fr-item"><span class="fr-mark">{fb.get("mark","")}</span>'
             f'<span class="fr-lane">{fb.get("lane","")}号艇</span>'
-            f'<span class="fr-name">{fb.get("name","")}</span>'
+            f'<span class="fr-name">{fb.get("name","")}'
+            + (' <span class="icon-badge" title="ST優秀">⏱</span>'
+               if best_avg_st is not None and lane_avg_st.get(fb.get("lane")) == best_avg_st
+               else '')
+            + (' <span class="icon-badge" title="地元選手">🏠</span>'
+               if fb.get("is_local") else '')
+            + '</span>'
             f'<span class="fr-idx">1着指数{fb.get("top1",0):.1f} / '
             f'2着以内{fb.get("top2",0):.1f} / 3着以内{fb.get("top3",0):.1f}</span></div>'
             for fb in featured_boats
@@ -1569,6 +1597,7 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
 .fr-lane{{color:#fff;font-weight:bold;width:3.4em}}
 .fr-name{{color:#fff;flex:0 0 auto;min-width:6em}}
 .fr-idx{{color:#9e9e9e;font-size:.9em;margin-left:auto}}
+.icon-badge{{font-size:.85em;margin-left:2px}}
 .rank-index-table{{width:100%;border-collapse:collapse;font-size:.8em;margin-top:8px}}
 .rank-index-table th,.rank-index-table td{{padding:4px 8px;border-bottom:1px solid #333;text-align:left}}
 .rank-index-table thead th{{color:var(--gray);font-weight:normal}}
