@@ -1980,6 +1980,36 @@ def _evaluate_bets(
 
         return min(max(survive, 0.01), 0.99)
 
+    def _expansion_second_probs(
+        second_probs_base: dict[int, float],
+        first: int,
+        attack_lane: int,
+        survive_prob: float,
+    ) -> dict[int, float]:
+        """
+        【欠落関数の応急復元】このMonte Carloシミュレーションから
+        呼び出されていたが、定義自体がコード内のどこにも存在せず
+        NameErrorで全レースの処理が失敗していた（荒れ検知が常に
+        0件になっていた）。
+
+        本来の「展開補正」の正確なロジック（1着艇・攻め艇・1号艇
+        生存確率に応じてどう2着確率分布を歪めるべきか）は復元
+        できなかったため、安全側に倒し、補正を行わず
+        second_probs_base をそのまま返す（no-op）実装にしてある。
+        クラッシュを止めることを優先し、誤った推測ロジックで
+        BuyScore・EV計算に悪影響を与えるリスクを避けるため。
+
+        TODO: 展開補正が本当に必要であれば、以下のような設計で
+        再実装を検討すること（例）:
+          - first == 1（1号艇が1着で残った＝逃げ切り）の場合、
+            attack_laneの2着確率をわずかに引き上げる
+            （逃げ+差され2着のパターンを反映）
+          - first == attack_lane（1号艇が飛んだ）の場合、
+            survive_probが低いほど、1号艇が2着に残る確率を下げ、
+            他の艇の2着確率を引き上げる
+        """
+        return dict(second_probs_base)
+
     def _mc_trifecta_probs(
         probs: dict[int, float],
         n_sim: int = 5000,
