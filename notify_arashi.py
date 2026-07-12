@@ -897,6 +897,25 @@ def format_course_st_ranking(boats: list) -> str:
     return "\n".join(lines_out)
 
 
+def _extract_programs(data: Optional[dict]) -> list[dict]:
+    """
+    APIレスポンスから programs リストを取り出す。
+    【バグ修正】today.json は {"programs": [...]}  ではなく
+    {"today": {"programs": [...], ...}} という1段ネストした構造で
+    返ってくる（日付別URL /YYYY/YYYYMMDD.json はネストなしの
+    {"programs": [...]}）。この違いに気づかず、today.jsonから
+    取得したデータでも常に data.get("programs", []) を素通しして
+    いたため、today.json経由では毎回0件になっていた。
+    両方の形に対応できるよう、"programs"がトップレベルになければ
+    "today"キーの中も見る。
+    """
+    if not data:
+        return []
+    if "programs" in data:
+        return data.get("programs", [])
+    return (data.get("today") or {}).get("programs", [])
+
+
 def fetch_programs(race_date: str) -> list[dict]:
     """出走表を取得して programs リストを返す。失敗時は []。"""
     url = f"{PROGRAMS_URL}/{race_date[:4]}/{race_date}.json"
@@ -914,7 +933,7 @@ def fetch_programs(race_date: str) -> list[dict]:
         else:
             log.warning("出走表が取得できませんでした（開催なし or API 障害）")
 
-    programs = data.get("programs", []) if data is not None else []
+    programs = _extract_programs(data)
 
     # 【バグ修正】日付別URL（/YYYY/YYYYMMDD.json）が200 OKを返しても
     # 中身のprogramsが空のことがある（当日分の日付別アーカイブファイルの
@@ -925,8 +944,7 @@ def fetch_programs(race_date: str) -> list[dict]:
     if not programs and race_date == today_str and not tried_today_json:
         log.info("日付URL は programs 空 → today.json で再取得を試みる (date=%s)", race_date)
         data2 = _safe_get(f"{PROGRAMS_URL}/today.json")
-        if data2 is not None:
-            programs = data2.get("programs", [])
+        programs = _extract_programs(data2)
 
     log.info("出走表取得: %d レース (date=%s)", len(programs), race_date)
     return programs
