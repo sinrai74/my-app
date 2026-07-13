@@ -4836,5 +4836,689 @@
         "match_index": 51.4
       }
     ]
+  },
+  "20260714": {
+    "danger": {
+      "count": 41,
+      "races": [
+        {
+          "venue_num": 4,
+          "race": 9
+        },
+        {
+          "venue_num": 9,
+          "race": 7
+        },
+        {
+          "venue_num": 4,
+          "race": 1
+        },
+        {
+          "venue_num": 13,
+          "race": 2
+        },
+        {
+          "venue_num": 24,
+          "race": 3
+        },
+        {
+          "venue_num": 4,
+          "race": 10
+        },
+        {
+          "venue_num": 6,
+          "race": 3
+        },
+        {
+          "venue_num": 6,
+          "race": 5
+        },
+        {
+          "venue_num": 23,
+          "race": 7
+        },
+        {
+          "venue_num": 4,
+          "race": 2
+        },
+        {
+          "venue_num": 7,
+          "race": 2
+        },
+        {
+          "venue_num": 13,
+          "race": 4
+        },
+        {
+          "venue_num": 1,
+          "race": 9
+        },
+        {
+          "venue_num": 9,
+          "race": 10
+        },
+        {
+          "venue_num": 5,
+          "race": 5
+        },
+        {
+          "venue_num": 13,
+          "race": 8
+        },
+        {
+          "venue_num": 6,
+          "race": 6
+        },
+        {
+          "venue_num": 23,
+          "race": 6
+        },
+        {
+          "venue_num": 4,
+          "race": 5
+        },
+        {
+          "venue_num": 6,
+          "race": 4
+        },
+        {
+          "venue_num": 24,
+          "race": 6
+        },
+        {
+          "venue_num": 4,
+          "race": 3
+        },
+        {
+          "venue_num": 4,
+          "race": 8
+        },
+        {
+          "venue_num": 6,
+          "race": 1
+        },
+        {
+          "venue_num": 13,
+          "race": 7
+        },
+        {
+          "venue_num": 23,
+          "race": 8
+        },
+        {
+          "venue_num": 3,
+          "race": 3
+        },
+        {
+          "venue_num": 5,
+          "race": 2
+        },
+        {
+          "venue_num": 7,
+          "race": 1
+        },
+        {
+          "venue_num": 23,
+          "race": 4
+        },
+        {
+          "venue_num": 24,
+          "race": 1
+        },
+        {
+          "venue_num": 3,
+          "race": 7
+        },
+        {
+          "venue_num": 7,
+          "race": 5
+        },
+        {
+          "venue_num": 9,
+          "race": 4
+        },
+        {
+          "venue_num": 3,
+          "race": 4
+        },
+        {
+          "venue_num": 4,
+          "race": 6
+        },
+        {
+          "venue_num": 15,
+          "race": 3
+        },
+        {
+          "venue_num": 22,
+          "race": 3
+        },
+        {
+          "venue_num": 1,
+          "race": 1
+        },
+        {
+          "venue_num": 4,
+          "race": 11
+        },
+        {
+          "venue_num": 21,
+          "race": 3
+        }
+      ]
+    },
+    "manshuu": {
+      "count": 101,
+      "races": [
+        {
+          "venue_num": 24,
+          "race": 10
+        },
+        {
+          "venue_num": 4,
+          "race": 8
+        },
+        {
+          "venue_num": 21,
+          "race": 11
+        },
+        {
+          "venue_num": 4,
+          "race": 2
+        },
+        {
+          "venue_num": 24,
+          "race": 11
+        },
+        {
+          "venue_num": 9,
+          "race": 7
+        },
+        {
+          "venue_num": 4,
+          "race": 10
+        },
+        {
+          "venue_num": 6,
+          "race": 4
+        },
+        {
+          "venue_num": 21,
+          "race": 12
+        },
+        {
+          "venue_num": 22,
+          "race": 3
+        },
+        {
+          "venue_num": 1,
+          "race": 12
+        },
+        {
+          "venue_num": 22,
+          "race": 8
+        },
+        {
+          "venue_num": 24,
+          "race": 9
+        },
+        {
+          "venue_num": 21,
+          "race": 8
+        },
+        {
+          "venue_num": 24,
+          "race": 12
+        },
+        {
+          "venue_num": 3,
+          "race": 2
+        },
+        {
+          "venue_num": 9,
+          "race": 1
+        },
+        {
+          "venue_num": 21,
+          "race": 1
+        },
+        {
+          "venue_num": 22,
+          "race": 9
+        },
+        {
+          "venue_num": 4,
+          "race": 9
+        },
+        {
+          "venue_num": 21,
+          "race": 10
+        },
+        {
+          "venue_num": 1,
+          "race": 9
+        },
+        {
+          "venue_num": 1,
+          "race": 10
+        },
+        {
+          "venue_num": 3,
+          "race": 1
+        },
+        {
+          "venue_num": 7,
+          "race": 6
+        },
+        {
+          "venue_num": 4,
+          "race": 1
+        },
+        {
+          "venue_num": 4,
+          "race": 12
+        },
+        {
+          "venue_num": 22,
+          "race": 10
+        },
+        {
+          "venue_num": 23,
+          "race": 4
+        },
+        {
+          "venue_num": 5,
+          "race": 4
+        },
+        {
+          "venue_num": 22,
+          "race": 1
+        },
+        {
+          "venue_num": 4,
+          "race": 11
+        },
+        {
+          "venue_num": 5,
+          "race": 9
+        },
+        {
+          "venue_num": 7,
+          "race": 2
+        },
+        {
+          "venue_num": 7,
+          "race": 8
+        },
+        {
+          "venue_num": 5,
+          "race": 5
+        },
+        {
+          "venue_num": 7,
+          "race": 5
+        },
+        {
+          "venue_num": 13,
+          "race": 4
+        },
+        {
+          "venue_num": 21,
+          "race": 6
+        },
+        {
+          "venue_num": 5,
+          "race": 1
+        },
+        {
+          "venue_num": 5,
+          "race": 8
+        },
+        {
+          "venue_num": 6,
+          "race": 1
+        },
+        {
+          "venue_num": 7,
+          "race": 3
+        },
+        {
+          "venue_num": 7,
+          "race": 9
+        },
+        {
+          "venue_num": 13,
+          "race": 8
+        },
+        {
+          "venue_num": 15,
+          "race": 2
+        },
+        {
+          "venue_num": 4,
+          "race": 5
+        },
+        {
+          "venue_num": 6,
+          "race": 3
+        },
+        {
+          "venue_num": 6,
+          "race": 6
+        },
+        {
+          "venue_num": 7,
+          "race": 1
+        },
+        {
+          "venue_num": 7,
+          "race": 12
+        },
+        {
+          "venue_num": 9,
+          "race": 10
+        },
+        {
+          "venue_num": 22,
+          "race": 5
+        },
+        {
+          "venue_num": 24,
+          "race": 3
+        },
+        {
+          "venue_num": 1,
+          "race": 4
+        },
+        {
+          "venue_num": 4,
+          "race": 3
+        },
+        {
+          "venue_num": 6,
+          "race": 11
+        },
+        {
+          "venue_num": 9,
+          "race": 12
+        },
+        {
+          "venue_num": 23,
+          "race": 9
+        },
+        {
+          "venue_num": 3,
+          "race": 7
+        },
+        {
+          "venue_num": 6,
+          "race": 9
+        },
+        {
+          "venue_num": 24,
+          "race": 1
+        },
+        {
+          "venue_num": 3,
+          "race": 4
+        },
+        {
+          "venue_num": 4,
+          "race": 7
+        },
+        {
+          "venue_num": 6,
+          "race": 2
+        },
+        {
+          "venue_num": 6,
+          "race": 5
+        },
+        {
+          "venue_num": 21,
+          "race": 5
+        },
+        {
+          "venue_num": 1,
+          "race": 3
+        },
+        {
+          "venue_num": 3,
+          "race": 3
+        },
+        {
+          "venue_num": 3,
+          "race": 6
+        },
+        {
+          "venue_num": 4,
+          "race": 6
+        },
+        {
+          "venue_num": 13,
+          "race": 7
+        },
+        {
+          "venue_num": 22,
+          "race": 6
+        },
+        {
+          "venue_num": 23,
+          "race": 5
+        },
+        {
+          "venue_num": 24,
+          "race": 2
+        },
+        {
+          "venue_num": 24,
+          "race": 6
+        },
+        {
+          "venue_num": 1,
+          "race": 11
+        },
+        {
+          "venue_num": 5,
+          "race": 3
+        },
+        {
+          "venue_num": 6,
+          "race": 7
+        },
+        {
+          "venue_num": 9,
+          "race": 2
+        },
+        {
+          "venue_num": 13,
+          "race": 2
+        },
+        {
+          "venue_num": 21,
+          "race": 7
+        },
+        {
+          "venue_num": 3,
+          "race": 12
+        },
+        {
+          "venue_num": 6,
+          "race": 12
+        },
+        {
+          "venue_num": 13,
+          "race": 3
+        },
+        {
+          "venue_num": 13,
+          "race": 5
+        },
+        {
+          "venue_num": 15,
+          "race": 9
+        },
+        {
+          "venue_num": 24,
+          "race": 4
+        },
+        {
+          "venue_num": 24,
+          "race": 5
+        },
+        {
+          "venue_num": 1,
+          "race": 1
+        },
+        {
+          "venue_num": 5,
+          "race": 11
+        },
+        {
+          "venue_num": 7,
+          "race": 4
+        },
+        {
+          "venue_num": 7,
+          "race": 10
+        },
+        {
+          "venue_num": 9,
+          "race": 3
+        },
+        {
+          "venue_num": 23,
+          "race": 6
+        },
+        {
+          "venue_num": 23,
+          "race": 7
+        },
+        {
+          "venue_num": 1,
+          "race": 5
+        },
+        {
+          "venue_num": 3,
+          "race": 8
+        },
+        {
+          "venue_num": 5,
+          "race": 7
+        },
+        {
+          "venue_num": 13,
+          "race": 10
+        },
+        {
+          "venue_num": 21,
+          "race": 3
+        }
+      ],
+      "top10": [
+        {
+          "venue_num": 24,
+          "race": 10
+        },
+        {
+          "venue_num": 4,
+          "race": 8
+        },
+        {
+          "venue_num": 21,
+          "race": 11
+        },
+        {
+          "venue_num": 4,
+          "race": 2
+        },
+        {
+          "venue_num": 24,
+          "race": 11
+        },
+        {
+          "venue_num": 9,
+          "race": 7
+        },
+        {
+          "venue_num": 4,
+          "race": 10
+        },
+        {
+          "venue_num": 6,
+          "race": 4
+        },
+        {
+          "venue_num": 21,
+          "race": 12
+        },
+        {
+          "venue_num": 22,
+          "race": 3
+        }
+      ]
+    },
+    "ranking": [
+      {
+        "venue_num": 9,
+        "venue": "津",
+        "race": 7,
+        "match_index": 54.0
+      },
+      {
+        "venue_num": 4,
+        "venue": "平和島",
+        "race": 10,
+        "match_index": 54.0
+      },
+      {
+        "venue_num": 4,
+        "venue": "平和島",
+        "race": 9,
+        "match_index": 52.7
+      },
+      {
+        "venue_num": 4,
+        "venue": "平和島",
+        "race": 1,
+        "match_index": 52.7
+      },
+      {
+        "venue_num": 13,
+        "venue": "尼崎",
+        "race": 2,
+        "match_index": 52.7
+      },
+      {
+        "venue_num": 24,
+        "venue": "大村",
+        "race": 3,
+        "match_index": 52.7
+      },
+      {
+        "venue_num": 6,
+        "venue": "浜名湖",
+        "race": 3,
+        "match_index": 52.7
+      },
+      {
+        "venue_num": 6,
+        "venue": "浜名湖",
+        "race": 5,
+        "match_index": 52.7
+      },
+      {
+        "venue_num": 23,
+        "venue": "唐津",
+        "race": 7,
+        "match_index": 52.7
+      },
+      {
+        "venue_num": 4,
+        "venue": "平和島",
+        "race": 2,
+        "match_index": 52.7
+      }
+    ]
   }
 }
