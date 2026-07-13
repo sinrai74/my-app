@@ -27,6 +27,7 @@ from x_brand_config import AI_VERSION, SYSTEM_NAME
 from x_results_common import (
     collect_all_periods, load_daily_stats, load_daily_stats_range,
     calc_brand_results, calc_brand_results_range,
+    calc_korogashi_results, calc_hot_motor_results, calc_awakening_results,
     calc_overall_roi, find_mvp_prediction, find_close_misses,
     generate_ai_comment_for_miss,
 )
@@ -54,11 +55,18 @@ def _brand_row_html(icon: str, label: str, result: dict) -> str:
     checked = result.get("checked", result.get("listed", 0))
     hit     = result.get("hit", 0)
     rate    = result.get("rate", 0.0)
+    # 【Phase2】万舟は平均払戻・最大払戻も併記する（的中0件の場合は付けない）
+    payout_note = ""
+    if "avg_payout" in result and hit > 0:
+        payout_note = (
+            f'<div class="br-payout">平均払戻{result["avg_payout"]:,}円'
+            f' ／ 最大払戻{result["max_payout"]:,}円</div>'
+        )
     return f"""
 <div class="brand-row">
   <span class="br-icon">{icon}</span>
   <span class="br-label">{label}</span>
-  <span class="br-value">{hit}/{checked}件的中（{rate}%）</span>
+  <span class="br-value">{hit}/{checked}件的中（{rate}%）{payout_note}</span>
 </div>"""
 
 
@@ -104,9 +112,9 @@ def generate_public_html(date_str: str, output_path: str) -> dict:
     # ── ブランド別的中率 ──────────────────────────────────
     danger_r    = calc_brand_results(today_records, daily_stats, "danger")
     manshuu_r   = calc_brand_results(today_records, daily_stats, "manshuu")
-    # 【転がし分離・モーター非掲載】korogashi/hot/awakeの実績計算は
-    # 公開ページから外したため呼び出しも削除（x_results_common側の
-    # 関数自体は開発用レポート等の将来利用に備えて残してある）
+    korogashi_r = calc_korogashi_results()
+    hot_r       = calc_hot_motor_results()
+    awake_r     = calc_awakening_results()
 
     # ── 回収率・ROI ───────────────────────────────────────
     roi_today = calc_overall_roi(today_records)
@@ -147,6 +155,7 @@ body {{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Meiry
 .br-label {{min-width:90px;font-weight:bold;}}
 .br-value {{color:var(--good);flex:1;text-align:right;}}
 .br-value.no-data {{color:var(--gray);font-size:.85em;}}
+.br-payout {{font-size:.72em;color:var(--gray);font-weight:normal;margin-top:2px;}}
 .roi-grid {{display:grid;grid-template-columns:1fr 1fr;gap:10px;}}
 .roi-cell {{background:#12121e;border-radius:8px;padding:12px;text-align:center;}}
 .roi-num {{font-size:1.4em;font-weight:bold;color:var(--accent);}}
@@ -181,6 +190,9 @@ body {{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Meiry
   <h2>🎯 ブランド別的中実績</h2>
   {_brand_row_html("🚨", "危険艇速報", danger_r)}
   {_brand_row_html("💰", "万舟警報", manshuu_r)}
+  {_brand_row_html("🎯", "転がし候補", korogashi_r)}
+  {_brand_row_html("⚡", "激走モーター", hot_r)}
+  {_brand_row_html("📈", "覚醒モーター", awake_r)}
 </div>
 
 <div class="section">

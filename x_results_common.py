@@ -136,6 +136,7 @@ def calc_brand_results(records: list[dict], daily_stats: dict, brand: str) -> di
 
     checked = 0
     hit     = 0
+    hit_payouts: list[float] = []  # 【Phase2】万舟の平均払戻・最大払戻用
     already_seen: set[tuple] = set()   # 同一レースの重複カウントを防ぐ
     for r in records:
         key = (str(r.get("venue_num", "")), str(r.get("race", "")))
@@ -157,6 +158,7 @@ def calc_brand_results(records: list[dict], daily_stats: dict, brand: str) -> di
         elif brand == "manshuu":
             if payout > 10000:
                 hit += 1
+                hit_payouts.append(payout)
         elif brand == "hot_high":
             if payout > 5000:
                 hit += 1
@@ -165,13 +167,20 @@ def calc_brand_results(records: list[dict], daily_stats: dict, brand: str) -> di
                 hit += 1
 
     rate = round(hit / checked * 100, 1) if checked > 0 else 0.0
-    return {
+    result = {
         "listed":   listed_count,
         "checked":  checked,
         "hit":      hit,
         "rate":     rate,
         "has_data": checked > 0,
     }
+    # 【Phase2 万舟の平均払戻・最大払戻】manshuuブランドの時だけ追加。
+    # 既存キーは一切変更しないので、この関数を使っている他の呼び出し元
+    # （danger等）には影響しない。
+    if brand == "manshuu":
+        result["avg_payout"] = round(sum(hit_payouts) / len(hit_payouts)) if hit_payouts else 0
+        result["max_payout"] = round(max(hit_payouts)) if hit_payouts else 0
+    return result
 
 
 def calc_brand_results_range(records: list[dict], daily_stats_range: dict, brand: str) -> dict:
