@@ -223,7 +223,7 @@ jobs:
           DRY=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_verification.py $DATE_ARG $DRY || echo "検証スクリプト失敗（スキップ）"
-          python x_buyscore_tuner.py || echo "BuyScoreチューニング失敗（スキップ）"
+          python x_buyscore_tuner.py --dry-run || echo "BuyScoreチューニング失敗（スキップ）"  # Feature Freeze(設計書v1.1 ⑳20.2-4): 自動反映停止・提案ログのみ
 
       # ── AI実績ページ生成・送信 ───────────────────────────
       - name: Send - Results Page
