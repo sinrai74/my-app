@@ -40,11 +40,12 @@ from typing import Any, Optional
 
 # build_race_evaluation_v4 は「呼ぶだけ」。本体は変更しない。
 from x_asahi_scoring import build_race_evaluation_v4, load_asahi_config
+from x_venue_stats import compute_venue_course_stats, get_venue_course_factor
 
 # Golden Inputに保存するboat属性（x_asahi_scoringが参照する全属性）。
 # この集合はWrapperがboatを再構築（round-trip）するための最小十分な情報。
 # Wrapper自体の版数。生成物のmanifestへ記録し、生成ロジック変更の追跡を可能にする（Should対応）。
-GENERATOR_VERSION: str = "1.0.0"
+GENERATOR_VERSION: str = "1.1.0"  # v1.1.0: danger_venue_factors（レーン別場補正）を入力へ追加
 
 BOAT_ATTRS: tuple[str, ...] = (
     "lane",
@@ -78,6 +79,9 @@ class RaceInput:
     venue_num: int
     is_night: bool
     config_version: str  # 使用したconfigの _version（値そのものは別途freeze記録）
+    danger_venue_factors: Optional[dict] = None  # v1.1.0: 生成時のレーン別場補正
+    # {"course_rentai": {"1".."6": factor}, "venue_unfavorable": factor}
+    # calc_danger_score_v2の2種の呼び出し（cfg付き/なし）を各々忠実に記録する
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +92,7 @@ class RaceInput:
             "venue_num": self.venue_num,
             "is_night": self.is_night,
             "config_version": self.config_version,
+            "danger_venue_factors": self.danger_venue_factors,
         }
 
 
@@ -161,14 +166,38 @@ def _load_race_inputs(eval_id: str) -> RaceInput:
     ]
     night_venues = {4, 6, 12, 17, 20, 21, 22, 23, 24}  # notify_arashi L3447と同一
     config = load_asahi_config()
+    venue_name_str = VENUE_NAMES.get(venue_num, f"場{venue_num}")
+
+    # v1.1.0: danger算出で使われるレーン別場補正を「生成時の値」として記録する。
+    # 呼び出し形はcalc_danger_score_v2内と完全同一:
+    #   course_rentai用: get_venue_course_factor(venue, lane, venue_stats, cfg.get("_venue_cfg"))
+    #   venue_unfavorable用: get_venue_course_factor(venue, 1, venue_stats)  ※cfgなし
+    danger_venue_factors = None
+    if venue_name_str:
+        venue_stats = compute_venue_course_stats()
+        course_rentai_factors = {
+            str(lane): get_venue_course_factor(
+                venue_name_str, lane, venue_stats, config.get("_venue_cfg")
+            )["factor"]
+            for lane in range(1, 7)
+        }
+        unfavorable_factor = get_venue_course_factor(
+            venue_name_str, 1, venue_stats
+        )["factor"]
+        danger_venue_factors = {
+            "course_rentai": course_rentai_factors,
+            "venue_unfavorable": unfavorable_factor,
+        }
+
     return RaceInput(
         eval_id=eval_id,
         boats=boats,
-        venue=VENUE_NAMES.get(venue_num, f"場{venue_num}"),
+        venue=venue_name_str,
         race_grade=int(program.get("race_grade_number", 0) or 0),
         venue_num=venue_num,
         is_night=venue_num in night_venues,
         config_version=str(config.get("_version", "")),
+        danger_venue_factors=danger_venue_factors,
     )
 
 

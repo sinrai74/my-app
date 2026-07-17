@@ -56,3 +56,40 @@ class FakeGitClient:
         if self._fail_on_commit:
             raise StorageError("injected commit failure")
         self.commits.append((tuple(str(p) for p in paths), message))
+
+
+class FakeVenueStatsProvider:
+    """VenueStatsProviderのFake。固定の分類・補正値を返す（Golden回帰・単体テスト用）。"""
+
+    def __init__(
+        self,
+        water_types: dict[str, dict] | None = None,
+        course_factors: dict[str, dict] | None = None,
+    ) -> None:
+        self.water_types = water_types or {}
+        self.course_factors = course_factors or {}
+
+    def classify_water_type(self, venue_name: str) -> dict:
+        return self.water_types.get(venue_name, {"type": "standard", "label": "標準"})
+
+    def get_venue_course_factor(self, venue_name: str, course: int) -> dict:
+        return self.course_factors.get(venue_name, {"factor": 1.0, "samples": 0})
+
+
+class FakePredictor:
+    """ML予測器のFake（Step4計画書C5: ゴールデン期の予測を固定注入する）。
+
+    eval_id -> win_probs（艇番->勝率）の固定辞書を返すCallable。
+    実predictorの最終シグネチャはStep4-5（Ver4Engine.predict統合）で確定するが、
+    「外部から注入された予測値をそのまま返す」という契約はここで固定する。
+    """
+
+    def __init__(self, fixed: dict[str, dict[int, float]]) -> None:
+        self.fixed = dict(fixed)
+        self.calls: list[str] = []
+
+    def __call__(self, eval_id: str) -> dict[int, float]:
+        self.calls.append(eval_id)
+        if eval_id not in self.fixed:
+            raise KeyError(f"no fixed prediction for {eval_id}")
+        return dict(self.fixed[eval_id])
