@@ -45,9 +45,20 @@ def main() -> int:
     ]
     if mismatches:
         print(f"NG: 期待出力が変化しています（{len(mismatches)}件）。続行せず報告してください。")
-        for eval_id in mismatches[:10]:
-            print(f"  {eval_id}: old={old_map[eval_id][:12]}... new={new_map[eval_id][:12]}...")
+        for eval_id in mismatches[:20]:
+            print(
+                f"  eval_id={eval_id} field=expected_sha256 "
+                f"old={old_map[eval_id]} new={new_map[eval_id]}"
+            )
         return 1
+
+    # 補助フィールドの差分もeval_id/field/old/new形式で表示（情報提供のみ・NGにはしない）
+    for field in ("count", "baseline_tag", "source_commit"):
+        if old.get(field) != new.get(field):
+            print(
+                f"  info: eval_id=- field={field} "
+                f"old={old.get(field)!r} new={new.get(field)!r}"
+            )
 
     print(f"OK: 期待出力は全{len(old_map)}件で不変（入力のみ拡張されたことを確認）")
     print(f"  old generator: {old.get('generator_version')} -> new: {new.get('generator_version')}")

@@ -45,6 +45,10 @@ from x_venue_stats import compute_venue_course_stats, get_venue_course_factor
 # Golden Inputに保存するboat属性（x_asahi_scoringが参照する全属性）。
 # この集合はWrapperがboatを再構築（round-trip）するための最小十分な情報。
 # Wrapper自体の版数。生成物のmanifestへ記録し、生成ロジック変更の追跡を可能にする（Should対応）。
+# Golden入力スキーマの版数（generator_versionとは別管理）。
+# 1 = 初版（boats+メタ） / 2 = danger_venue_factors追加（Step4-2是正）
+GOLDEN_SCHEMA_VERSION: int = 2
+
 GENERATOR_VERSION: str = "1.1.0"  # v1.1.0: danger_venue_factors（レーン別場補正）を入力へ追加
 
 BOAT_ATTRS: tuple[str, ...] = (
@@ -255,6 +259,7 @@ def generate(candidates_path: Path, out_dir: Path, source_commit: Optional[str])
         )
 
     manifest = {
+        "golden_schema_version": GOLDEN_SCHEMA_VERSION,
         "generator_version": GENERATOR_VERSION,
         "created_from": "build_race_evaluation_v4 (unmodified)",
         "baseline_tag": "freeze-v1-baseline",
