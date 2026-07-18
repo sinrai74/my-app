@@ -99,14 +99,15 @@ class TestUpsetGolden(unittest.TestCase):
         )
 
         exp_detail = expected["upset_detail"]
-        for key in CORE_DETAIL_KEYS:
-            exp_value = exp_detail.get(key)
-            act_value = result.detail.get(key)
-            self.assertEqual(
-                act_value, exp_value,
-                msg=f"eval_id={eval_id} feature=upset_detail.{key} "
-                    f"expected={exp_value!r} actual={act_value!r}",
-            )
+        exp_core = {k: exp_detail.get(k) for k in CORE_DETAIL_KEYS}
+        act_core = {k: result.detail.get(k) for k in CORE_DETAIL_KEYS}
+        # Should2: 失敗時はeval_idと期待/実際のdetail全体を表示する
+        self.assertEqual(
+            act_core, exp_core,
+            msg=f"eval_id={eval_id}\n"
+                f"expected detail={exp_core!r}\n"
+                f"actual detail={act_core!r}",
+        )
 
         # upset->danger 内部連鎖の一致（二重担保）
         self.assertAlmostEqual(

@@ -108,6 +108,12 @@ class UpsetResult:
     """upset算出の結果と、後続段（rank/featured/_features＝Step4-4/4-5）が
     参照する中間値。移植元では1関数内のローカル変数だったものを型として公開する
     （分離が旧出力を変えないことはGolden回帰で保証する＝C3方式）。
+
+    Legacy: calculate_upset_score_v2（x_asahi_scoring.py L405-L536）
+    Freeze Commit: 3a7f9c3dd7c628255285aefbe5b3e03978ec93b3
+
+    Consumed by: RankEngine（Step4-4: rank_index/featured_boats/match_indexの
+    算出が lane_probs・danger_score・upset_score 等の中間値を参照する）
     """
 
     upset_score: float
