@@ -42,7 +42,11 @@ _DEFAULT_BASE_RATES: dict[str, float] = {"first": 10, "second": 15, "third": 15}
 
 
 def compute_match_index(upset_score: float) -> float:
-    """match_index（0-100）。移植元L536のrank_index_ctx構築式の機械転記。"""
+    """match_index（0-100）。
+
+    Legacy: rank_index_ctx構築式（x_asahi_scoring.py L536）の機械転記
+    Freeze Commit: 3a7f9c3
+    """
     return min(100, upset_score * 10.5)
 
 
@@ -53,7 +57,11 @@ def calc_lane_rank_scores(
     venue_name: Optional[str] = None,
     venue_stats: Optional[CourseFactorProvider] = None,
 ) -> dict:
-    """1艇の1着・2着・3着適性と寄与度（移植元 calc_lane_rank_scores_v2）。"""
+    """1艇の1着・2着・3着適性と寄与度。
+
+    Legacy: calc_lane_rank_scores_v2（x_asahi_scoring.py L613-L746）
+    Freeze Commit: 3a7f9c3
+    """
     lrs = config["lane_rank_scores"]
     base_rates = lrs["lane_base_rate"].get(str(boat.get("lane")), _DEFAULT_BASE_RATES)
 
@@ -183,7 +191,11 @@ def calc_rank_probabilities(
     venue_name: Optional[str] = None,
     venue_stats: Optional[CourseFactorProvider] = None,
 ) -> dict:
-    """1着・2着・3着の確率分布（移植元 calc_rank_probabilities_v2）。"""
+    """1着・2着・3着の確率分布。
+
+    Legacy: calc_rank_probabilities_v2（x_asahi_scoring.py L747-L804）
+    Freeze Commit: 3a7f9c3
+    """
     cfg = config
     context = context or {}
     lrs = cfg["lane_rank_scores"]
@@ -233,10 +245,14 @@ def calc_rank_index(
     venue_name: Optional[str] = None,
     venue_stats: Optional[CourseFactorProvider] = None,
 ) -> dict[int, dict]:
-    """全艇の上位進出指数0-100（移植元 calc_rank_index_v2）。
+    """全艇の上位進出指数0-100。
 
-    移植元と同様、寄与度取得のためcalc_lane_rank_scoresを艇ごとに
-    再計算する（probabilities内部との二重計算＝挙動保存）。
+    Legacy: calc_rank_index_v2（x_asahi_scoring.py L815-L859）
+    Freeze Commit: 3a7f9c3
+
+    Should3: 移植元と同様、寄与度取得のためcalc_lane_rank_scoresを艇ごとに
+    再計算する（probabilities内部との二重計算）。Feature Freezeとの一致を
+    維持するため、性能最適化は意図的に行わない。
     """
     cfg = config
     probs = calc_rank_probabilities(
@@ -267,7 +283,11 @@ def select_featured_boats(
     danger_score: float,
     config: Optional[dict] = None,
 ) -> list[dict[str, Any]]:
-    """上位進出指数から注目選手を最大N艇選ぶ（移植元 select_featured_boats）。"""
+    """上位進出指数から注目選手を最大N艇選ぶ。
+
+    Legacy: select_featured_boats（x_asahi_scoring.py L860-L939）
+    Freeze Commit: 3a7f9c3
+    """
     cfg = config
     fr_cfg = cfg.get("featured_racers", {})
     max_count = fr_cfg.get("max_count", 3)

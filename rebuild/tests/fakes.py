@@ -93,3 +93,29 @@ class FakePredictor:
         if eval_id not in self.fixed:
             raise KeyError(f"no fixed prediction for {eval_id}")
         return dict(self.fixed[eval_id])
+
+
+class FakePredictionStrategy:
+    """PredictionStrategyのFake（Step4-5: predict DI境界の検証用）。
+
+    受け取ったevaluation/odds/configを記録し、eval_idを引き継いだ
+    最小のPredictionを返す。買い目生成の実体はStep4-6で結線する。
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def __call__(self, evaluation, odds, config):
+        from models.evaluation import Prediction
+
+        self.calls.append((evaluation, odds, config))
+        return Prediction(
+            eval_id=evaluation.eval_id,
+            pred_combo="1-2-3",
+            pred_prob=0.1,
+            pred_ev=1.0,
+            pred_odds=10.0,
+            confidence=0.5,
+            why_bet="fake",
+            patterns=(),
+        )
