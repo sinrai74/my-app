@@ -1,0 +1,89 @@
+{
+  "_comment": "BuyScore重み設定。x_buyscore_tuner.py が30日実績から自動更新する。",
+  "_version": "1.0",
+
+  "weights": {
+    "ev":           0.35,
+    "prob":         0.20,
+    "match_index":  0.15,
+    "market_gap":   0.10,
+    "uncertainty":  -0.10,
+    "disagreement": -0.05,
+    "calibration":  0.10,
+    "race_type":    0.05
+  },
+
+  "thresholds": {
+    "buyscore_min":       60,
+    "ev_min":             1.28,
+    "match_index_min":    40,
+    "uncertainty_max":    0.75,
+    "disagreement_max":   0.80,
+    "prob_min":           0.020,
+    "odds_max":           80,
+    "market_gap_max":     3.0
+  },
+
+  "odds_band_bonus": {
+    "1_5":    -0.15,
+    "6_12":    0.10,
+    "13_25":   0.10,
+    "26_40":   0.05,
+    "41_80":  -0.05,
+    "80_over": -0.20
+  },
+
+  "race_type_points": {
+    "本命戦":  {"max_bets": 2, "label": "堅実"},
+    "混戦":    {"max_bets": 4, "label": "期待値重視"},
+    "超混戦":  {"max_bets": 6, "label": "穴狙い"},
+    "荒れ戦":  {"max_bets": 5, "label": "穴狙い"}
+  },
+
+  "star_thresholds": {
+    "5star": 90,
+    "4star": 80,
+    "3star": 70,
+    "2star": 60,
+    "1star": 0
+  },
+
+  "korogashi": {
+    "buyscore_min": 75,
+    "prob_min":     0.035,
+    "odds_min":     6,
+    "odds_max":     25,
+    "uncertainty_max": 0.55,
+    "match_index_min": 60
+  },
+
+  "ippatsu": {
+    "ev_min":           2.0,
+    "odds_min":         30,
+    "match_index_min":  40
+  },
+
+  "kelly": {
+    "fraction":         0.25,
+    "min_buyscore_full": 75,
+    "half_below":        60,
+    "zero_below":        50
+  },
+
+  "capital_management": {
+    "loss_streak_half":  5,
+    "loss_streak_stop":  10,
+    "daily_loss_stop":   -10000,
+    "profit_boost_after": 5000,
+    "profit_boost_rate":  1.2,
+    "max_dd_stop":       -30000
+  },
+
+  "tuning": {
+    "enabled":            true,
+    "lookback_days":      30,
+    "max_change_per_run": 0.05,
+    "min_samples":        50,
+    "regularization":     0.1
+  }
+}
