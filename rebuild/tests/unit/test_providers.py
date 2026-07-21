@@ -229,6 +229,60 @@ class TestRaceTypeProvider(unittest.TestCase):
             provider.resolve_race_type("20260704", 12, 5)
 
 
+class TestProtocolConformance(unittest.TestCase):
+    """Protocol経由でProviderを利用できること（構造的サブタイピング検証）。"""
+
+    def test_boats_provider_satisfies_race_and_resolver_protocols(self) -> None:
+        from adapters.providers import BoatsResolver, RaceProvider
+
+        provider = _boats_provider()
+        race_p: RaceProvider = provider  # 型注釈で受けられる
+        boats_r: BoatsResolver = provider
+        # 実際にProtocolメソッドが呼べる
+        self.assertIsInstance(race_p.resolve_race("20260704", 12, 5), Race)
+        self.assertEqual(len(boats_r.resolve_boats("20260704", 12, 5)), 6)
+
+    def test_each_provider_exposes_protocol_method(self) -> None:
+        self.assertTrue(hasattr(DefaultOddsProvider(lambda a, b, c: {}), "resolve_odds"))
+        self.assertTrue(hasattr(DefaultVenueProvider(), "resolve_venue_name"))
+        self.assertTrue(
+            hasattr(DefaultWeatherProvider(lambda a, b, c: None), "resolve_weather")
+        )
+        self.assertTrue(
+            hasattr(DefaultRaceTypeProvider(lambda **k: ""), "resolve_race_type")
+        )
+
+
+class TestResolveIndependence(unittest.TestCase):
+    """resolve_race と resolve_boats が独立に提供されること。"""
+
+    def test_boats_without_race(self) -> None:
+        provider = _boats_provider()
+        boats = provider.resolve_boats("20260704", 12, 5)
+        self.assertEqual(len(boats), 6)
+
+    def test_race_without_boats(self) -> None:
+        provider = _boats_provider()
+        race = provider.resolve_race("20260704", 12, 5)
+        self.assertEqual(len(race.entries), 6)
+
+    def test_order_independent_single_fetch(self) -> None:
+        """boats->race の順でも取得は1回。"""
+        calls = {"n": 0}
+
+        def _fetch(date):
+            calls["n"] += 1
+            return [_program()]
+
+        provider = BoatsProvider(
+            programs_fetcher=_fetch,
+            boats_extractor=lambda prog: [_boat_info(i) for i in range(1, 7)],
+        )
+        provider.resolve_boats("20260704", 12, 5)
+        provider.resolve_race("20260704", 12, 5)
+        self.assertEqual(calls["n"], 1)
+
+
 class TestBoatToRaceEntry(unittest.TestCase):
     def test_field_mapping(self) -> None:
         entry = _boat_to_race_entry(_boat_info(1))

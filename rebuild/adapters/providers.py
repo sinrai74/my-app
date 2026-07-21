@@ -49,7 +49,24 @@ NIGHT_VENUES = frozenset({4, 6, 12, 17, 20, 21, 22, 23, 24})
 
 
 class RaceProvider(Protocol):
-    """レース識別子 → Race（ドメインモデル）。"""
+    """レース識別子 → Race（ドメインモデル）。
+
+    入力: race_date(YYYYMMDD), venue_num(1-24), race_number(1-12)
+    出力: Race（RaceEntry列・Weather・grade・is_night等のドメインモデル）
+    責務: 出走表を取得し、Step1のドメインモデルRaceへ変換する
+    禁止: 評価・スコア・buyscore・EV・Kelly・判定・保存・出力・通知。
+          Ver4互換boats（詳細17属性）の生成はしない（それはBoatsResolver）。
+
+    RaceProvider と BoatsResolver の責務境界:
+      両者は同じ出走表ソースを使うが、用途と出力が異なる。
+      - RaceProvider  : Pipeline/ドメイン用の「軽量な」Race（RaceEntry）。
+                        Step1で確定した正式モデル。Feature Freeze対象。
+      - BoatsResolver : Ver4Engine互換の「詳細な」boats（BOAT_ATTRS 17属性）。
+                        RaceEntryに無いlocal_win/ability_*/course_*を含む、
+                        Ver4評価専用の互換アダプタ出力（Coreモデルではない）。
+      同一Provider（BoatsProvider）が両方を実装するが、RaceEntryへVer4属性を
+      追加して一本化することは禁止（Step1モデル変更＝Freeze違反になるため）。
+    """
 
     def resolve_race(
         self, race_date: str, venue_num: int, race_number: int
@@ -57,7 +74,16 @@ class RaceProvider(Protocol):
 
 
 class BoatsResolver(Protocol):
-    """レース識別子 → Ver4互換boats（BOAT_ATTRS Mapping列・Ver4Engine専用）。"""
+    """レース識別子 → Ver4互換boats（BOAT_ATTRS Mapping列・Ver4Engine専用）。
+
+    入力: race_date, venue_num, race_number
+    出力: Sequence[Mapping[str,Any]]（各艇のBOAT_ATTRS 17属性dict）
+    責務: 出走表からVer4Engineが要求する詳細属性を投影する互換アダプタ
+    禁止: 評価・判定・保存・出力・通知。Race/RaceEntryの生成（それはRaceProvider）。
+
+    位置づけ: これはCoreモデルではなくVer4互換維持のための例外レイヤーであり、
+      Provider内部に閉じる。Coreモデル（RaceEntry等）へ影響を与えてはならない。
+    """
 
     def resolve_boats(
         self, race_date: str, venue_num: int, race_number: int
@@ -65,7 +91,13 @@ class BoatsResolver(Protocol):
 
 
 class OddsProvider(Protocol):
-    """3連単オッズ取得のみ（EV計算はしない）。"""
+    """3連単オッズ取得。
+
+    入力: race_date, venue_num, race_number
+    出力: OddsSnapshot（trifecta_odds: {"1-2-3": 47.2, ...}）
+    責務: 公式サイト等からオッズを取得しOddsSnapshotへ変換する
+    禁止: EV計算・期待値判定・buyscore・Kelly・買い目選定・保存・通知。
+    """
 
     def resolve_odds(
         self, race_date: str, venue_num: int, race_number: int
@@ -73,13 +105,27 @@ class OddsProvider(Protocol):
 
 
 class VenueProvider(Protocol):
-    """会場情報取得のみ（統計補正はしない）。"""
+    """会場情報取得。
+
+    入力: venue_num(1-24)
+    出力: 場名(str)
+    責務: 会場番号から会場名を解決する（静的マスタ参照）
+    禁止: 統計補正・水面タイプ分類・場×コース補正（それらはVenueStatsProvider
+          =Step4のcore側Providerの責務。本Providerは会場名取得のみ）。
+    """
 
     def resolve_venue_name(self, venue_num: int) -> str: ...
 
 
 class WeatherProvider(Protocol):
-    """気象取得のみ（風/波/天候/気温）。"""
+    """気象取得（風/波/天候/気温）。
+
+    入力: race_date, venue_num, race_number
+    出力: Optional[Weather]（データ無しはNone）
+    責務: 気象データを取得しWeatherモデルへ変換する
+    禁止: 気象を用いた評価・補正・判定（Weatherは朝刊のみポリシーで評価に
+          使われない。Providerは取得と変換のみ）。
+    """
 
     def resolve_weather(
         self, race_date: str, venue_num: int, race_number: int
@@ -87,7 +133,19 @@ class WeatherProvider(Protocol):
 
 
 class RaceTypeProvider(Protocol):
-    """race_type取得のみ（_bonus計算はしない）。"""
+    """race_type取得。
+
+    入力: race_date, venue_num, race_number（＋分類に要する素材）
+    出力: race_type文字列（例 "イン逃げ型"/"混戦型" 等、Legacy分類の戻り値）
+    責務: Legacyの分類関数を呼び、race_type文字列を返すのみ
+    禁止: _race_type_bonus計算・investment_type生成・buyscore・判定。
+          分類ロジック自体の再実装（Legacy関数をimportして呼ぶだけ）。
+
+    注記（Step5-1調査結果）: Legacyの分類戻り値（"イン逃げ型"等）と、
+      buyscoreの_race_type_bonusが参照するキー（"本命戦"/"混戦"等）は
+      体系が異なる。この差の解消はProviderの責務ではなく、Pipeline結線
+      （Step5-2）で扱う。Providerは取得値をそのまま返す。
+    """
 
     def resolve_race_type(
         self, race_date: str, venue_num: int, race_number: int
