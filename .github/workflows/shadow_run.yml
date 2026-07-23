@@ -1,0 +1,72 @@
+# Shadow運用ワークフロー（Step6-1・新規追加）
+#
+# 目的: Legacy(notify_arashi.yml)と完全分離してrebuildパイプラインを並走させ、
+#       Shadow比較（Race→...→NotificationRequest）を実行する。
+#
+# 方針（Step6-1レビュー確定・案X）:
+#   - 既存 notify_arashi.yml は一切変更しない
+#   - Legacyへの干渉ゼロ（このワークフローを止めればShadowだけ止まる）
+#   - rebuildの通知は NullNotifier 強制（実送信0件）
+#   - 差分はコード補正せず記録するだけ（Feature Freeze維持）
+#
+# 注記: 手動起動（workflow_dispatch）を既定とし、実データ検証の開始時に
+#       運用判断で有効化する。cron自動並走へ切り替える場合は schedule を
+#       有効化する（本Stepでは手動のみ・自動並走はGo判定前に有効化しない）。
+
+name: shadow-run
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_race:
+        description: "対象レース (YYYYMMDD_venue_race 例 20260704_12_5)"
+        required: true
+        default: ""
+  # schedule:
+  #   # Go判定前は自動並走しない。必要時に運用判断で有効化する。
+  #   - cron: "5,20,35,50 23 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  shadow:
+    runs-on: ubuntu-latest
+    # Shadow中は実送信を物理的に禁止する（NullNotifier強制はコード側で担保）
+    env:
+      USE_REBUILD_PIPELINE: "False"   # Shadow期間中は必ずFalse（Legacy継続）
+      SHADOW_MODE: "1"
+      TARGET_RACE: ${{ inputs.target_race }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || echo "requirements install skipped"
+
+      - name: Run shadow comparison
+        # 案I: rebuild内から実行する（rebuild内のimportは絶対import前提のため、
+        # コード側のimport方式を変更せずに済む）。Legacyモジュールはリポジトリ
+        # ルートにあるため PYTHONPATH で参照する。
+        working-directory: rebuild
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          # Shadowエントリポイントを呼ぶだけ（比較・記録のみ）。
+          # 実送信は行わない（NullNotifier強制）。差分はレポートへ出力。
+          python -m actions.shadow_entrypoint
+
+      - name: Upload shadow diff report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-diff-report
+          path: rebuild/shadow_diff_report.json
+          if-no-files-found: ignore
