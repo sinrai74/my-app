@@ -1,0 +1,248 @@
+"""
+Shadow運用エントリポイント（Step5-6実装・Step6-2b起動配線追加）。
+
+責務: Provider等の具象をDIで組み立て、ShadowRunnerへ渡して実行するだけ。
+禁止: 判定・計算・補正・HTML生成・通知生成。
+
+Step6-2b（起動配線）のスコープ:
+  「Shadowが起動し、最初のレースまで到達すること」のみを目的とする。
+  - 対象レースは環境変数 TARGET_RACE で明示指定（Legacy fetch_programsに
+    依存せず、API・ネットワーク・開催状況の影響を切り離すため）
+  - 1レース限定（100レース運用は本Stepの目的ではない）
+  - PredictionContextのcontext_resolverは結線しない。実際の例外を観測して
+    から最小限の配線を次Stepで行う（推測実装の回避）
+
+注記: 既存の GitHub Actions（.yml）ファイルは変更していない。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import sys
+from datetime import datetime, timezone
+
+from actions.flags import use_rebuild_pipeline
+from actions.wiring import PipelineBundle, assemble_pipelines
+from shadow.go_no_go import GoNoGoCriteria, evaluate_go_no_go
+from shadow.runner import ShadowRunner
+
+log = logging.getLogger(__name__)
+
+
+def run_shadow_for_race(
+    bundle: PipelineBundle,
+    race_date: str,
+    venue_num: int,
+    race_number: int,
+    output_paths: dict,
+    legacy_values: dict | None = None,
+) -> dict:
+    """1レース分のShadow実行（呼ぶだけ）。判定はGoNoGoCriteria側で行う。"""
+    log.info("Pipeline start date=%s venue=%s race=%s",
+              race_date, venue_num, race_number)
+    runner = ShadowRunner(bundle)
+    result = runner.run_and_compare(
+        race_date, venue_num, race_number, output_paths, legacy_values
+    )
+    log.info("Evaluation complete eval_id=%s", result.eval_id)
+    log.info("Buy complete eval_id=%s", result.eval_id)
+    log.info("Output complete eval_id=%s", result.eval_id)
+    log.info("Notification complete eval_id=%s (0 real sends)", result.eval_id)
+    return {
+        "eval_id": result.eval_id,
+        "diff_count": len(result.diffs),
+        "diffs": result.diffs,
+    }
+
+
+def decide(criteria: GoNoGoCriteria) -> str:
+    """Go/No-Go判定を呼ぶだけ（ロジックはshadow.go_no_go側）。"""
+    log.info("Go/No-Go judge start")
+    result = evaluate_go_no_go(criteria)
+    log.info("Go/No-Go judge end decision=%s", result.decision)
+    return result.decision
+
+
+def should_use_rebuild() -> bool:
+    """切替フラグを読むだけ（DI切替の判断材料。Legacyコードは書き換えない）。"""
+    return use_rebuild_pipeline()
+
+
+# ==================== Step6-2b: 起動配線 ====================
+
+
+def parse_target_race(value: str | None = None) -> tuple[str, int, int]:
+    """対象レースを環境変数 TARGET_RACE から解析する（明示指定方式）。
+
+    形式: "YYYYMMDD_venue_race"（例 "20260704_12_5"）
+    Legacy fetch_programs に依存せず、API・ネットワーク・開催状況の影響を
+    切り離して起動確認するための方式（Step6-2b方針）。
+
+    未指定・不正形式は補完せず ValueError（デフォルト補完禁止）。
+    """
+    raw = value if value is not None else os.environ.get("TARGET_RACE", "")
+    raw = raw.strip()
+    if not raw:
+        raise ValueError(
+            "TARGET_RACE is required (format: YYYYMMDD_venue_race, "
+            'e.g. "20260704_12_5"); no default value is supplied'
+        )
+    parts = raw.split("_")
+    if len(parts) != 3:
+        raise ValueError(
+            f"TARGET_RACE has invalid format: {raw!r} "
+            "(expected YYYYMMDD_venue_race)"
+        )
+    race_date, venue_raw, race_raw = parts
+    if not (race_date.isdigit() and len(race_date) == 8):
+        raise ValueError(f"TARGET_RACE date is invalid: {race_date!r}")
+    return race_date, int(venue_raw), int(race_raw)
+
+
+def _load_freeze_configs() -> tuple[dict, dict]:
+    """Freeze対象のconfigを読むだけ（変更・補完はしない）。
+
+    asahi_config.json（SHA 6a7862b8…）と buyscore_config.json（SHA da6a4eda…）。
+    Legacyの読み込み関数をimportして呼ぶ（パス解決をLegacyに委ねる）。
+    """
+    from x_asahi_scoring import load_asahi_config
+    from x_buyscore import load_config as load_buyscore_config
+
+    return load_asahi_config(), load_buyscore_config()
+
+
+def build_bundle(
+    eval_config: dict | None = None, buy_config: dict | None = None
+) -> PipelineBundle:
+    """具象部品を組み立ててPipelineBundleを返すだけ（計算・判定なし）。
+
+    Legacy部品は import して渡すのみ（無改変）:
+      - notify_arashi.fetch_programs / _extract_boats_from_program（Provider経由）
+      - x_venue_stats（VenueStatsProvider互換のモジュール関数）
+      - x_asahi_scoring.load_config / x_buyscore.load_config（Freeze config読取）
+    通知は NullNotifier のみ登録し、実送信を物理的に禁止する。
+
+    context_resolver は本Stepでは結線しない（Step6-2b方針）。
+    PredictionProviderへ到達した時点の実際の例外を観測するため、
+    未結線であることを明示する resolver を渡す。
+    """
+    from adapters.providers import BoatsProvider
+    from core.buyscore import DefaultBuyEngine
+    from core.engine import Ver4Engine
+    from features.feature_builder import DefaultFeatureBuilder
+    from notification.service import NotificationService
+    from pipelines.wiring import RaceArgBoatsResolver
+    from shadow.notifier import NullNotifier
+    from shadow.prediction_provider import LegacyPredictionProvider
+
+    import x_venue_stats  # Legacy: VenueStatsProvider互換（import利用のみ）
+
+    if eval_config is None or buy_config is None:
+        loaded_eval, loaded_buy = _load_freeze_configs()
+        eval_config = eval_config if eval_config is not None else loaded_eval
+        buy_config = buy_config if buy_config is not None else loaded_buy
+
+    boats_provider = BoatsProvider()
+    feature_builder = DefaultFeatureBuilder(venue_stats=x_venue_stats)
+    engine = Ver4Engine(
+        boats_resolver=RaceArgBoatsResolver(boats_provider),
+        venue_stats=x_venue_stats,
+    )
+
+    def _unwired_context_resolver(evaluation):
+        # Step6-2b: 意図的に未結線。到達したことを明示して停止する。
+        raise NotImplementedError(
+            "PredictionContext resolver is not wired yet (Step6-2b scope). "
+            f"Reached with eval_id={evaluation.eval_id}. "
+            "This is the expected boundary for the launch-wiring step."
+        )
+
+    notification_service = NotificationService({
+        "mail": NullNotifier("mail"),
+        "line": NullNotifier("line"),
+        "discord": NullNotifier("discord"),
+        "x": NullNotifier("x"),
+    })
+
+    return assemble_pipelines(
+        race_source=boats_provider,
+        feature_builder=feature_builder,
+        engine=engine,
+        now_provider=lambda: datetime.now(timezone.utc),
+        eval_config=eval_config,
+        durable_store=None,
+        prediction_provider=LegacyPredictionProvider(
+            context_resolver=_unwired_context_resolver
+        ),
+        buy_engine=DefaultBuyEngine(),
+        buy_config=buy_config,
+        output_renderers={},
+        notification_service=notification_service,
+    )
+
+
+def run_shadow(
+    race_date: str,
+    venue_num: int,
+    race_number: int,
+    bundle: PipelineBundle | None = None,
+) -> dict:
+    """1レース分のShadowを起動する（Step6-2b: 到達確認が目的）。
+
+    比較用のlegacy_valuesは渡さない（起動確認が目的のため）。
+    Outputも空（output_renderers={}）で、HTML生成は行わない。
+    """
+    log.info("Shadow launch start date=%s venue=%s race=%s",
+             race_date, venue_num, race_number)
+    log.info("USE_REBUILD_PIPELINE=%s (Shadow requires False)",
+             use_rebuild_pipeline())
+
+    active_bundle = bundle if bundle is not None else build_bundle()
+    log.info("PipelineBundle created")
+
+    runner = ShadowRunner(active_bundle)
+    log.info("ShadowRunner created")
+
+    result = runner.run_and_compare(
+        race_date, venue_num, race_number, output_paths={}
+    )
+    log.info("Shadow launch reached race eval_id=%s", result.eval_id)
+    return {
+        "eval_id": result.eval_id,
+        "diff_count": len(result.diffs),
+        "diffs": result.diffs,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLIエントリ（引数解析と呼び出しのみ・判定/計算なし）。
+
+    対象レースは TARGET_RACE 環境変数で明示指定する。
+    例外はそのまま報告して終了コード1（補正・握りつぶしはしない）。
+    """
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
+    try:
+        race_date, venue_num, race_number = parse_target_race()
+    except ValueError as exc:
+        log.error("TARGET_RACE error: %s", exc)
+        return 1
+
+    try:
+        report = run_shadow(race_date, venue_num, race_number)
+    except Exception as exc:  # 起動確認のため例外内容を明示して終了
+        log.error("Shadow launch failed: %s: %s", type(exc).__name__, exc)
+        raise
+
+    out_path = os.environ.get("SHADOW_REPORT_PATH", "shadow_diff_report.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    log.info("Shadow report written path=%s", out_path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
