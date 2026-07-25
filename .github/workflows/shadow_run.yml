@@ -12,9 +12,6 @@
 # 注記: 手動起動（workflow_dispatch）を既定とし、実データ検証の開始時に
 #       運用判断で有効化する。cron自動並走へ切り替える場合は schedule を
 #       有効化する（本Stepでは手動のみ・自動並走はGo判定前に有効化しない）。
-#
-# 診断: importが通らない原因を特定するため、実行前に pwd / ls を出力する。
-#       原因確定後、この診断出力は削除する。
 
 name: shadow-run
 
@@ -53,22 +50,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt || echo "requirements install skipped"
-
-      - name: Diagnose (temporary)
-        working-directory: rebuild
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-        run: |
-          echo "=== pwd ==="
-          pwd
-          echo "=== ls -la ==="
-          ls -la
-          echo "=== ls actions ==="
-          ls -la actions || echo "actions dir not found here"
-          echo "=== PYTHONPATH ==="
-          echo "$PYTHONPATH"
-          echo "=== sys.path ==="
-          python -c "import sys; print(chr(10).join(sys.path))"
+          # notify_arashi.py が import pandas するため、Legacy呼び出しに必要
+          pip install -r requirements-ml.txt || echo "requirements-ml install skipped"
 
       - name: Run shadow comparison
         # 案I: rebuild内から実行する（rebuild内のimportは絶対import前提のため、
