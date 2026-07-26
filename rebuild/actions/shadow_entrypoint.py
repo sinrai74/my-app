@@ -135,7 +135,10 @@ def build_bundle(
     from notification.service import NotificationService
     from pipelines.wiring import RaceArgBoatsResolver
     from shadow.notifier import NullNotifier
-    from shadow.prediction_provider import LegacyPredictionProvider
+    from shadow.prediction_provider import (
+        LegacyPredictionProvider,
+        PredictionContext,
+    )
 
     import x_venue_stats  # Legacy: VenueStatsProvider互換（import利用のみ）
 
@@ -151,12 +154,57 @@ def build_bundle(
         venue_stats=x_venue_stats,
     )
 
-    def _unwired_context_resolver(evaluation):
-        # Step6-2b: 意図的に未結線。到達したことを明示して停止する。
-        raise NotImplementedError(
-            "PredictionContext resolver is not wired yet (Step6-2b scope). "
-            f"Reached with eval_id={evaluation.eval_id}. "
-            "This is the expected boundary for the launch-wiring step."
+    def _context_resolver_required(evaluation):
+        # Step6-2c-2: PredictionContextの必須入力（patterns/ml_probs/odds_map）を
+        # 結線する。boats（Step6-2c-1）に加え、同一の計算チェーンで得られる
+        # upset_score/target_lanes も分割せず一緒に渡す（同じ計算を二度求めない）。
+        #
+        # Legツール関数はすべて import して呼ぶだけ（改変・コピー・再実装なし）。
+        from notify_arashi import (
+            _generate_patterns,
+            _predict_win_prob,
+        )
+        from odds_fetch import fetch_odds
+        from x_asahi_scoring import calculate_upset_score_v2
+
+        program, boat_objs = boats_provider._get_source(
+            evaluation.race_date, evaluation.venue_num, evaluation.race_number
+        )
+
+        # race_grade は Legツール同様 program の race_grade_number から取得
+        # （notify_arashi L1182: prog.get('race_grade_number', 0) or 0）。
+        race_grade = int(program.get("race_grade_number", 0) or 0)
+
+        # ml_probs: boatsから（MLモデル model_all.pkl。未ロード時はLegツールが空dict）
+        ml_probs = _predict_win_prob(boat_objs)
+
+        # upset_score / target_lanes: 純粋関数。patternsの前提。
+        upset_score, _detail, target_lanes = calculate_upset_score_v2(
+            boat_objs,
+            race_grade,
+            venue_num=evaluation.venue_num,
+            is_night=evaluation.is_night,
+            config=eval_config,
+        )
+
+        # patterns: 上記の成果物から（純粋関数）
+        patterns = _generate_patterns(target_lanes, upset_score)
+
+        # odds_map: レース識別子から（過去レースは空dictになりやすい＝Legツール挙動）
+        venue_code = str(evaluation.venue_num).zfill(2)
+        odds_map = fetch_odds(
+            evaluation.race_number, venue_code, evaluation.race_date
+        ) or {}
+
+        # 必須3項目＋同一チェーンの成果物（boats/upset_score/target_lanes）を渡す。
+        # weather/has_exhibition/odds_dropped/bankroll は未結線（次Step以降）。
+        return PredictionContext(
+            patterns=patterns,
+            ml_probs=ml_probs,
+            odds_map=odds_map,
+            boats=boat_objs,
+            upset_score=upset_score,
+            target_lanes=target_lanes,
         )
 
     notification_service = NotificationService({
@@ -174,7 +222,7 @@ def build_bundle(
         eval_config=eval_config,
         durable_store=None,
         prediction_provider=LegacyPredictionProvider(
-            context_resolver=_unwired_context_resolver
+            context_resolver=_context_resolver_required
         ),
         buy_engine=DefaultBuyEngine(),
         buy_config=buy_config,

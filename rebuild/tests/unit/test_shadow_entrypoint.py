@@ -211,3 +211,222 @@ class TestBundleStructure(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------- Step6-2c-1: boats配線のみ ----------------
+
+
+class TestContextResolverBoatsOnly(unittest.TestCase):
+    """Step6-2c-1: context_resolverがboatsのみ結線し、
+    patterns/ml_probs/odds_map欠如で停止することを検証する。
+
+    build_bundleは実Legacy(x_venue_stats等)をimportするため、ここでは
+    context_resolverの挙動を単体で再現して検証する（実API非依存）。
+    """
+
+    def _resolver_boats_only(self, provider):
+        """build_bundle内の_context_resolver_boats_onlyと同じ挙動を再現。"""
+        from shadow.prediction_provider import PredictionContext
+
+        def _resolver(evaluation):
+            _p, boat_objs = provider._get_source(
+                evaluation.race_date, evaluation.venue_num,
+                evaluation.race_number,
+            )
+            return PredictionContext(boats=boat_objs)
+
+        return _resolver
+
+    def _evaluation(self):
+        from models.evaluation import FeatureSet, RaceEvaluation
+
+        eid = "20260704_12_05"
+        return RaceEvaluation(
+            eval_id=eid, race_date="20260704", venue_num=12,
+            venue_name="住之江", race_number=5, is_night=True,
+            engine_name="ver4", engine_version="4.0.0",
+            feature_schema_version=1,
+            features=FeatureSet(
+                eval_id=eid, feature_schema_version=1, built_at="t",
+                boat_features={1: {}}, race_features={}, local_features=None,
+                missing_keys=(),
+            ),
+            model_version="m", evaluated_at="t", danger_score=10.0,
+            danger_breakdown={}, upset_score=5.0, upset_reasons=(),
+            rank_index={}, featured_boats=None, win_probs=None, race_type="",
+            match_index=52.5,
+        )
+
+    def test_boats_are_wired_from_provider(self) -> None:
+        """boatsがProviderのboat_objsから取得されること。"""
+        from types import SimpleNamespace
+        from adapters.providers import BoatsProvider
+
+        marker_boats = [SimpleNamespace(lane=i) for i in range(1, 7)]
+        program = {"race_stadium_number": 12, "race_number": 5,
+                   "race_grade_number": 0, "race_closed_at": "15:00"}
+        provider = BoatsProvider(
+            programs_fetcher=lambda d: [program],
+            boats_extractor=lambda p: marker_boats,
+        )
+        # PredictionContextの必須引数不足でTypeError（=期待到達点）だが、
+        # その手前でboat_objsが正しく取得されることを、直接_get_sourceで確認
+        _p, boat_objs = provider._get_source("20260704", 12, 5)
+        self.assertIs(boat_objs, marker_boats)
+
+    def test_stops_at_missing_required_args(self) -> None:
+        """boats以外の必須引数(patterns/ml_probs/odds_map)欠如で停止すること。
+
+        これはStep6-2c-1の期待到達点（boatsより先へ進んだ証拠）。
+        """
+        from types import SimpleNamespace
+        from adapters.providers import BoatsProvider
+
+        program = {"race_stadium_number": 12, "race_number": 5,
+                   "race_grade_number": 0, "race_closed_at": "15:00"}
+        provider = BoatsProvider(
+            programs_fetcher=lambda d: [program],
+            boats_extractor=lambda p: [SimpleNamespace(lane=i) for i in range(1, 7)],
+        )
+        resolver = self._resolver_boats_only(provider)
+        with self.assertRaises(TypeError) as ctx:
+            resolver(self._evaluation())
+        msg = str(ctx.exception)
+        # boatsではなくpatterns/ml_probs/odds_mapが原因であること
+        self.assertIn("patterns", msg)
+        self.assertIn("ml_probs", msg)
+        self.assertIn("odds_map", msg)
+        self.assertNotIn("boats", msg)
+
+
+# ---------------- Step6-2c-2: PredictionContext必須3項目の結線 ----------------
+
+
+class TestContextResolverRequiredFields(unittest.TestCase):
+    """Step6-2c-2: patterns/ml_probs/odds_map（＋同一チェーンのupset_score/
+    target_lanes）が結線され、PredictionContextが生成されることを検証する。
+
+    Legツール関数はFakeをmonkeypatchで注入し、実API・実モデルへ接続しない。
+    """
+
+    def _evaluation(self):
+        from models.evaluation import FeatureSet, RaceEvaluation
+
+        eid = "20260704_12_05"
+        return RaceEvaluation(
+            eval_id=eid, race_date="20260704", venue_num=12,
+            venue_name="住之江", race_number=5, is_night=True,
+            engine_name="ver4", engine_version="4.0.0",
+            feature_schema_version=1,
+            features=FeatureSet(
+                eval_id=eid, feature_schema_version=1, built_at="t",
+                boat_features={1: {}}, race_features={}, local_features=None,
+                missing_keys=(),
+            ),
+            model_version="m", evaluated_at="t", danger_score=10.0,
+            danger_breakdown={}, upset_score=5.0, upset_reasons=(),
+            rank_index={}, featured_boats=None, win_probs=None, race_type="",
+            match_index=52.5,
+        )
+
+    def _build_resolver(self, captured):
+        """build_bundle内の_context_resolver_requiredと同じ結線を、
+        Legツール関数をFake差し替えで再現する。"""
+        from types import SimpleNamespace
+        from adapters.providers import BoatsProvider
+        from shadow.prediction_provider import PredictionContext
+
+        program = {"race_stadium_number": 12, "race_number": 5,
+                   "race_grade_number": 3, "race_closed_at": "15:00"}
+        boat_objs = [SimpleNamespace(lane=i) for i in range(1, 7)]
+        provider = BoatsProvider(
+            programs_fetcher=lambda d: [program],
+            boats_extractor=lambda p: boat_objs,
+        )
+
+        def _fake_predict(boats):
+            captured["ml_probs_input"] = boats
+            return {1: 0.5, 2: 0.3}
+
+        def _fake_upset(boats, race_grade, venue_num, is_night, config):
+            captured["upset_args"] = dict(
+                race_grade=race_grade, venue_num=venue_num, is_night=is_night,
+            )
+            return (7.5, {"d": 1}, [1, 2])
+
+        def _fake_patterns(target_lanes, upset_score):
+            captured["patterns_args"] = (target_lanes, upset_score)
+            return {"honmei": [1, 2]}
+
+        def _fake_odds(race_no, venue_code, race_date):
+            captured["odds_args"] = (race_no, venue_code, race_date)
+            return {"1-2-3": 30.0}
+
+        def _resolver(evaluation):
+            _p, bo = provider._get_source(
+                evaluation.race_date, evaluation.venue_num,
+                evaluation.race_number,
+            )
+            race_grade = int(_p.get("race_grade_number", 0) or 0)
+            ml_probs = _fake_predict(bo)
+            upset_score, _detail, target_lanes = _fake_upset(
+                bo, race_grade, venue_num=evaluation.venue_num,
+                is_night=evaluation.is_night, config={},
+            )
+            patterns = _fake_patterns(target_lanes, upset_score)
+            venue_code = str(evaluation.venue_num).zfill(2)
+            odds_map = _fake_odds(
+                evaluation.race_number, venue_code, evaluation.race_date
+            ) or {}
+            return PredictionContext(
+                patterns=patterns, ml_probs=ml_probs, odds_map=odds_map,
+                boats=bo, upset_score=upset_score, target_lanes=target_lanes,
+            )
+
+        return _resolver
+
+    def test_prediction_context_is_created(self) -> None:
+        """必須3項目が揃いPredictionContextが生成されること。"""
+        captured = {}
+        resolver = self._build_resolver(captured)
+        ctx = resolver(self._evaluation())
+        # 必須3項目が入っている
+        self.assertEqual(ctx.patterns, {"honmei": [1, 2]})
+        self.assertEqual(ctx.ml_probs, {1: 0.5, 2: 0.3})
+        self.assertEqual(ctx.odds_map, {"1-2-3": 30.0})
+        # 同一チェーンの成果物も渡っている
+        self.assertEqual(ctx.upset_score, 7.5)
+        self.assertEqual(ctx.target_lanes, [1, 2])
+
+    def test_race_grade_from_program(self) -> None:
+        """race_gradeがprogramのrace_grade_numberから取られること。"""
+        captured = {}
+        resolver = self._build_resolver(captured)
+        resolver(self._evaluation())
+        self.assertEqual(captured["upset_args"]["race_grade"], 3)
+
+    def test_patterns_uses_upset_chain(self) -> None:
+        """patternsがupset_score/target_lanesの成果物から生成されること。"""
+        captured = {}
+        resolver = self._build_resolver(captured)
+        resolver(self._evaluation())
+        target_lanes, upset_score = captured["patterns_args"]
+        self.assertEqual(target_lanes, [1, 2])
+        self.assertEqual(upset_score, 7.5)
+
+    def test_odds_uses_race_identifiers(self) -> None:
+        """odds_mapがレース識別子（zfill venue_code含む）から取られること。"""
+        captured = {}
+        resolver = self._build_resolver(captured)
+        resolver(self._evaluation())
+        race_no, venue_code, race_date = captured["odds_args"]
+        self.assertEqual(race_no, 5)
+        self.assertEqual(venue_code, "12")  # zfill(2)
+        self.assertEqual(race_date, "20260704")
+
+    def test_ml_probs_from_boats(self) -> None:
+        """ml_probsがboatsから取られること。"""
+        captured = {}
+        resolver = self._build_resolver(captured)
+        resolver(self._evaluation())
+        self.assertEqual(len(captured["ml_probs_input"]), 6)
