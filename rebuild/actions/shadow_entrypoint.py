@@ -124,9 +124,8 @@ def build_bundle(
       - x_asahi_scoring.load_config / x_buyscore.load_config（Freeze config読取）
     通知は NullNotifier のみ登録し、実送信を物理的に禁止する。
 
-    context_resolver は本Stepでは結線しない（Step6-2b方針）。
-    PredictionProviderへ到達した時点の実際の例外を観測するため、
-    未結線であることを明示する resolver を渡す。
+    context_resolver は Step6-2c-2 で結線済み（PredictionContextの必須3項目）。
+    evaluate_bets は Step6-2c-9 で結線する（Legツール戻り値listから1件取得）。
     """
     from adapters.providers import BoatsProvider
     from core.buyscore import DefaultBuyEngine
@@ -207,6 +206,30 @@ def build_bundle(
             target_lanes=target_lanes,
         )
 
+    def _evaluate_bets_first(**kwargs):
+        # Step6-2c-9: Legツール _evaluate_bets のreturn値listから1件を取り出す。
+        #
+        # 設計根拠（Step6-2c-8 §18）:
+        #   - 設置箇所 S2: LegacyPredictionProviderの evaluate_bets DI注入
+        #     （_evaluate_bets / _default_result_mapper / provide 本体は無改変）
+        #   - 選定基準 K1: index 0
+        #     （Legツール呼び出し元 notify_arashi L3546 が recommended[0] を参照。
+        #       見送り経路は top[:1] の1件、購入経路は buyscore降順sort後の先頭）
+        #   - 空list: ValueError送出
+        #     （_default_result_mapper と同方針。仮値補完はしない）
+        #   - dict以外の型検証は _default_result_mapper（dict要求）へ委譲する
+        from notify_arashi import _evaluate_bets
+
+        result = _evaluate_bets(**kwargs)
+        if isinstance(result, list) and not result:
+            raise ValueError(
+                "_evaluate_bets returned an empty list; no bet candidate is "
+                "available for this race (no default value is supplied)"
+            )
+        if isinstance(result, list):
+            return result[0]
+        return result
+
     notification_service = NotificationService({
         "mail": NullNotifier("mail"),
         "line": NullNotifier("line"),
@@ -222,7 +245,8 @@ def build_bundle(
         eval_config=eval_config,
         durable_store=None,
         prediction_provider=LegacyPredictionProvider(
-            context_resolver=_context_resolver_required
+            context_resolver=_context_resolver_required,
+            evaluate_bets=_evaluate_bets_first,
         ),
         buy_engine=DefaultBuyEngine(),
         buy_config=buy_config,

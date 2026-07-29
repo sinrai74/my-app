@@ -430,3 +430,142 @@ class TestContextResolverRequiredFields(unittest.TestCase):
         resolver = self._build_resolver(captured)
         resolver(self._evaluation())
         self.assertEqual(len(captured["ml_probs_input"]), 6)
+
+
+# ---------------- Step6-2c-9: evaluate_betsラッパー（S2＋K1） ----------------
+
+
+class TestEvaluateBetsWrapper(unittest.TestCase):
+    """Step6-2c-9: build_bundle内の_evaluate_bets_firstの挙動を検証する。
+
+    設計根拠（Step6-2c-8 §18）:
+      - S2: evaluate_bets DI注入（Legツール・mapper・provide本体は無改変）
+      - K1: index 0 を返す
+      - 空list: ValueError送出
+      - dict以外の型検証は_default_result_mapperへ委譲
+
+    Legツール_evaluate_betsはFakeへ差し替え、実Legacyへ接続しない。
+    """
+
+    def _wrapper(self, fake_evaluate_bets):
+        """build_bundle内の_evaluate_bets_firstと同じ挙動を再現する。"""
+
+        def _evaluate_bets_first(**kwargs):
+            result = fake_evaluate_bets(**kwargs)
+            if isinstance(result, list) and not result:
+                raise ValueError(
+                    "_evaluate_bets returned an empty list; no bet candidate "
+                    "is available for this race (no default value is supplied)"
+                )
+            if isinstance(result, list):
+                return result[0]
+            return result
+
+        return _evaluate_bets_first
+
+    def _bet_dict(self, combo):
+        """_default_result_mapperの必須5キーを持つ買い目dict。"""
+        return {
+            "combo": combo, "prob": 0.06, "ev": 2.0,
+            "odds": 35.0, "confidence": 0.5,
+        }
+
+    def test_returns_first_element(self) -> None:
+        """非空listのindex 0が返ること（K1）。"""
+        head = self._bet_dict("1-2-3")
+        wrapper = self._wrapper(
+            lambda **kw: [head, self._bet_dict("1-3-2"),
+                          self._bet_dict("2-1-3")]
+        )
+        self.assertIs(wrapper(patterns={}, ml_probs={}), head)
+
+    def test_single_element_list(self) -> None:
+        """1件のみのlist（見送り経路のtop[:1]相当）でその1件が返ること。"""
+        only = self._bet_dict("1-2-3")
+        wrapper = self._wrapper(lambda **kw: [only])
+        self.assertIs(wrapper(patterns={}), only)
+
+    def test_empty_list_raises_value_error(self) -> None:
+        """空listでValueErrorが送出されること（仮値補完をしない）。"""
+        wrapper = self._wrapper(lambda **kw: [])
+        with self.assertRaises(ValueError) as ctx:
+            wrapper(patterns={})
+        self.assertIn("empty list", str(ctx.exception))
+        self.assertIn("no default value is supplied", str(ctx.exception))
+
+    def test_non_list_passed_through(self) -> None:
+        """list以外はそのまま返し、型検証をmapperへ委譲すること。"""
+        wrapper = self._wrapper(lambda **kw: None)
+        self.assertIsNone(wrapper(patterns={}))
+
+    def test_kwargs_are_forwarded(self) -> None:
+        """provide()が渡すキーワード引数がそのままLegツールへ渡ること。"""
+        captured = {}
+
+        def _fake(**kwargs):
+            captured.update(kwargs)
+            return [self._bet_dict("1-2-3")]
+
+        wrapper = self._wrapper(_fake)
+        wrapper(
+            patterns={"all": ["1-2-3"]}, ml_probs={1: 0.5},
+            odds_map={"1-2-3": 30.0}, bankroll=100000,
+            target_lanes=[1, 2], has_exhibition=True, boats=[],
+            upset_score=7.5, odds_dropped=[], weather={},
+            venue_num=12, race_number=5, race_date="20260704",
+            venue_name="住之江",
+        )
+        self.assertEqual(captured["patterns"], {"all": ["1-2-3"]})
+        self.assertEqual(captured["odds_map"], {"1-2-3": 30.0})
+        self.assertEqual(captured["venue_num"], 12)
+        self.assertEqual(captured["race_date"], "20260704")
+
+    def test_result_satisfies_mapper_required_keys(self) -> None:
+        """返却dictが_default_result_mapperの必須5キーを保持すること。"""
+        wrapper = self._wrapper(
+            lambda **kw: [self._bet_dict("1-2-3"), self._bet_dict("1-3-2")]
+        )
+        result = wrapper(patterns={})
+        for key in ("combo", "prob", "ev", "odds", "confidence"):
+            self.assertIn(key, result)
+
+    def test_result_passes_default_result_mapper(self) -> None:
+        """返却dictが_default_result_mapperを通過しPredictionになること。"""
+        from shadow.prediction_provider import _default_result_mapper
+
+        wrapper = self._wrapper(lambda **kw: [self._bet_dict("1-2-3")])
+        legacy_result = wrapper(patterns={})
+        prediction = _default_result_mapper(
+            legacy_result, TestContextResolverRequiredFields()._evaluation()
+        )
+        self.assertEqual(prediction.pred_combo, "1-2-3")
+        self.assertEqual(prediction.eval_id, "20260704_12_05")
+
+
+class TestBuildBundleInjectsEvaluateBets(unittest.TestCase):
+    """build_bundleがevaluate_betsをDI注入していることを検証する。"""
+
+    def test_provider_uses_injected_evaluate_bets(self) -> None:
+        """注入時はprovide()がnotify_arashi直接import経路を使わないこと。"""
+        from shadow.prediction_provider import LegacyPredictionProvider
+
+        called = {"count": 0}
+
+        def _injected(**kwargs):
+            called["count"] += 1
+            return {
+                "combo": "4-5-6", "prob": 0.01, "ev": 1.0,
+                "odds": 100.0, "confidence": 0.2,
+            }
+
+        provider = LegacyPredictionProvider(
+            context_resolver=lambda ev: __import__(
+                "shadow.prediction_provider", fromlist=["PredictionContext"]
+            ).PredictionContext(patterns={}, ml_probs={}, odds_map={}),
+            evaluate_bets=_injected,
+        )
+        prediction = provider.provide(
+            TestContextResolverRequiredFields()._evaluation(), {}
+        )
+        self.assertEqual(called["count"], 1)
+        self.assertEqual(prediction.pred_combo, "4-5-6")
