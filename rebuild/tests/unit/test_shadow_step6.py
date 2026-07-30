@@ -31,6 +31,11 @@ from shadow.prediction_provider import (
     PredictionContext,
     _default_result_mapper,
 )
+from shadow.aggregator import (
+    DIFF_SENTINEL,
+    ShadowAggregator,
+    to_staged_result,
+)
 from shadow.staged_comparator import (
     STAGE_ORDER,
     ConsecutiveMatchCounter,
@@ -506,3 +511,156 @@ class TestWorkflowFiles(unittest.TestCase):
         with open(path, encoding="utf-8") as f:
             content = f.read()
         self.assertIn('cron: "0,15,30,45 23 * * *"', content)
+
+
+# ---------------- Step6-2c-10: Shadow集計（aggregator） ----------------
+
+
+class _FakeRunResult:
+    """ShadowRunResult相当（eval_id/diffsのみ使用するため最小構成）。"""
+
+    def __init__(self, eval_id: str, diffs=None) -> None:
+        self.eval_id = eval_id
+        self.diffs = diffs or []
+
+
+class TestToStagedResult(unittest.TestCase):
+    """ShadowRunResult -> StagedResult 変換（D-2/D-3）。"""
+
+    def test_no_diff_becomes_all_matched(self) -> None:
+        """diffs空 -> stopped_at=None（all_matched=True）。"""
+        staged = to_staged_result(_FakeRunResult("e1"))
+        self.assertIsInstance(staged, StagedResult)
+        self.assertEqual(staged.eval_id, "e1")
+        self.assertIsNone(staged.stopped_at)
+        self.assertTrue(staged.all_matched)
+        self.assertEqual(staged.diffs, [])
+
+    def test_diff_becomes_not_matched(self) -> None:
+        """diffsあり -> stopped_at=DIFF_SENTINEL（all_matched=False）。"""
+        diffs = [{"path": "$.race", "legacy": 1, "rebuild": 2}]
+        staged = to_staged_result(_FakeRunResult("e2", diffs))
+        self.assertEqual(staged.stopped_at, DIFF_SENTINEL)
+        self.assertFalse(staged.all_matched)
+        self.assertEqual(staged.diffs, diffs)
+
+    def test_stages_left_empty_not_filled(self) -> None:
+        """matched_stages/skipped_stagesは仮値で埋めない（D-2）。"""
+        staged = to_staged_result(_FakeRunResult("e3"))
+        self.assertEqual(staged.matched_stages, [])
+        self.assertEqual(staged.skipped_stages, {})
+
+    def test_diffs_content_not_parsed(self) -> None:
+        """diffsの中身は解析せず、有無のみで判定する（D-3）。"""
+        staged = to_staged_result(
+            _FakeRunResult("e4", [{"path": "$.buy_assessment"}])
+        )
+        self.assertEqual(staged.stopped_at, DIFF_SENTINEL)
+
+
+class TestShadowAggregator(unittest.TestCase):
+    """複数レース集約とstreak算出（D-1/D-4）。"""
+
+    def test_no_diff_increments_streak(self) -> None:
+        """diffなしResultでstreakが加算されること。"""
+        agg = ShadowAggregator(required=3)
+        for i in range(3):
+            agg.record(_FakeRunResult(f"e{i}"))
+        self.assertEqual(agg.consecutive_matches, 3)
+        self.assertTrue(agg.satisfied)
+
+    def test_diff_resets_streak(self) -> None:
+        """diffありResultでstreakがリセットされること。"""
+        agg = ShadowAggregator(required=100)
+        for i in range(10):
+            agg.record(_FakeRunResult(f"ok{i}"))
+        agg.record(_FakeRunResult("bad", [{"path": "$.race"}]))
+        self.assertEqual(agg.consecutive_matches, 0)
+        self.assertFalse(agg.satisfied)
+        self.assertIn("bad", agg.aggregate().broken_at)
+        self.assertEqual(agg.aggregate().max_streak, 10)
+
+    def test_100_consecutive_matches(self) -> None:
+        """100件連続一致でshadow_consecutive_matches=100になること。"""
+        agg = ShadowAggregator(required=100)
+        for i in range(100):
+            agg.record(_FakeRunResult(f"r{i:03d}"))
+        self.assertEqual(agg.consecutive_matches, 100)
+        self.assertTrue(agg.satisfied)
+        summary = agg.aggregate()
+        self.assertEqual(summary.total_races, 100)
+        self.assertEqual(summary.matched_races, 100)
+        self.assertEqual(summary.diff_races, 0)
+
+    def test_aggregate_counts(self) -> None:
+        """集約値（total/matched/diff）が正しいこと。"""
+        agg = ShadowAggregator(required=5)
+        agg.record(_FakeRunResult("a"))
+        agg.record(_FakeRunResult("b", [{"path": "$.x"}]))
+        agg.record(_FakeRunResult("c"))
+        summary = agg.aggregate()
+        self.assertEqual(summary.total_races, 3)
+        self.assertEqual(summary.matched_races, 2)
+        self.assertEqual(summary.diff_races, 1)
+        self.assertEqual(summary.current_streak, 1)
+        self.assertEqual(summary.eval_ids, ["a", "b", "c"])
+
+    def test_feeds_go_no_go_criteria(self) -> None:
+        """consecutive_matchesがGoNoGoCriteriaへ渡せること。"""
+        from shadow.go_no_go import GoNoGoCriteria, evaluate_go_no_go
+
+        agg = ShadowAggregator(required=100)
+        for i in range(100):
+            agg.record(_FakeRunResult(f"g{i:03d}"))
+        criteria = GoNoGoCriteria(
+            golden_100_percent=True,
+            shadow_consecutive_matches=agg.consecutive_matches,
+        )
+        self.assertEqual(criteria.shadow_consecutive_matches, 100)
+        self.assertEqual(evaluate_go_no_go(criteria).decision, "GO")
+
+    def test_summary_lines_include_streak(self) -> None:
+        agg = ShadowAggregator(required=2)
+        agg.record(_FakeRunResult("s1"))
+        lines = "\n".join(agg.aggregate().summary_lines())
+        self.assertIn("total_races", lines)
+        self.assertIn("current_streak", lines)
+
+
+class TestParseTargetRaces(unittest.TestCase):
+    """TARGET_RACES（複数レース指定）の解析（D-4）。"""
+
+    def _parse(self, value):
+        from actions.shadow_entrypoint import parse_target_races
+        return parse_target_races(value)
+
+    def test_single_race(self) -> None:
+        self.assertEqual(
+            self._parse("20260704_12_5"), [("20260704", 12, 5)]
+        )
+
+    def test_multiple_races(self) -> None:
+        self.assertEqual(
+            self._parse("20260704_12_5,20260704_12_6,20260704_01_1"),
+            [("20260704", 12, 5), ("20260704", 12, 6), ("20260704", 1, 1)],
+        )
+
+    def test_whitespace_tolerated(self) -> None:
+        self.assertEqual(
+            self._parse(" 20260704_12_5 , 20260704_12_6 "),
+            [("20260704", 12, 5), ("20260704", 12, 6)],
+        )
+
+    def test_empty_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            self._parse("")
+
+    def test_no_default_supplied(self) -> None:
+        """未指定時に既定レースを補完しないこと。"""
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("")
+        self.assertIn("no default value is supplied", str(ctx.exception))
+
+    def test_invalid_token_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            self._parse("20260704_12_5,invalid")

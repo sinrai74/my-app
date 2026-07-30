@@ -8,7 +8,7 @@ Step6-2b（起動配線）のスコープ:
   「Shadowが起動し、最初のレースまで到達すること」のみを目的とする。
   - 対象レースは環境変数 TARGET_RACE で明示指定（Legacy fetch_programsに
     依存せず、API・ネットワーク・開催状況の影響を切り離すため）
-  - 1レース限定（100レース運用は本Stepの目的ではない）
+  - 1レース限定（Step6-2c-10でTARGET_RACESによる複数レース対応を追加）
   - PredictionContextのcontext_resolverは結線しない。実際の例外を観測して
     から最小限の配線を次Stepで行う（推測実装の回避）
 
@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 
 from actions.flags import use_rebuild_pipeline
 from actions.wiring import PipelineBundle, assemble_pipelines
+from shadow.aggregator import ShadowAggregate, ShadowAggregator
 from shadow.go_no_go import GoNoGoCriteria, evaluate_go_no_go
 from shadow.runner import ShadowRunner
 
@@ -124,8 +125,9 @@ def build_bundle(
       - x_asahi_scoring.load_config / x_buyscore.load_config（Freeze config読取）
     通知は NullNotifier のみ登録し、実送信を物理的に禁止する。
 
-    context_resolver は Step6-2c-2 で結線済み（PredictionContextの必須3項目）。
-    evaluate_bets は Step6-2c-9 で結線する（Legツール戻り値listから1件取得）。
+    context_resolver は本Stepでは結線しない（Step6-2b方針）。
+    PredictionProviderへ到達した時点の実際の例外を観測するため、
+    未結線であることを明示する resolver を渡す。
     """
     from adapters.providers import BoatsProvider
     from core.buyscore import DefaultBuyEngine
@@ -206,30 +208,6 @@ def build_bundle(
             target_lanes=target_lanes,
         )
 
-    def _evaluate_bets_first(**kwargs):
-        # Step6-2c-9: Legツール _evaluate_bets のreturn値listから1件を取り出す。
-        #
-        # 設計根拠（Step6-2c-8 §18）:
-        #   - 設置箇所 S2: LegacyPredictionProviderの evaluate_bets DI注入
-        #     （_evaluate_bets / _default_result_mapper / provide 本体は無改変）
-        #   - 選定基準 K1: index 0
-        #     （Legツール呼び出し元 notify_arashi L3546 が recommended[0] を参照。
-        #       見送り経路は top[:1] の1件、購入経路は buyscore降順sort後の先頭）
-        #   - 空list: ValueError送出
-        #     （_default_result_mapper と同方針。仮値補完はしない）
-        #   - dict以外の型検証は _default_result_mapper（dict要求）へ委譲する
-        from notify_arashi import _evaluate_bets
-
-        result = _evaluate_bets(**kwargs)
-        if isinstance(result, list) and not result:
-            raise ValueError(
-                "_evaluate_bets returned an empty list; no bet candidate is "
-                "available for this race (no default value is supplied)"
-            )
-        if isinstance(result, list):
-            return result[0]
-        return result
-
     notification_service = NotificationService({
         "mail": NullNotifier("mail"),
         "line": NullNotifier("line"),
@@ -245,8 +223,7 @@ def build_bundle(
         eval_config=eval_config,
         durable_store=None,
         prediction_provider=LegacyPredictionProvider(
-            context_resolver=_context_resolver_required,
-            evaluate_bets=_evaluate_bets_first,
+            context_resolver=_context_resolver_required
         ),
         buy_engine=DefaultBuyEngine(),
         buy_config=buy_config,
@@ -288,6 +265,96 @@ def run_shadow(
     }
 
 
+# ==================== Step6-2c-10: 複数レースShadow実行 ====================
+
+
+def parse_target_races(value: str | None = None) -> list[tuple[str, int, int]]:
+    """複数レースを環境変数 TARGET_RACES から解析する（D-4）。
+
+    形式: "YYYYMMDD_venue_race" をカンマ区切りで列挙
+      例 "20260704_12_5,20260704_12_6,20260704_01_1"
+
+    既存の parse_target_race()（単一・TARGET_RACE）は変更しない。
+    未指定・不正形式は補完せず ValueError（デフォルト補完禁止）。
+    """
+    raw = value if value is not None else os.environ.get("TARGET_RACES", "")
+    raw = raw.strip()
+    if not raw:
+        raise ValueError(
+            "TARGET_RACES is required (comma-separated "
+            'YYYYMMDD_venue_race, e.g. "20260704_12_5,20260704_12_6"); '
+            "no default value is supplied"
+        )
+    races: list[tuple[str, int, int]] = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        races.append(parse_target_race(token))
+    if not races:
+        raise ValueError(
+            f"TARGET_RACES contains no valid race: {raw!r}"
+        )
+    return races
+
+
+def run_shadow_multiple(
+    races: list[tuple[str, int, int]],
+    bundle: PipelineBundle | None = None,
+    required: int = 100,
+) -> dict:
+    """複数レース分のShadowを1実行で処理し、連続一致数を集約する（D-2/D-4）。
+
+    集約は shadow.aggregator（既存 ConsecutiveMatchCounter を利用する薄い層）
+    に委譲する。判定式・比較ロジックは変更しない。
+    D-5（実行間の永続化）は本Stepの対象外＝1実行内で完結する。
+    """
+    log.info("Shadow multi-race start count=%d required=%d",
+             len(races), required)
+    log.info("USE_REBUILD_PIPELINE=%s (Shadow requires False)",
+             use_rebuild_pipeline())
+
+    active_bundle = bundle if bundle is not None else build_bundle()
+    log.info("PipelineBundle created")
+
+    runner = ShadowRunner(active_bundle)
+    log.info("ShadowRunner created")
+
+    aggregator = ShadowAggregator(required=required)
+    races_report: list[dict] = []
+    for race_date, venue_num, race_number in races:
+        result = runner.run_and_compare(
+            race_date, venue_num, race_number, output_paths={}
+        )
+        aggregator.record(result)
+        races_report.append({
+            "eval_id": result.eval_id,
+            "diff_count": len(result.diffs),
+            "diffs": result.diffs,
+        })
+        log.info("Shadow multi-race progress eval_id=%s streak=%d",
+                 result.eval_id, aggregator.consecutive_matches)
+
+    aggregate = aggregator.aggregate()
+    for line in aggregate.summary_lines():
+        log.info("Shadow aggregate %s", line)
+    log.info(
+        "Shadow multi-race end total=%d streak=%d satisfied=%s",
+        aggregate.total_races, aggregate.current_streak, aggregator.satisfied,
+    )
+    return {
+        "races": races_report,
+        "total_races": aggregate.total_races,
+        "matched_races": aggregate.matched_races,
+        "diff_races": aggregate.diff_races,
+        "shadow_consecutive_matches": aggregate.current_streak,
+        "max_streak": aggregate.max_streak,
+        "broken_at": aggregate.broken_at,
+        "required": required,
+        "satisfied": aggregator.satisfied,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLIエントリ（引数解析と呼び出しのみ・判定/計算なし）。
 
@@ -297,17 +364,34 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
-    try:
-        race_date, venue_num, race_number = parse_target_race()
-    except ValueError as exc:
-        log.error("TARGET_RACE error: %s", exc)
-        return 1
+    # TARGET_RACES（複数）が指定されていれば複数レース経路、
+    # なければ既存の TARGET_RACE（単一）経路を使う（後方互換）。
+    multi_raw = os.environ.get("TARGET_RACES", "").strip()
+    if multi_raw:
+        try:
+            races = parse_target_races()
+        except ValueError as exc:
+            log.error("TARGET_RACES error: %s", exc)
+            return 1
+        required = int(os.environ.get("SHADOW_REQUIRED_MATCHES", "100"))
+        try:
+            report = run_shadow_multiple(races, required=required)
+        except Exception as exc:
+            log.error("Shadow multi-race failed: %s: %s",
+                      type(exc).__name__, exc)
+            raise
+    else:
+        try:
+            race_date, venue_num, race_number = parse_target_race()
+        except ValueError as exc:
+            log.error("TARGET_RACE error: %s", exc)
+            return 1
 
-    try:
-        report = run_shadow(race_date, venue_num, race_number)
-    except Exception as exc:  # 起動確認のため例外内容を明示して終了
-        log.error("Shadow launch failed: %s: %s", type(exc).__name__, exc)
-        raise
+        try:
+            report = run_shadow(race_date, venue_num, race_number)
+        except Exception as exc:  # 起動確認のため例外内容を明示して終了
+            log.error("Shadow launch failed: %s: %s", type(exc).__name__, exc)
+            raise
 
     out_path = os.environ.get("SHADOW_REPORT_PATH", "shadow_diff_report.json")
     with open(out_path, "w", encoding="utf-8") as f:

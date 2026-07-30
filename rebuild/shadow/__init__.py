@@ -6,6 +6,11 @@ shadow層（Step5-6）: Legacy/Rebuild並走比較・実送信抑止・Go/No-Go�
   であり、コードでの補正は行わない。
 """
 
+from shadow.aggregator import (
+    ShadowAggregate,
+    ShadowAggregator,
+    to_staged_result,
+)
 from shadow.comparator import compare, to_comparable
 from shadow.go_no_go import GoNoGoCriteria, GoNoGoResult, evaluate_go_no_go
 from shadow.legacy_notification import (
@@ -36,6 +41,8 @@ __all__ = [
     "LegacySentRecord",
     "NullNotifier",
     "PredictionContext",
+    "ShadowAggregate",
+    "ShadowAggregator",
     "ShadowRunner",
     "ShadowSummary",
     "StagedResult",
@@ -47,4 +54,5 @@ __all__ = [
     "load_sent_records",
     "read_output_bytes",
     "to_comparable",
+    "to_staged_result",
 ]
