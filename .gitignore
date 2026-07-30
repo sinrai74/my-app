@@ -95,5 +95,4 @@ git
 run_notify.bat
 
 # 依存関係・学習ワークフロー定義（旧運用で個別除外）
-requirements-ml.txt
 retrain.yml

@@ -1,0 +1,6 @@
+requests
+beautifulsoup4
+numpy
+pandas
+scikit-learn==1.5.2
+lightgbm==4.5.0
