@@ -333,6 +333,12 @@ def run_shadow_multiple(
     集約は shadow.aggregator（既存 ConsecutiveMatchCounter を利用する薄い層）
     に委譲する。判定式・比較ロジックは変更しない。
     D-5（実行間の永続化）は本Stepの対象外＝1実行内で完結する。
+
+    Step6-2c-12（設計書§19・案A）: _evaluate_bets_first が空listで送出
+    するValueErrorは「比較不能」として扱い、そのレースをスキップして
+    次のレースへ継続する。matched/diffのいずれにも含めず、
+    ConsecutiveMatchCounterも更新しない。それ以外の例外は従来通り
+    送出して処理を停止する。
     """
     log.info("Shadow multi-race start count=%d required=%d",
              len(races), required)
@@ -348,9 +354,31 @@ def run_shadow_multiple(
     aggregator = ShadowAggregator(required=required)
     races_report: list[dict] = []
     for race_date, venue_num, race_number in races:
-        result = runner.run_and_compare(
-            race_date, venue_num, race_number, output_paths={}
-        )
+        eval_id = f"{race_date}_{venue_num:02d}_{race_number:02d}"
+        try:
+            result = runner.run_and_compare(
+                race_date, venue_num, race_number, output_paths={}
+            )
+        except ValueError as exc:
+            # Step6-2c-12（設計書§19・案A）:
+            # _evaluate_bets_first が空listで送出するValueErrorのみ
+            # 「比較不能」として扱い、ループを継続する。
+            # メッセージのプレフィックスで識別する（_evaluate_bets_first
+            # 自体の実装・_default_result_mapperは変更しない）。
+            if str(exc).startswith("_evaluate_bets returned an empty list"):
+                log.warning(
+                    "Shadow multi-race skip (incomparable) eval_id=%s: %s",
+                    eval_id, exc,
+                )
+                aggregator.skip_race(eval_id)
+                races_report.append({
+                    "eval_id": eval_id,
+                    "skipped": True,
+                    "reason": str(exc),
+                })
+                continue
+            # 上記以外のValueErrorは補完せず送出し、処理を停止する。
+            raise
         aggregator.record(result)
         races_report.append({
             "eval_id": result.eval_id,
@@ -372,6 +400,7 @@ def run_shadow_multiple(
         "total_races": aggregate.total_races,
         "matched_races": aggregate.matched_races,
         "diff_races": aggregate.diff_races,
+        "skipped_races": aggregate.skipped_races,
         "shadow_consecutive_matches": aggregate.current_streak,
         "max_streak": aggregate.max_streak,
         "broken_at": aggregate.broken_at,

@@ -64,6 +64,7 @@ class ShadowAggregate:
     total_races: int = 0
     matched_races: int = 0
     diff_races: int = 0
+    skipped_races: int = 0
     current_streak: int = 0
     max_streak: int = 0
     broken_at: list[str] = field(default_factory=list)
@@ -75,6 +76,7 @@ class ShadowAggregate:
             f"total_races          {self.total_races}",
             f"matched_races        {self.matched_races}",
             f"diff_races           {self.diff_races}",
+            f"skipped_races        {self.skipped_races}",
             f"current_streak       {self.current_streak}",
             f"max_streak           {self.max_streak}",
         ]
@@ -96,6 +98,7 @@ class ShadowAggregator:
         self._eval_ids: list[str] = []
         self._matched = 0
         self._diff = 0
+        self._skipped = 0
 
     def record(self, run_result: Any) -> StagedResult:
         """1レース分のShadow実行結果を記録する。変換後のStagedResultを返す。"""
@@ -111,6 +114,17 @@ class ShadowAggregator:
             staged.eval_id, staged.all_matched, self._counter.current_streak,
         )
         return staged
+
+    def skip_race(self, eval_id: str) -> None:
+        """比較不能レースを記録する（Step6-2c-12 案A）。
+
+        ConsecutiveMatchCounter は更新しない（streakへ影響させない）。
+        matched/diff のいずれにも含めない。
+        """
+        self._eval_ids.append(eval_id)
+        self._skipped += 1
+        log.info("Shadow aggregate skip eval_id=%s streak=%d",
+                  eval_id, self._counter.current_streak)
 
     @property
     def consecutive_matches(self) -> int:
@@ -129,9 +143,10 @@ class ShadowAggregator:
     def aggregate(self) -> ShadowAggregate:
         """集約結果を返す。"""
         return ShadowAggregate(
-            total_races=self._counter.total_seen,
+            total_races=self._counter.total_seen + self._skipped,
             matched_races=self._matched,
             diff_races=self._diff,
+            skipped_races=self._skipped,
             current_streak=self._counter.current_streak,
             max_streak=self._counter.max_streak,
             broken_at=list(self._counter.broken_at),

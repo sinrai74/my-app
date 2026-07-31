@@ -664,3 +664,89 @@ class TestParseTargetRaces(unittest.TestCase):
     def test_invalid_token_raises(self) -> None:
         with self.assertRaises(ValueError):
             self._parse("20260704_12_5,invalid")
+
+
+# ---------------- Step6-2c-12: 比較不能レースの扱い（案A） ----------------
+
+
+class TestShadowAggregatorSkipRace(unittest.TestCase):
+    """比較不能レース（案A）: skip_race()の集約への反映。"""
+
+    def test_skip_race_not_counted_as_matched_or_diff(self) -> None:
+        """skipはmatched/diffいずれにも含まれないこと。"""
+        agg = ShadowAggregator(required=100)
+        agg.skip_race("e1")
+        summary = agg.aggregate()
+        self.assertEqual(summary.matched_races, 0)
+        self.assertEqual(summary.diff_races, 0)
+        self.assertEqual(summary.skipped_races, 1)
+
+    def test_skip_race_does_not_update_counter(self) -> None:
+        """skipはConsecutiveMatchCounterを更新しない（streak不変）。"""
+        agg = ShadowAggregator(required=100)
+        for i in range(5):
+            agg.record(_FakeRunResult(f"m{i}"))
+        streak_before = agg.consecutive_matches
+        agg.skip_race("skipped_one")
+        self.assertEqual(agg.consecutive_matches, streak_before)
+
+    def test_skip_between_matches_preserves_streak(self) -> None:
+        """一致の間にskipを挟んでもstreakは継続すること。"""
+        agg = ShadowAggregator(required=100)
+        agg.record(_FakeRunResult("a"))
+        agg.record(_FakeRunResult("b"))
+        agg.skip_race("c")
+        agg.record(_FakeRunResult("d"))
+        agg.record(_FakeRunResult("e"))
+        self.assertEqual(agg.consecutive_matches, 4)
+
+    def test_total_races_includes_skipped(self) -> None:
+        """total_racesはskippedを含む合計であること。"""
+        agg = ShadowAggregator(required=100)
+        agg.record(_FakeRunResult("a"))
+        agg.skip_race("b")
+        agg.record(_FakeRunResult("c", [{"path": "$.x"}]))
+        summary = agg.aggregate()
+        self.assertEqual(summary.total_races, 3)
+        self.assertEqual(summary.matched_races, 1)
+        self.assertEqual(summary.diff_races, 1)
+        self.assertEqual(summary.skipped_races, 1)
+
+    def test_satisfied_with_skips_present(self) -> None:
+        """skipを挟んでも100連続一致していればsatisfied=Trueであること。"""
+        agg = ShadowAggregator(required=100)
+        for i in range(100):
+            agg.record(_FakeRunResult(f"g{i:03d}"))
+        agg.skip_race("extra")
+        self.assertTrue(agg.satisfied)
+        self.assertEqual(agg.consecutive_matches, 100)
+
+
+class TestIncomparableValueErrorDetection(unittest.TestCase):
+    """run_shadow_multiple の例外識別ロジック（Step6-2c-12・設計書§19.3）。
+
+    _evaluate_bets_first が送出する空list時のValueErrorのみを
+    「比較不能」として識別する。実装のメッセージプレフィックスと
+    同一の判定式で検証する。
+    """
+
+    PREFIX = "_evaluate_bets returned an empty list"
+
+    def test_empty_list_message_matches_prefix(self) -> None:
+        msg = (
+            "_evaluate_bets returned an empty list; no bet candidate is "
+            "available for this race (no default value is supplied)"
+        )
+        self.assertTrue(msg.startswith(self.PREFIX))
+
+    def test_non_dict_message_does_not_match_prefix(self) -> None:
+        """_default_result_mapper由来の別ValueErrorは識別対象外。"""
+        msg = (
+            "legacy _evaluate_bets returned non-dict (type=list); "
+            "inject a custom result_mapper for this shape"
+        )
+        self.assertFalse(msg.startswith(self.PREFIX))
+
+    def test_missing_key_message_does_not_match_prefix(self) -> None:
+        msg = "legacy_result missing required key: combo"
+        self.assertFalse(msg.startswith(self.PREFIX))
