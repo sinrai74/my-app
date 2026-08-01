@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from actions.flags import use_rebuild_pipeline
 from actions.wiring import PipelineBundle, assemble_pipelines
 from shadow.aggregator import ShadowAggregate, ShadowAggregator
-from shadow.go_no_go import GoNoGoCriteria, evaluate_go_no_go
+from shadow.go_no_go import GoNoGoCriteria, GoNoGoResult, evaluate_go_no_go
 from shadow.runner import ShadowRunner
 
 log = logging.getLogger(__name__)
@@ -323,6 +323,32 @@ def parse_target_races(value: str | None = None) -> list[tuple[str, int, int]]:
     return races
 
 
+def _read_golden_100_percent() -> bool:
+    """GOLDEN_100_PERCENT環境変数からgolden_100_percentを読む（Step6-2c-20）。
+
+    設計方針（D-6・いとう氏指示）:
+      - 必須。未設定時は補完せずFail Fastで停止する。
+      - "1"/"true"/"True" のみをTrueとして受理し、"0"/"false"/"False"
+        のみをFalseとして受理する。それ以外の値は不正として停止する
+        （曖昧な値を推測で解釈しない）。
+    """
+    raw = os.environ.get("GOLDEN_100_PERCENT")
+    if raw is None:
+        raise ValueError(
+            "GOLDEN_100_PERCENT is required (Golden回帰テスト結果を "
+            '"1"（100%一致）または"0"（不一致あり）で明示的に指定する '
+            "こと; no default value is supplied)"
+        )
+    if raw in ("1", "true", "True"):
+        return True
+    if raw in ("0", "false", "False"):
+        return False
+    raise ValueError(
+        f"GOLDEN_100_PERCENT has invalid value: {raw!r} "
+        '(expected "1"/"true"/"True" or "0"/"false"/"False")'
+    )
+
+
 def run_shadow_multiple(
     races: list[tuple[str, int, int]],
     bundle: PipelineBundle | None = None,
@@ -395,6 +421,39 @@ def run_shadow_multiple(
         "Shadow multi-race end total=%d streak=%d satisfied=%s",
         aggregate.total_races, aggregate.current_streak, aggregator.satisfied,
     )
+
+    # Step6-2c-20（D-6結線）:
+    #   GoNoGoCriteria.shadow_consecutive_matches / shadow_required_matches は
+    #   run_shadow_multiple の実測値をそのまま使う。
+    #   golden_100_percent は GOLDEN_100_PERCENT からのみ取得し、
+    #   未設定なら _read_golden_100_percent が例外を送出し、ここで停止する
+    #   （補完しない）。
+    #   shadow_real_sends=0 は build_bundle() が全チャネルへ NullNotifier
+    #   のみを登録している既存構成（実測不要・コード構造から導ける事実）。
+    #   golden_100_percent 以外のGoNoGoCriteriaフィールド（output_byte_match
+    #   等）は上書きせず GoNoGoCriteria 自身の既定値のままとする
+    #   （Step6-2c-10で確定した「既存値を変更しない」方針を維持）。
+    golden_100_percent = _read_golden_100_percent()
+    criteria = GoNoGoCriteria(
+        golden_100_percent=golden_100_percent,
+        shadow_consecutive_matches=aggregate.current_streak,
+        shadow_required_matches=required,
+        shadow_real_sends=0,
+    )
+    result: GoNoGoResult = evaluate_go_no_go(criteria)
+    log.info("Go/No-Go judge start")
+    log.info(
+        "Go/No-Go criteria golden_100_percent=%s shadow_consecutive_matches=%d "
+        "shadow_required_matches=%d shadow_real_sends=%d",
+        criteria.golden_100_percent, criteria.shadow_consecutive_matches,
+        criteria.shadow_required_matches, criteria.shadow_real_sends,
+    )
+    for reason in result.reasons:
+        log.info("Go/No-Go reason: %s", reason)
+    for pending in result.pendings:
+        log.info("Go/No-Go pending: %s", pending)
+    log.info("Go/No-Go judge end decision=%s", result.decision)
+
     return {
         "races": races_report,
         "total_races": aggregate.total_races,
@@ -406,6 +465,9 @@ def run_shadow_multiple(
         "broken_at": aggregate.broken_at,
         "required": required,
         "satisfied": aggregator.satisfied,
+        "go_no_go_decision": result.decision,
+        "go_no_go_reasons": list(result.reasons),
+        "go_no_go_pendings": list(result.pendings),
     }
 
 

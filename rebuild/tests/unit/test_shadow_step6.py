@@ -750,3 +750,103 @@ class TestIncomparableValueErrorDetection(unittest.TestCase):
     def test_missing_key_message_does_not_match_prefix(self) -> None:
         msg = "legacy_result missing required key: combo"
         self.assertFalse(msg.startswith(self.PREFIX))
+
+
+# ---------------- Step6-2c-20: D-6 Go/No-Go結線 ----------------
+
+
+class TestReadGolden100Percent(unittest.TestCase):
+    """GOLDEN_100_PERCENT環境変数の読み取り（Step6-2c-20）。"""
+
+    def _read(self):
+        from actions.shadow_entrypoint import _read_golden_100_percent
+        return _read_golden_100_percent()
+
+    def test_missing_raises_fail_fast(self) -> None:
+        """未設定時はFail Fast（no default value is supplied）。"""
+        os.environ.pop("GOLDEN_100_PERCENT", None)
+        with self.assertRaises(ValueError) as ctx:
+            self._read()
+        self.assertIn("no default value is supplied", str(ctx.exception))
+
+    def test_value_1_is_true(self) -> None:
+        os.environ["GOLDEN_100_PERCENT"] = "1"
+        try:
+            self.assertTrue(self._read())
+        finally:
+            os.environ.pop("GOLDEN_100_PERCENT", None)
+
+    def test_value_0_is_false(self) -> None:
+        os.environ["GOLDEN_100_PERCENT"] = "0"
+        try:
+            self.assertFalse(self._read())
+        finally:
+            os.environ.pop("GOLDEN_100_PERCENT", None)
+
+    def test_invalid_value_raises(self) -> None:
+        os.environ["GOLDEN_100_PERCENT"] = "yes"
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                self._read()
+            self.assertIn("invalid value", str(ctx.exception))
+        finally:
+            os.environ.pop("GOLDEN_100_PERCENT", None)
+
+
+class TestGoNoGoWiring(unittest.TestCase):
+    """run_shadow_multipleでのGoNoGoCriteria生成・decide呼び出し（D-6）。
+
+    _read_golden_100_percent と evaluate_go_no_go を実装と同じ組み合わせで
+    使用し、streak実測値がそのままcriteriaへ渡ることを検証する。
+    """
+
+    def test_streak_satisfied_and_golden_true_is_go(self) -> None:
+        from shadow.go_no_go import GoNoGoCriteria, evaluate_go_no_go
+
+        criteria = GoNoGoCriteria(
+            golden_100_percent=True,
+            shadow_consecutive_matches=141,
+            shadow_required_matches=100,
+            shadow_real_sends=0,
+        )
+        result = evaluate_go_no_go(criteria)
+        self.assertEqual(result.decision, "GO")
+
+    def test_golden_false_is_no_go(self) -> None:
+        from shadow.go_no_go import GoNoGoCriteria, evaluate_go_no_go
+
+        criteria = GoNoGoCriteria(
+            golden_100_percent=False,
+            shadow_consecutive_matches=141,
+            shadow_required_matches=100,
+            shadow_real_sends=0,
+        )
+        result = evaluate_go_no_go(criteria)
+        self.assertEqual(result.decision, "NO_GO")
+        self.assertTrue(any("G1" in r for r in result.reasons))
+
+    def test_streak_below_required_is_no_go(self) -> None:
+        from shadow.go_no_go import GoNoGoCriteria, evaluate_go_no_go
+
+        criteria = GoNoGoCriteria(
+            golden_100_percent=True,
+            shadow_consecutive_matches=54,
+            shadow_required_matches=100,
+            shadow_real_sends=0,
+        )
+        result = evaluate_go_no_go(criteria)
+        self.assertEqual(result.decision, "NO_GO")
+        self.assertTrue(any("G2/G3" in r for r in result.reasons))
+
+    def test_shadow_real_sends_zero_from_null_notifier_config(self) -> None:
+        """shadow_real_sends=0はNullNotifier構成から導ける値であること。"""
+        from shadow.go_no_go import GoNoGoCriteria, evaluate_go_no_go
+
+        criteria = GoNoGoCriteria(
+            golden_100_percent=True,
+            shadow_consecutive_matches=100,
+            shadow_required_matches=100,
+            shadow_real_sends=0,
+        )
+        result = evaluate_go_no_go(criteria)
+        self.assertEqual(result.decision, "GO")
