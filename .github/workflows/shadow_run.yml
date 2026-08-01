@@ -26,6 +26,13 @@ on:
         description: "対象レース複数・カンマ区切り (例 20260704_12_5,20260704_12_6)。指定時はこちらが優先"
         required: false
         default: ""
+      golden_100_percent:
+        description: "Golden回帰が100%一致したか (1=一致 / 0=不一致)。Go/No-Go判定G1に使用。必須"
+        required: true
+        type: choice
+        options:
+          - "1"
+          - "0"
   # schedule:
   #   # Go判定前は自動並走しない。必要時に運用判断で有効化する。
   #   - cron: "5,20,35,50 23 * * *"
@@ -44,6 +51,10 @@ jobs:
       # Step6-2c-11: 複数レース指定。設定時は shadow_entrypoint が
       # 複数レース経路へ振り分ける（未設定なら従来のTARGET_RACE経路）。
       TARGET_RACES: ${{ inputs.target_races }}
+      # Step6-2c-20: Go/No-Go判定G1（golden_100_percent）へ渡す。
+      # 既定値は設定しない。未指定時は shadow_entrypoint 側の
+      # _read_golden_100_percent が Fail Fast で停止する。
+      GOLDEN_100_PERCENT: ${{ inputs.golden_100_percent }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
