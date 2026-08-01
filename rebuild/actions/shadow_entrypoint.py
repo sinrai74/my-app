@@ -409,6 +409,66 @@ def run_shadow_multiple(
     }
 
 
+# Step6-2c-14: Shadow専用のLegacy DEBUGログ有効化で使う識別属性名。
+# 同一プロセス内で複数回呼ばれてもhandlerを重複追加しないために使う。
+_LEGACY_DEBUG_HANDLER_ATTR = "_shadow_legacy_debug_handler"
+
+
+def _enable_legacy_debug_logging() -> None:
+    """Shadow実行時のみ notify_arashi のDEBUGログを出力可能にする。
+
+    Step6-2c-14（設計書§20）:
+      _evaluate_bets が空listをreturnする経路A-1〜A-6は log.debug で
+      理由を出力する（notify_arashi.py L2483/L2572/L2577/L2582/L2591）。
+      Shadowの既定ログレベルはINFOのためこれらが出力されず、空listの
+      原因が実行ログから判別できない。本関数は notify_arashi ロガー
+      のみをDEBUGへ引き上げ、原因を実行ログから判別可能にする。
+
+      A-7（notify_arashi.py L2691）はログ出力自体が存在しないため、
+      A-1〜A-6のDEBUGログが出力されずに空listとなった場合は
+      A-7として扱う（消去法での特定）。
+
+    制約:
+      - notify_arashi.py は変更しない（Feature Freeze維持）。
+      - Legacy本番実行（notify_arashi.yml）は本関数を呼ばないため
+        影響を受けない（Shadowエントリポイント専用）。
+      - ログレベルの変更のみ。判定ロジック・return値・Prediction生成
+        経路は変更しない。
+      - root logger や他モジュールのログレベルは変更しない。
+
+    環境変数:
+      SHADOW_LEGACY_DEBUG="0" の場合のみ無効化する（既定は有効）。
+    """
+    if os.environ.get("SHADOW_LEGACY_DEBUG", "1") == "0":
+        log.info("Legacy debug logging disabled (SHADOW_LEGACY_DEBUG=0)")
+        return
+
+    legacy_logger = logging.getLogger("notify_arashi")
+
+    # handler重複防止: 本関数が追加したhandlerが既にあれば追加しない。
+    for existing in legacy_logger.handlers:
+        if getattr(existing, _LEGACY_DEBUG_HANDLER_ATTR, False):
+            legacy_logger.setLevel(logging.DEBUG)
+            log.info("Legacy debug logging already enabled (handler reused)")
+            return
+
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [legacy] %(message)s")
+    )
+    setattr(handler, _LEGACY_DEBUG_HANDLER_ATTR, True)
+
+    legacy_logger.setLevel(logging.DEBUG)
+    legacy_logger.addHandler(handler)
+    # rootのINFOハンドラへ二重に流さない（同一メッセージの重複出力防止）。
+    legacy_logger.propagate = False
+    log.info(
+        "Legacy debug logging enabled (notify_arashi -> DEBUG) "
+        "for empty-list return path identification (A-1..A-6)"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLIエントリ（引数解析と呼び出しのみ・判定/計算なし）。
 
@@ -418,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
+    _enable_legacy_debug_logging()
     # TARGET_RACES（複数）が指定されていれば複数レース経路、
     # なければ既存の TARGET_RACE（単一）経路を使う（後方互換）。
     multi_raw = os.environ.get("TARGET_RACES", "").strip()
