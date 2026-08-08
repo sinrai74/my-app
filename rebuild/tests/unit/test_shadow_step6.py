@@ -26,6 +26,7 @@ from shadow.legacy_source import (
     get_legacy_record,
     load_sent_records,
 )
+from shadow.legacy_values_builder import build_legacy_values
 from shadow.prediction_provider import (
     LegacyPredictionProvider,
     PredictionContext,
@@ -850,3 +851,89 @@ class TestGoNoGoWiring(unittest.TestCase):
         )
         result = evaluate_go_no_go(criteria)
         self.assertEqual(result.decision, "GO")
+
+
+# ---------------- Step6-3-21: legacy_values_builder ----------------
+
+
+_BUILDER_SENT_SAMPLE = (
+    '{"key": "__no_bets_evaluated__", "checked_races": 168}\n'
+    '{"key": "20260704_1_1", "combo": "1-2-3", "venue": "桐生", '
+    '"venue_num": 1, "race": 1, "night": 1, '
+    '"odds": 12.3, "prob": 0.08, "ev": 0.98, "confidence": 0.55, '
+    '"upset_score": 41.0, "race_type": "堅い"}\n'
+    '{"key": "20260704_12_10", "combo": "3-1-2", "venue": "住之江", '
+    '"venue_num": 12, "race": 10, "night": 0, '
+    '"odds": 45.6, "prob": 0.02, "ev": 0.91, "confidence": 0.48}\n'
+)
+
+
+class TestBuildLegacyValues(unittest.TestCase):
+    """Step6-3-21: build_legacy_values の検証。"""
+
+    def setUp(self) -> None:
+        fd, self.path = tempfile.mkstemp(suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(_BUILDER_SENT_SAMPLE)
+        self.records = load_sent_records(self.path)
+
+    def tearDown(self) -> None:
+        os.unlink(self.path)
+
+    def test_returns_race_key_when_eval_id_exists(self) -> None:
+        """eval_id存在時に {"race": ...} を返すこと。"""
+        result = build_legacy_values(self.records, "20260704_01_01")
+        self.assertIsNotNone(result)
+        self.assertIn("race", result)
+
+    def test_returns_none_when_eval_id_missing(self) -> None:
+        """eval_id不在時に None を返すこと（仮値補完なし）。"""
+        result = build_legacy_values(self.records, "20260704_23_12")
+        self.assertIsNone(result)
+
+    def test_race_value_equals_race_view(self) -> None:
+        """race の値が record.race_view() と一致すること（補正・補完なし）。"""
+        record = self.records["20260704_01_01"]
+        result = build_legacy_values(self.records, "20260704_01_01")
+        self.assertEqual(result["race"], record.race_view())
+
+    def test_only_race_key_present(self) -> None:
+        """race 以外のキー（evaluation等）を生成しないこと。"""
+        result = build_legacy_values(self.records, "20260704_01_01")
+        self.assertEqual(set(result.keys()), {"race"})
+
+    def test_race_view_contents_not_modified(self) -> None:
+        """race_view() の各値がそのまま格納されること。"""
+        result = build_legacy_values(self.records, "20260704_01_01")
+        race = result["race"]
+        self.assertEqual(race["venue_num"], 1)
+        self.assertEqual(race["race_number"], 1)
+        self.assertEqual(race["venue_name"], "桐生")
+        self.assertTrue(race["is_night"])
+
+
+class TestBuilderEvalIdMatching(unittest.TestCase):
+    """Step6-3-21: eval_id 形式の突合検証。"""
+
+    def setUp(self) -> None:
+        fd, self.path = tempfile.mkstemp(suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(_BUILDER_SENT_SAMPLE)
+        self.records = load_sent_records(self.path)
+
+    def tearDown(self) -> None:
+        os.unlink(self.path)
+
+    def test_runner_format_eval_id_matches_record_key(self) -> None:
+        """runner.py L66 と同形式のeval_idが辞書キーと一致すること。"""
+        race_date, venue_num, race_number = "20260704", 1, 1
+        eval_id = f"{race_date}_{venue_num:02d}_{race_number:02d}"
+        self.assertEqual(eval_id, "20260704_01_01")
+        self.assertIn(eval_id, self.records)
+        self.assertIsNotNone(build_legacy_values(self.records, eval_id))
+
+    def test_zero_padded_from_unpadded_key(self) -> None:
+        """key がゼロ埋めなし（20260704_1_1）でも eval_id はゼロ埋め2桁。"""
+        self.assertIn("20260704_01_01", self.records)
+        self.assertIn("20260704_12_10", self.records)
+        self.assertNotIn("20260704_1_1", self.records)

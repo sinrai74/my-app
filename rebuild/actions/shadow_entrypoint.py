@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from actions.flags import use_rebuild_pipeline
 from actions.wiring import PipelineBundle, assemble_pipelines
 from shadow.aggregator import ShadowAggregate, ShadowAggregator
+from shadow.legacy_source import load_sent_records
+from shadow.legacy_values_builder import build_legacy_values
 from shadow.go_no_go import GoNoGoCriteria, GoNoGoResult, evaluate_go_no_go
 from shadow.runner import ShadowRunner
 
@@ -365,6 +367,13 @@ def run_shadow_multiple(
     次のレースへ継続する。matched/diffのいずれにも含めず、
     ConsecutiveMatchCounterも更新しない。それ以外の例外は従来通り
     送出して処理を停止する。
+
+    Step6-3-21: legacy_values を生成して run_and_compare へ渡す。
+      - sent_*.txt の読み込みは日付単位で1回だけ行う（Step6-3-14 O-2）。
+      - Legacy値が無いレースは既存の skip_race() で比較対象外とする
+        （Step6-3-15 O-5）。ConsecutiveMatchCounterは更新されない。
+      - 比較対象は race のみ（Step6-3-5-5）。comparator/runner/aggregator
+        は変更しない。
     """
     log.info("Shadow multi-race start count=%d required=%d",
              len(races), required)
@@ -379,11 +388,44 @@ def run_shadow_multiple(
 
     aggregator = ShadowAggregator(required=required)
     races_report: list[dict] = []
+
+    # Step6-3-21: sent_*.txt を日付単位で読む（同じ日付は再読み込みしない）。
+    # ファイルが無い場合 load_sent_records は空辞書を返す（legacy_source）。
+    sent_records_by_date: dict[str, dict] = {}
+
     for race_date, venue_num, race_number in races:
         eval_id = f"{race_date}_{venue_num:02d}_{race_number:02d}"
+
+        if race_date not in sent_records_by_date:
+            sent_path = f"sent_{race_date}.txt"
+            sent_records_by_date[race_date] = load_sent_records(sent_path)
+            log.info(
+                "Legacy sent records loaded path=%s count=%d",
+                sent_path, len(sent_records_by_date[race_date]),
+            )
+
+        legacy_values = build_legacy_values(
+            sent_records_by_date[race_date], eval_id
+        )
+        if legacy_values is None:
+            # Legacy値なし: 既存の skip_race() で比較対象外とする。
+            # ConsecutiveMatchCounterは更新されない（Step6-2c-12の挙動）。
+            log.warning(
+                "Shadow multi-race skip (legacy value not found) eval_id=%s",
+                eval_id,
+            )
+            aggregator.skip_race(eval_id)
+            races_report.append({
+                "eval_id": eval_id,
+                "skipped": True,
+                "reason": "legacy value not found in sent records",
+            })
+            continue
+
         try:
             result = runner.run_and_compare(
-                race_date, venue_num, race_number, output_paths={}
+                race_date, venue_num, race_number, output_paths={},
+                legacy_values=legacy_values,
             )
         except ValueError as exc:
             # Step6-2c-12（設計書§19・案A）:

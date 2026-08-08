@@ -19,6 +19,7 @@ from shadow.legacy_notification import (
 )
 from shadow.legacy_output import compare_output_bytes, read_output_bytes
 from shadow.legacy_source import LegacySentRecord, load_sent_records
+from shadow.legacy_values_builder import build_legacy_values
 from shadow.notifier import NullNotifier
 from shadow.prediction_provider import (
     LegacyPredictionProvider,
@@ -46,6 +47,7 @@ __all__ = [
     "ShadowRunner",
     "ShadowSummary",
     "StagedResult",
+    "build_legacy_values",
     "build_notification_view",
     "compare",
     "compare_output_bytes",
