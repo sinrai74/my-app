@@ -22,13 +22,14 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from actions.flags import use_rebuild_pipeline
 from actions.wiring import PipelineBundle, assemble_pipelines
 from shadow.aggregator import ShadowAggregate, ShadowAggregator
+from shadow.go_no_go import GoNoGoCriteria, GoNoGoResult, evaluate_go_no_go
 from shadow.legacy_source import load_sent_records
 from shadow.legacy_values_builder import build_legacy_values
-from shadow.go_no_go import GoNoGoCriteria, GoNoGoResult, evaluate_go_no_go
 from shadow.runner import ShadowRunner
 
 log = logging.getLogger(__name__)
@@ -397,7 +398,12 @@ def run_shadow_multiple(
         eval_id = f"{race_date}_{venue_num:02d}_{race_number:02d}"
 
         if race_date not in sent_records_by_date:
-            sent_path = f"sent_{race_date}.txt"
+            # Step6-3-21: リポジトリルート基準（実行ディレクトリに依存しない）。
+            # shadow_entrypoint.py は rebuild/actions/ にあるため parents[2]。
+            sent_path = str(
+                Path(__file__).resolve().parents[2]
+                / f"sent_{race_date}.txt"
+            )
             sent_records_by_date[race_date] = load_sent_records(sent_path)
             log.info(
                 "Legacy sent records loaded path=%s count=%d",
