@@ -91,7 +91,7 @@ def compare(eval_id: str, legacy: Any, rebuild: Any, path: str = "$") -> list[di
 
     def rec(le: Any, re: Any, p: str) -> None:
         if isinstance(le, dict) and isinstance(re, dict):
-            for key in sorted(set(le) | set(re)):
+            for key in sorted(set(le)):
                 rec(le.get(key), re.get(key), f"{p}.{key}")
         elif isinstance(le, list) and isinstance(re, list):
             if len(le) != len(re):

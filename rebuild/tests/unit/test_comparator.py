@@ -236,3 +236,117 @@ class TestGoNoGo(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------- Step6-3-33: 案C（Legacy側キーのみ比較） ----------------
+
+
+class TestCompareLegacyKeysOnly(unittest.TestCase):
+    """D-2 案C: 比較対象キーをLegacy側の集合に限定する挙動の検証。
+
+    案C（Step6-3-30で採用確定）:
+      compare() のdict比較において、キー列挙をLegacy側の集合に限定する。
+      Rebuild側にのみ存在するキーは比較対象外となる。
+    """
+
+    def test_legacy_key_diff_detected(self) -> None:
+        """Legacy側に存在するキーの値差はdiffとして検出されること。"""
+        diffs = compare("e1", {"a": 1}, {"a": 2}, path="$.x")
+        self.assertEqual(len(diffs), 1)
+        self.assertEqual(diffs[0]["field_path"], "$.x.a")
+        self.assertEqual(diffs[0]["legacy"], 1)
+        self.assertEqual(diffs[0]["rebuild"], 2)
+
+    def test_rebuild_only_key_not_compared(self) -> None:
+        """Rebuild側にのみ存在するキーはdiffにならないこと（案Cの核心）。"""
+        diffs = compare("e1", {"a": 1}, {"a": 1, "b": 999}, path="$.x")
+        self.assertEqual(diffs, [])
+
+    def test_legacy_none_rebuild_none_no_diff(self) -> None:
+        """Legacy None / Rebuild None はdiffにならないこと。"""
+        diffs = compare("e1", {"a": None}, {"a": None}, path="$.x")
+        self.assertEqual(diffs, [])
+
+    def test_legacy_none_rebuild_value_is_diff(self) -> None:
+        """Legacyが明示的にNoneを記録している場合、Rebuild値ありはdiffになること。"""
+        diffs = compare("e1", {"a": None}, {"a": 5}, path="$.x")
+        self.assertEqual(len(diffs), 1)
+        self.assertEqual(diffs[0]["field_path"], "$.x.a")
+        self.assertIsNone(diffs[0]["legacy"])
+        self.assertEqual(diffs[0]["rebuild"], 5)
+
+    def test_legacy_key_missing_in_rebuild_is_diff(self) -> None:
+        """Legacyにあり Rebuildに無いキーはdiffになること（従来通り）。"""
+        diffs = compare("e1", {"a": 1}, {}, path="$.x")
+        self.assertEqual(len(diffs), 1)
+        self.assertEqual(diffs[0]["field_path"], "$.x.a")
+        self.assertEqual(diffs[0]["legacy"], 1)
+        self.assertIsNone(diffs[0]["rebuild"])
+
+    def test_diff_format_and_key_order_preserved(self) -> None:
+        """diff形式（4キー）とキー昇順の走査が維持されること。"""
+        legacy = {"c": 1, "a": 1, "b": 1}
+        rebuild = {"c": 9, "a": 9, "b": 9}
+        diffs = compare("e1", legacy, rebuild, path="$")
+        self.assertEqual(len(diffs), 3)
+        for d in diffs:
+            self.assertEqual(set(d.keys()),
+                             {"eval_id", "field_path", "legacy", "rebuild"})
+        self.assertEqual([d["field_path"] for d in diffs],
+                         ["$.a", "$.b", "$.c"])
+
+    def test_nested_dict_legacy_keys_only(self) -> None:
+        """ネストしたdictでもLegacy側キーのみが比較対象になること。"""
+        legacy = {"outer": {"x": 1}}
+        rebuild = {"outer": {"x": 1, "y": 2}, "extra": 3}
+        self.assertEqual(compare("e1", legacy, rebuild, path="$"), [])
+
+    def test_empty_legacy_dict_yields_no_diff(self) -> None:
+        """Legacy側が空dictならRebuild側固有キーだけではdiffにならないこと。"""
+        diffs = compare("e1", {}, {"a": 1, "b": 2}, path="$.x")
+        self.assertEqual(diffs, [])
+
+    def test_race_view_four_keys_vs_race_nine_fields(self) -> None:
+        """実データ相当: race_view()4キー vs Race9フィールドの挙動確認。
+
+        Legacy側4キーの値が一致すればdiffは0件になり、
+        Rebuild側にのみ存在する5フィールドは比較対象外となること。
+        """
+        legacy_race_view = {
+            "venue_num": 1,
+            "race_number": 2,
+            "is_night": True,
+            "venue_name": "桐生",
+        }
+        rebuild_race = {
+            "race_date": "20260704",
+            "venue_num": 1,
+            "venue_name": "桐生",
+            "race_number": 2,
+            "close_time": "2026-07-04 16:03:00",
+            "is_night": True,
+            "entries": [{"lane": 1}, {"lane": 2}],
+            "grade": "grade5",
+            "weather": None,
+        }
+        diffs = compare("20260704_01_02", legacy_race_view, rebuild_race,
+                        path="$.race")
+        self.assertEqual(diffs, [])
+
+    def test_race_view_value_mismatch_still_detected(self) -> None:
+        """Legacy側4キーに値差があればdiffとして検出されること。"""
+        legacy_race_view = {
+            "venue_num": 1, "race_number": 2,
+            "is_night": True, "venue_name": "桐生",
+        }
+        rebuild_race = {
+            "race_date": "20260704", "venue_num": 1, "venue_name": "蒲郡",
+            "race_number": 2, "close_time": "x", "is_night": True,
+            "entries": [], "grade": "grade5", "weather": None,
+        }
+        diffs = compare("20260704_01_02", legacy_race_view, rebuild_race,
+                        path="$.race")
+        self.assertEqual(len(diffs), 1)
+        self.assertEqual(diffs[0]["field_path"], "$.race.venue_name")
+        self.assertEqual(diffs[0]["legacy"], "桐生")
+        self.assertEqual(diffs[0]["rebuild"], "蒲郡")

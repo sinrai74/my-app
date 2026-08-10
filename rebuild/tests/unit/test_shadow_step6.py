@@ -32,6 +32,7 @@ from shadow.prediction_provider import (
     PredictionContext,
     _default_result_mapper,
 )
+from shadow.comparator import compare
 from shadow.aggregator import (
     DIFF_SENTINEL,
     ShadowAggregator,
@@ -937,3 +938,51 @@ class TestBuilderEvalIdMatching(unittest.TestCase):
         self.assertIn("20260704_01_01", self.records)
         self.assertIn("20260704_12_10", self.records)
         self.assertNotIn("20260704_1_1", self.records)
+
+
+# ---------------- Step6-3-33: 案C適用後のG2/G3波及確認 ----------------
+
+
+class TestPlanCPropagationToStreak(unittest.TestCase):
+    """D-2 案C適用後、compare()のdiffsがstreakへ波及する経路の確認。
+
+    本クラスは既存ロジック（to_staged_result / ConsecutiveMatchCounter）の
+    挙動を確認するものであり、これらの変更を意図しない。
+    案Cにより diffs が空になった場合に streak が加算されることを確認する。
+    """
+
+    def test_legacy_keys_only_compare_yields_no_diff(self) -> None:
+        """race_view()4キー vs Race9フィールドでdiffが0件になること。"""
+        legacy_race_view = {
+            "venue_num": 1, "race_number": 2,
+            "is_night": True, "venue_name": "桐生",
+        }
+        rebuild_race = {
+            "race_date": "20260704", "venue_num": 1, "venue_name": "桐生",
+            "race_number": 2, "close_time": "2026-07-04 16:03:00",
+            "is_night": True, "entries": [{"lane": 1}],
+            "grade": "grade5", "weather": None,
+        }
+        diffs = compare("20260704_01_02", legacy_race_view, rebuild_race,
+                        path="$.race")
+        self.assertEqual(diffs, [])
+
+    def test_empty_diffs_increments_streak(self) -> None:
+        """diffsが空ならall_matched=Trueとなりstreakが加算されること。"""
+        staged = to_staged_result(_FakeRunResult("e1", []))
+        self.assertIsNone(staged.stopped_at)
+        self.assertTrue(staged.all_matched)
+        counter = ConsecutiveMatchCounter(required=100)
+        counter.record(staged)
+        self.assertEqual(counter.current_streak, 1)
+
+    def test_nonempty_diffs_resets_streak(self) -> None:
+        """diffsが非空ならall_matched=Falseとなりstreakが0になること。"""
+        counter = ConsecutiveMatchCounter(required=100)
+        counter.record(to_staged_result(_FakeRunResult("e1", [])))
+        self.assertEqual(counter.current_streak, 1)
+        diffs = [{"eval_id": "e2", "field_path": "$.race.venue_name",
+                  "legacy": "桐生", "rebuild": "蒲郡"}]
+        counter.record(to_staged_result(_FakeRunResult("e2", diffs)))
+        self.assertEqual(counter.current_streak, 0)
+        self.assertIn("e2", counter.broken_at)
