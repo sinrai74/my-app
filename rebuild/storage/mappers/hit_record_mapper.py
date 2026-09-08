@@ -104,6 +104,8 @@ EXTENSION_COLUMNS: tuple[str, ...] = (
     "config_version",
     "patterns_json",
     "features_json",
+    "purchased_combos_json",
+    "purchased_amounts_json",
 )
 
 ALL_COLUMNS: tuple[str, ...] = LEGACY_COLUMNS + EXTENSION_COLUMNS
@@ -225,6 +227,15 @@ class HitRecordCsvMapper:
             "config_version": bd.config_version,
             "patterns_json": json.dumps(list(pr.patterns), ensure_ascii=False),
             "features_json": json.dumps(ev.features.to_dict(), ensure_ascii=False),
+            # W案（LegacyPurchaseResult経由のBuyDecision内訳）追加分。
+            # combo/amountは同一index対応・Legacyのbuyscore降順を維持したまま
+            # JSON配列として保存する（並び替え禁止）。
+            "purchased_combos_json": json.dumps(
+                list(bd.purchased_combos), ensure_ascii=False
+            ),
+            "purchased_amounts_json": json.dumps(
+                list(bd.purchased_amounts), ensure_ascii=False
+            ),
         }
 
         # feat_*列と当地系列（FeatureSetのboat1・raceキーから導出）
@@ -314,6 +325,9 @@ class HitRecordCsvMapper:
             kelly_fraction=_ext_opt_float(row, "kelly_fraction"),
             config_version=_ext_str(row, "config_version"),
             skip_reason=_opt_str(row, "skip_reason"),
+            # 拡張列欠落（旧行）->空タプル。既存のpatterns_json等と同じ方針。
+            purchased_combos=_ext_json_tuple(row, "purchased_combos_json"),
+            purchased_amounts=_ext_json_tuple(row, "purchased_amounts_json"),
         )
         return HitRecord(
             eval_id=eval_id,

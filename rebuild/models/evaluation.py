@@ -170,3 +170,29 @@ class BuyDecision:
     # 新規判定ではBuyEngineが必ず設定する（省略許可ではない）
     config_version: str  # buyscore_config の _version
     skip_reason: Optional[str] = None  # 見送り時必須（呼び出し側で保証する）
+    purchased_combos: tuple = ()  # 実購入comboの集合（LegacyPurchaseResult由来。順序＝Legacyのbuyscore降順を維持）
+    purchased_amounts: tuple = ()  # 各comboの金額（purchased_combosと同順・同長。cost = sum(purchased_amounts)）
+
+
+@dataclass(frozen=True)
+class LegacyPurchaseResult:
+    """Legacy `_evaluate_bets` の生返却値（list）をそのまま保持するimmutableな
+    Context。加工・再計算・フィールド抽出はしない。
+
+    背景: Prediction（Design Spec §3.5、1レース1件のbest1点モデル）とは別に、
+    Legacyが `apply_buyscore`/`assign_rank_labels` で確定した実際の購入対象
+    （最大4点）を、BuyDecisionBuilderへ渡すためのコンテナ。
+
+    `_evaluate_bets` は1レースにつき1回だけ呼ぶ（資金管理ロジックが外部状態
+    ＝hit_record.csv等を読むため冪等性が保証されない。2回呼ばない）。その
+    1回の呼び出し結果のうち、Prediction用にはresult[0]（K1、既存契約）を、
+    本コンテナには全件をそのまま保持する。
+
+    purchases の各要素dict構造はLegacy側（x_buyscore.apply_buyscoreが返す
+    ranked、またはnotify_arashi._evaluate_betsが見送り時に返すskipped）の
+    仕様にそのまま従う。combo/amount/purchased/buyscore/rank_label等は
+    既にLegacy側で確定済みであり、本モデルでは複製・再定義しない。
+    """
+
+    eval_id: str
+    purchases: tuple[dict[str, Any], ...]

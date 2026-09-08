@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from models.evaluation import Prediction, RaceEvaluation
+from models.evaluation import LegacyPurchaseResult, Prediction, RaceEvaluation
 
 log = logging.getLogger(__name__)
 
@@ -157,3 +157,78 @@ def _default_result_mapper(
         why_bet=str(why) if not isinstance(why, str) else why,
         patterns=tuple(legacy_result.get("buy", ())),
     )
+
+
+class _EvaluateBetsCapture:
+    """`_evaluate_bets` を1回だけ呼び、Prediction用（result[0]、K1・既存契約）
+    に加えて、直近の生list全体を eval_id 単位で保持するCallable。
+
+    背景（Legacy購入結果をBuyDecisionへ渡すための配線・W案）:
+      Legacyの実際の購入対象は `recommended[0]`（Prediction用・K1）ではなく、
+      `assign_rank_labels` 後の全購入確定list（最大4点）である。この全list
+      をBuyDecisionBuilderへ渡す必要があるが、`_evaluate_bets` は内部で
+      資金管理ロジック（hit_record.csv等の外部状態を読む）を呼ぶため、
+      2回呼び出すと異なる結果を返すリスクがある（冪等性が保証されない）。
+      したがって1回の呼び出し結果を、Prediction用途と購入結果用途の両方で
+      共有する。
+
+    既存契約との関係:
+      __call__ の外部挙動（引数・戻り値・空list時のValueError）は、
+      `actions/shadow_entrypoint.py::build_bundle` 内の既存ローカル関数
+      `_evaluate_bets_first`（Step6-2c-9・K1）と完全に同一。K1・
+      LegacyPredictionProviderの既存外部契約は変更しない。
+      追加されるのは「呼び出し後に last_purchase_result(eval_id) で
+      全listを読める」という副次的なアクセサのみ。
+
+    スレッド安全性: 本クラスは単一プロセス・単一レース逐次処理を前提とする
+    （既存のShadow/本番運用と同じ前提）。並行実行はサポートしない。
+    """
+
+    def __init__(
+        self, evaluate_bets: Optional[LegacyEvaluateBets] = None
+    ) -> None:
+        # DIパターンはLegacyPredictionProviderと同一（未指定時のみ遅延import）。
+        self._evaluate_bets = evaluate_bets
+        self._last_eval_id: Optional[str] = None
+        self._last_raw_result: Optional[list] = None
+
+    def __call__(self, **kwargs: Any) -> Any:
+        evaluate_bets = self._evaluate_bets
+        if evaluate_bets is None:
+            from notify_arashi import _evaluate_bets as evaluate_bets
+
+        result = evaluate_bets(**kwargs)
+
+        # eval_id は既存の組み立て規約（race_date_venue02d_race02d）に従う。
+        # models/race.py・evaluation_pipeline.py等と同一形式。
+        self._last_eval_id = "{}_{:02d}_{:02d}".format(
+            kwargs["race_date"], kwargs["venue_num"], kwargs["race_number"],
+        )
+        self._last_raw_result = result if isinstance(result, list) else None
+
+        if isinstance(result, list) and not result:
+            # 既存 _evaluate_bets_first と同一のエラー契約（変更しない）。
+            raise ValueError(
+                "_evaluate_bets returned an empty list; no bet candidate is "
+                "available for this race (no default value is supplied)"
+            )
+        if isinstance(result, list):
+            return result[0]
+        return result
+
+    def last_purchase_result(self, eval_id: str) -> LegacyPurchaseResult:
+        """直近の `__call__` が保持した全listを LegacyPurchaseResult として返す。
+
+        eval_id不一致（別レースの呼び出し後に取得された等）はサイレントに
+        許容せず例外とする。__call__ が一度も成功していない場合も例外とする。
+        """
+        if self._last_eval_id != eval_id or self._last_raw_result is None:
+            raise ValueError(
+                "no captured _evaluate_bets result for eval_id="
+                f"{eval_id!r} (last captured eval_id={self._last_eval_id!r}); "
+                "last_purchase_result() must be called immediately after "
+                "the corresponding provide() call for the same race"
+            )
+        return LegacyPurchaseResult(
+            eval_id=eval_id, purchases=tuple(self._last_raw_result)
+        )

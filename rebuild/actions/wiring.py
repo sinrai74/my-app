@@ -46,8 +46,16 @@ def assemble_pipelines(
     buy_config: dict,
     output_renderers: dict,
     notification_service: Optional[NotificationService] = None,
+    purchase_result_source=None,
+    decision_builder=None,
 ) -> PipelineBundle:
-    """各Pipelineをコンストラクタへ渡すだけの組立（計算・判定なし）。"""
+    """各Pipelineをコンストラクタへ渡すだけの組立（計算・判定なし）。
+
+    purchase_result_source / decision_builder はW案（LegacyPurchaseResult
+    経由でのBuyDecision組立）向けの追加DI。いずれも省略可能（省略時は
+    BuyPipeline.decide_race()が利用不可になるだけで、既存のassess_race()
+    経路には影響しない＝後方互換）。
+    """
     evaluation_pipeline = EvaluationPipeline(
         race_source=race_source,
         feature_builder=feature_builder,
@@ -60,6 +68,8 @@ def assemble_pipelines(
         prediction_provider=prediction_provider,
         buy_engine=buy_engine,
         config=buy_config,
+        purchase_result_source=purchase_result_source,
+        decision_builder=decision_builder,
     )
     output_pipeline = OutputPipeline(output_renderers)
     notification_pipeline = NotificationPipeline(

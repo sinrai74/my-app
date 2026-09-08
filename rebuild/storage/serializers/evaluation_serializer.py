@@ -143,6 +143,8 @@ class BuyDecisionSerializer:
             "kelly_fraction": model.kelly_fraction,
             "config_version": model.config_version,
             "skip_reason": model.skip_reason,
+            "purchased_combos": list(model.purchased_combos),
+            "purchased_amounts": list(model.purchased_amounts),
         }
 
     @staticmethod
@@ -157,6 +159,9 @@ class BuyDecisionSerializer:
             kelly_fraction=_req(data, "kelly_fraction"),
             config_version=_req(data, "config_version"),
             skip_reason=data.get("skip_reason"),
+            # 旧形式（本フィールド追加前に書かれたJSON）読み込み時は空タプル。
+            purchased_combos=tuple(data.get("purchased_combos", ())),
+            purchased_amounts=tuple(data.get("purchased_amounts", ())),
         )
 
 

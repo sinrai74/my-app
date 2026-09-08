@@ -139,9 +139,11 @@ def build_bundle(
     from notification.service import NotificationService
     from pipelines.wiring import RaceArgBoatsResolver
     from shadow.notifier import NullNotifier
+    from pipelines.buy_decision_builder import DefaultBuyDecisionBuilder
     from shadow.prediction_provider import (
         LegacyPredictionProvider,
         PredictionContext,
+        _EvaluateBetsCapture,
     )
 
     import x_venue_stats  # Legacy: VenueStatsProvider互換（import利用のみ）
@@ -211,29 +213,20 @@ def build_bundle(
             target_lanes=target_lanes,
         )
 
-    def _evaluate_bets_first(**kwargs):
-        # Step6-2c-9: Legツール _evaluate_bets のreturn値listから1件を取り出す。
-        #
-        # 設計根拠（Step6-2c-8 §18）:
-        #   - 設置箇所 S2: LegacyPredictionProviderの evaluate_bets DI注入
-        #     （_evaluate_bets / _default_result_mapper / provide 本体は無改変）
-        #   - 選定基準 K1: index 0
-        #     （Legツール呼び出し元 notify_arashi L3546 が recommended[0] を参照。
-        #       見送り経路は top[:1] の1件、購入経路は buyscore降順sort後の先頭）
-        #   - 空list: ValueError送出
-        #     （_default_result_mapper と同方針。仮値補完はしない）
-        #   - dict以外の型検証は _default_result_mapper（dict要求）へ委譲する
-        from notify_arashi import _evaluate_bets
-
-        result = _evaluate_bets(**kwargs)
-        if isinstance(result, list) and not result:
-            raise ValueError(
-                "_evaluate_bets returned an empty list; no bet candidate is "
-                "available for this race (no default value is supplied)"
-            )
-        if isinstance(result, list):
-            return result[0]
-        return result
+    # Step6-2c-9のローカル関数 _evaluate_bets_first は、W案（Legacy購入結果を
+    # BuyDecisionへ渡す配線）に伴い _EvaluateBetsCapture へ置き換えた。
+    #
+    # 外部契約（引数・戻り値・空list時のValueError）は _evaluate_bets_first
+    # と完全に同一であり、K1（設計根拠: Step6-2c-8 §18、選定基準K1=index 0）
+    # は変更していない。追加されるのは、__call__ 後に
+    # last_purchase_result(eval_id) でLegacyの生返却list全体（購入確定結果、
+    # 最大4点）を取得できるという副次的なアクセサのみ。
+    #
+    # _evaluate_bets は内部で資金管理ロジック（外部状態を読む）を呼ぶため
+    # 冪等性が保証されない。1レースにつき1回だけ呼ぶ必要があり、
+    # _EvaluateBetsCaptureはPrediction用途（result[0]）と購入結果用途
+    # （全list）の両方に、この1回の呼び出し結果を共有する。
+    evaluate_bets_capture = _EvaluateBetsCapture()
 
     notification_service = NotificationService({
         "mail": NullNotifier("mail"),
@@ -251,12 +244,14 @@ def build_bundle(
         durable_store=None,
         prediction_provider=LegacyPredictionProvider(
             context_resolver=_context_resolver_required,
-            evaluate_bets=_evaluate_bets_first,
+            evaluate_bets=evaluate_bets_capture,
         ),
         buy_engine=DefaultBuyEngine(),
         buy_config=buy_config,
         output_renderers={},
         notification_service=notification_service,
+        purchase_result_source=evaluate_bets_capture,
+        decision_builder=DefaultBuyDecisionBuilder(),
     )
 
 
