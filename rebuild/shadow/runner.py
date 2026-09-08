@@ -39,6 +39,7 @@ class ShadowRunResult:
     render_results: dict
     notification_requests: list
     diffs: list[dict]
+    buy_decision: Any = None
 
 
 class ShadowRunner:
@@ -73,7 +74,23 @@ class ShadowRunner:
         evaluation = self._bundle.evaluation_pipeline.evaluate_race(
             race_date, venue_num, race_number, persist=False
         )
-        buy_assessment = self._bundle.buy_pipeline.assess_race(evaluation)
+        # BuyAssessment（既存pair）とBuyDecision（Stage 2で追加するG3-B/G3-C
+        # 比較用）を、1回のpredict→assessで同時に取得する。別々に
+        # assess_race()/decide_race()を呼ぶとLegacy _evaluate_bets()が2回
+        # 呼ばれてしまう（冪等性が保証されない）ため、assess_and_decide()で
+        # 単一呼び出しを保証する（K1維持）。
+        # DI（purchase_result_source / decision_builder）が未注入の構成
+        # （Shadow以外の組立）では従来通りassess_raceのみを使い、
+        # buy_decisionはNone（比較対象外）とする。
+        buy_decision = None
+        try:
+            buy_assessment, buy_decision = (
+                self._bundle.buy_pipeline.assess_and_decide(evaluation)
+            )
+        except ValueError:
+            buy_assessment = self._bundle.buy_pipeline.assess_race(evaluation)
+            buy_decision = None
+
         render_results = self._bundle.output_pipeline.render_all(
             race_date, output_paths
         )
@@ -98,9 +115,10 @@ class ShadowRunner:
         pairs = (
             ("race", race), ("evaluation", evaluation),
             ("buy_assessment", buy_assessment),
+            ("buy_decision", buy_decision),
         )
         for name, rebuild_obj in pairs:
-            if name in legacy_values:
+            if name in legacy_values and rebuild_obj is not None:
                 diffs.extend(
                     compare(eval_id, legacy_values[name], rebuild_obj,
                             path=f"$.{name}")
@@ -124,6 +142,7 @@ class ShadowRunner:
             eval_id=eval_id, race=race, feature_set=None, evaluation=evaluation,
             buy_assessment=buy_assessment, render_results=render_results,
             notification_requests=sent_requests, diffs=diffs,
+            buy_decision=buy_decision,
         )
 
     def _assert_all_null_notifiers(self) -> None:

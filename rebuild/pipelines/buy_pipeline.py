@@ -146,12 +146,27 @@ class BuyPipeline:
         purchase_result_source / decision_builder が未注入の場合はValueError
         （暫定値での穴埋め禁止）。
         """
+        _, decision = self.assess_and_decide(evaluation)
+        return decision
+
+    def assess_and_decide(
+        self, evaluation: RaceEvaluation
+    ) -> tuple[BuyAssessment, BuyDecision]:
+        """BuyAssessment と BuyDecision を1回のpredict→assessで同時に得る。
+
+        Shadow比較でBuyAssessment（既存pair）とBuyDecision（Stage 2で追加）の
+        両方が必要な場合に、assess_race()とdecide_race()を別々に呼ぶと
+        _predict_and_assess()＝_evaluate_bets呼び出しが2回発生してしまう
+        （資金管理ロジックの冪等性が保証されないため不可）。本メソッドは
+        1回のpredict→assessから両方を導き、_evaluate_betsの単一呼び出しを
+        保証する（K1維持）。
+        """
         if self._purchase_result_source is None or self._decision_builder is None:
             raise ValueError(
-                "decide_race() requires both purchase_result_source and "
+                "assess_and_decide() requires both purchase_result_source and "
                 "decision_builder to be configured"
             )
-        prediction, assessment = self._predict_and_assess(evaluation)
+        _, assessment = self._predict_and_assess(evaluation)
 
         purchase_result = self._purchase_result_source.last_purchase_result(
             evaluation.eval_id
@@ -159,7 +174,7 @@ class BuyPipeline:
         log.info("BuyPipeline decision_builder start eval_id=%s", evaluation.eval_id)
         decision = self._decision_builder.build(purchase_result, assessment)
         log.info("BuyPipeline decision ready eval_id=%s", evaluation.eval_id)
-        return decision
+        return assessment, decision
 
     def _predict_and_assess(
         self, evaluation: RaceEvaluation

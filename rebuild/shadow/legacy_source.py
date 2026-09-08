@@ -74,6 +74,49 @@ class LegacySentRecord:
                 view[key] = self.raw[key]
         return view
 
+    def purchase_view(self) -> Optional[dict]:
+        """BuyDecision相当（購入内訳・集計）。sent_*.txtの buy / buy_amounts を
+        そのまま読み取る（Step6-3 Stage 2）。
+
+        sent_*.txt の1レコードには、Legacyが確定した実購入リスト（buy）と
+        各金額（buy_amounts）が記録されている（実データ255/255件で確認済み。
+        combo==buy[0]・buy と buy_amounts は同一index対応・最大4点）。
+        これをShadow比較（G3-B: 件数/総額、G3-C: 組合せ/金額の順序付き完全
+        一致）用のビューとして返す。
+
+        値の加工・再計算・並び替えはしない。buy の順序はLegacyの
+        buyscore/rank付与順の意味を持つため、読み取ったままの順序を保持する。
+
+        buy / buy_amounts のいずれも無いレコード（記録時期により存在しない、
+        またはメタ行）では None を返す（比較対象外。呼び出し側が扱う）。
+
+        Returns:
+            {
+              "purchased_combos": [...],   # buy をそのまま（順序保持）
+              "purchased_amounts": [...],  # buy_amounts をそのまま（同順）
+              "n_bets": <len(buy)>,
+              "cost": <sum(buy_amounts)>,  # Rebuild BuyDecision.cost と対応する
+                                           # フィールド名に合わせる（比較器は
+                                           # legacy側キー名でrebuildを引くため）
+            }
+            buy / buy_amounts が無い場合は None。
+
+        注記: 集計金額のフィールド名は Rebuild BuyDecision.cost に合わせて
+        "cost" とする（"total_cost" ではない）。comparator は legacy 側の
+        キー名で rebuild 側を参照するため、キー名を一致させないと常に差分
+        となるためである。値の意味は「全購入金額の合計」で同一。
+        """
+        buy = self.raw.get("buy")
+        amounts = self.raw.get("buy_amounts")
+        if not isinstance(buy, list) or not isinstance(amounts, list):
+            return None
+        return {
+            "purchased_combos": list(buy),
+            "purchased_amounts": list(amounts),
+            "n_bets": len(buy),
+            "cost": sum(amounts),
+        }
+
     # sent_*.txt に実在するfeat_*キー（実データ集計で確認済み・7種）。
     # ここに無いFeatureは「Legacy取得元なし」として比較対象外になる。
     FEATURE_KEYS: tuple[str, ...] = (

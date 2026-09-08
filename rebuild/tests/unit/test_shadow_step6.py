@@ -898,10 +898,23 @@ class TestBuildLegacyValues(unittest.TestCase):
         result = build_legacy_values(self.records, "20260704_01_01")
         self.assertEqual(result["race"], record.race_view())
 
-    def test_only_race_key_present(self) -> None:
-        """race 以外のキー（evaluation等）を生成しないこと。"""
+    def test_stage2_adds_evaluation_when_present(self) -> None:
+        """Stage 2: sent に upset_score / race_type がある場合、evaluation を
+        追加すること（従来は race のみだった。Step6-3 Stage 2で拡張）。
+
+        本サンプル(20260704_01_01)は upset_score/race_type を持つが
+        buy/buy_amounts を持たないため、キーは {race, evaluation} になる。
+        """
         result = build_legacy_values(self.records, "20260704_01_01")
-        self.assertEqual(set(result.keys()), {"race"})
+        self.assertEqual(set(result.keys()), {"race", "evaluation"})
+        self.assertEqual(result["evaluation"]["upset_score"], 41.0)
+        self.assertEqual(result["evaluation"]["race_type"], "堅い")
+
+    def test_stage2_no_buy_decision_when_no_buy_keys(self) -> None:
+        """Stage 2: buy/buy_amounts が無いレコードでは buy_decision を
+        生成しないこと（sample には buy が無い）。"""
+        result = build_legacy_values(self.records, "20260704_01_01")
+        self.assertNotIn("buy_decision", result)
 
     def test_race_view_contents_not_modified(self) -> None:
         """race_view() の各値がそのまま格納されること。"""

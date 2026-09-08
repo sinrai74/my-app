@@ -15,9 +15,22 @@ shadow/legacy_values_builder.py（Step6-3-21）: legacy_values の組み立て�
   - 比較処理（shadow/comparator.py の compare が行う）
   - Pipeline の実行
 
-比較対象（Step6-3-5-5 §4 で確定）:
-  - race のみ。evaluation / feature_set / prediction / buy_assessment /
-    render_results / notification_requests は生成しない。
+比較対象（Step6-3-5-5 §4 → Step6-3 Stage 2 で拡張）:
+  - Stage 2以前: race のみ。
+  - Stage 2以降: race に加えて evaluation（evaluation_view）と
+    buy_decision（purchase_view）を追加する。
+    * evaluation: sent_*.txt に存在する upset_score / race_type /
+      danger_score のみ（evaluation_view の戻り値をそのまま使う）。
+    * buy_decision: sent_*.txt の buy / buy_amounts から導く
+      purchased_combos / purchased_amounts / n_bets / total_cost
+      （purchase_view の戻り値をそのまま使う。順序保持・再計算なし）。
+    * feature_set / prediction / buy_assessment / render_results /
+      notification_requests は依然として生成しない。
+      - prediction: LegacyラップのためShadow独立検証にならず対象外。
+      - buy_assessment(G3-A): sent_*.txt に buyscore 等が0件のため
+        Legacy比較材料が存在せず対象外（Rebuild単体テストで担保）。
+  - evaluation_view / purchase_view が空（該当キーなし）の場合は、
+    そのstageを legacy_values へ入れない（比較側で「取得元なし」扱い）。
 
 eval_id 不在時（Step6-3-18 §1.3 で確定）:
   - None を返す。legacy_source.get_legacy_record の戻り値型
@@ -44,8 +57,18 @@ def build_legacy_values(
         eval_id: 対象レースの識別子（runner.py と同一形式）。
 
     Returns:
-        {"race": <record.race_view() の戻り値>}。
+        {"race": <record.race_view()>,
+         ["evaluation": <record.evaluation_view()>,]  # 非空のときのみ
+         ["buy_decision": <record.purchase_view()>]}  # 取得できたときのみ
         eval_id が records に存在しない場合は None。
+
+    設計（Step6-3 Stage 2）:
+      - race は従来通り常に含める。
+      - evaluation は evaluation_view() が非空の場合のみ含める
+        （sent に upset_score 等が無い古い行では含めない）。
+      - buy_decision は purchase_view() が None でない場合のみ含める
+        （buy / buy_amounts を持つ行のみ。無い行では含めない）。
+      - いずれも record のビューをそのまま使う。値の加工・補完はしない。
     """
     record = records.get(eval_id)
     if record is None:
@@ -54,4 +77,14 @@ def build_legacy_values(
             eval_id,
         )
         return None
-    return {"race": record.race_view()}
+    values: dict[str, dict] = {"race": record.race_view()}
+
+    evaluation_view = record.evaluation_view()
+    if evaluation_view:
+        values["evaluation"] = evaluation_view
+
+    purchase_view = record.purchase_view()
+    if purchase_view is not None:
+        values["buy_decision"] = purchase_view
+
+    return values
