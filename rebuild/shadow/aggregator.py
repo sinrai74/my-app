@@ -39,19 +39,52 @@ log = logging.getLogger(__name__)
 # （「どの段で止まったか」は ShadowRunResult からは判定できない）。
 DIFF_SENTINEL = "diff"
 
+# Go/No-Go の 100連続一致（streak）の必須判定対象から外す段。
+# 方針（承認済み）: evaluation段（upset_score / race_type）はShadowで
+# 観測・比較・diff記録は継続するが、Go/No-Goのstreakの必須一致条件には
+# 含めない。理由:
+#   - Shadow比較のLegacy側はA=sent保存値（過去実行時）、Rebuild側は
+#     C=現在再計算値であり、A≠CだけではLegacy実装差か入力時点差かを
+#     切り分けられない（B=現在Legacy再計算値は取得しておらず、取得を
+#     要求する正式設計もない）。
+#   - Step6-3-5-5の「evaluation対象外」判断とも整合する。
+# 本除外は「streak判定用」に限る。races[].diffs（diff_report）には
+# evaluation差も従来どおり全件記録され、観測は失われない。
+STREAK_EXCLUDED_STAGES: frozenset[str] = frozenset({"evaluation"})
+
+
+def _is_streak_excluded(diff: Any) -> bool:
+    """diff が streak 判定対象外の段（evaluation）に属するか。
+
+    field_path は "$.<stage>.<field>..." 形式（runner.py の compare 呼び出しで
+    path=f"$.{name}" を与えている）。先頭の段名で判定する。
+    """
+    fp = diff.get("field_path", "") if isinstance(diff, dict) else ""
+    # "$.evaluation.upset_score" -> ["$", "evaluation", ...]
+    parts = fp.split(".")
+    stage = parts[1] if len(parts) >= 2 else ""
+    return stage in STREAK_EXCLUDED_STAGES
+
 
 def to_staged_result(run_result: Any) -> StagedResult:
     """ShadowRunResult を StagedResult へ変換する（D-2）。
 
     ShadowRunResult は段別の一致・スキップ情報を持たないため、
     matched_stages / skipped_stages は空のまま返す（仮値で埋めない）。
-    一致判定は diffs の有無のみで行う（D-3）。
+
+    一致判定（streak用）は diffs の有無で行う（D-3）が、
+    STREAK_EXCLUDED_STAGES（evaluation段）の diff は streak 判定から
+    除外する（観測用の diffs 自体には全件残す）。すなわち:
+      - StagedResult.diffs        : 全 diff（evaluation含む・観測/記録用）
+      - stopped_at / all_matched  : evaluation を除いた diff の有無で決定
+    これにより evaluation差だけを理由に streak がリセットされない。
     """
     diffs = list(run_result.diffs)
+    streak_diffs = [d for d in diffs if not _is_streak_excluded(d)]
     return StagedResult(
         eval_id=run_result.eval_id,
         matched_stages=[],
-        stopped_at=None if not diffs else DIFF_SENTINEL,
+        stopped_at=None if not streak_diffs else DIFF_SENTINEL,
         diffs=diffs,
         skipped_stages={},
     )
