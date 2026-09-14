@@ -262,3 +262,89 @@ class TestProductionEntry(unittest.TestCase):
         from pipelines.notification_pipeline import NotificationPipeline
         self.assertIsInstance(bundle.output_pipeline, OutputPipeline)
         self.assertIsInstance(bundle.notification_pipeline, NotificationPipeline)
+
+
+# ---------- Local persistence store + durable_store injection ----------
+
+class TestLocalPersistence(unittest.TestCase):
+    def test_build_local_evaluation_store_persists_to_file(self):
+        import tempfile, os, json
+        from actions.production_entrypoint import build_local_evaluation_store
+        from models.evaluation import FeatureSet, RaceEvaluation
+        tmp = tempfile.mkdtemp()
+        path = os.path.join(tmp, "eval.jsonl")
+        store = build_local_evaluation_store(path)
+        fs = FeatureSet(
+            eval_id="20260704_01_01", feature_schema_version=1, built_at="t",
+            boat_features={1: {}}, race_features={}, local_features=None,
+            missing_keys=(),
+        )
+        ev = RaceEvaluation(
+            eval_id="20260704_01_01", race_date="20260704", venue_num=1,
+            venue_name="桐生", race_number=1, is_night=False, engine_name="ver4",
+            engine_version="4.0", feature_schema_version=1, model_version="m",
+            evaluated_at="t", danger_score=1.0, danger_breakdown={}, upset_score=5.0,
+            upset_reasons=(), rank_index={}, featured_boats=None, win_probs=None,
+            race_type="", match_index=50.0, features=fs,
+        )
+        # no-op release/git -> ローカル追記のみ。ネットワーク・push なし。
+        store.append_durably(ev, "test commit")
+        self.assertTrue(os.path.exists(path))
+        lines = [l for l in open(path, encoding="utf-8") if l.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])["eval_id"], "20260704_01_01")
+
+
+class TestDurableStoreInjection(unittest.TestCase):
+    def test_run_production_race_persist_false_default(self):
+        # 既定 persist=False: durable_store未注入bundleでも例外にならない
+        from actions.production_entrypoint import run_production_race
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+        result = run_production_race(
+            "20260704", 12, 5, {"public": "/tmp/p.html"}, bundle=bundle
+        )
+        self.assertFalse(bundle.evaluation_pipeline.persist_seen)
+
+    def test_run_production_race_persist_true_when_requested(self):
+        from actions.production_entrypoint import run_production_race
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+        run_production_race(
+            "20260704", 12, 5, {"public": "/tmp/p.html"},
+            bundle=bundle, persist=True,
+        )
+        self.assertTrue(bundle.evaluation_pipeline.persist_seen)
+
+
+# ---------- Orchestration (multiple races) ----------
+
+class TestRunProductionDay(unittest.TestCase):
+    def test_processes_all_races_with_one_bundle(self):
+        from actions.production_entrypoint import run_production_day
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+        targets = [("20260704", 12, 5), ("20260704", 12, 6), ("20260704", 1, 1)]
+        results = run_production_day(
+            targets,
+            output_paths_for=lambda d, v, r: {"public": f"/tmp/{d}_{v}_{r}.html"},
+            bundle=bundle,
+        )
+        self.assertEqual(len(results), 3)
+        # evaluate_race は各レースにつき1回（Evaluate Once）→ 合計3回
+        self.assertEqual(bundle.evaluation_pipeline.calls, 3)
+
+    def test_each_race_produces_mail_request(self):
+        from actions.production_entrypoint import run_production_day
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+        targets = [("20260704", 12, 5), ("20260704", 12, 6)]
+        results = run_production_day(
+            targets,
+            output_paths_for=lambda d, v, r: {"public": f"/tmp/{d}_{v}_{r}.html"},
+            bundle=bundle,
+        )
+        for res in results:
+            reqs = res["requests"]
+            self.assertTrue(all(r.channel == "mail" for r in reqs))
+            self.assertTrue(all(not nr.sent for nr in res["notification_results"]))

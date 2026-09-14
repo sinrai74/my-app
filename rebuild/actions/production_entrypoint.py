@@ -23,7 +23,7 @@ Production driver（薄い結線のみ・新しい業務ロジックを作らな
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from actions.wiring import PipelineBundle
 from pipelines.notification_request_builder import build_mail_notification_request
@@ -95,36 +95,89 @@ def run_one_race(
     }
 
 
+def build_local_evaluation_store(jsonl_path: str = "evaluations/production.jsonl"):
+    """ローカルのみで完結する DurableEvaluationStore を構築する（送信・push なし）。
+
+    本番の DurableEvaluationStore は EvaluationRepository（ローカルJSONL）＋
+    ReleaseClient（GitHub Release）＋ GitClient（commit/push）を要するが、
+    ここでは Release/Git を no-op クライアントに差し替え、**ローカルファイルへの
+    追記だけ**を行う store を返す。ネットワーク・GitHub認証・実push は発生しない。
+
+    本番運用で GitHub Release / commit まで行いたい場合は、実行環境側で
+    実クライアントを注入した DurableEvaluationStore を build_production_bundle の
+    durable_store 引数へ渡すこと（本関数はローカル永続の最小構成）。
+    """
+    from pathlib import Path
+
+    from storage.durability import DurableEvaluationStore
+    from storage.repositories.evaluation_repository import EvaluationRepository
+
+    class _NoopReleaseClient:
+        def upload_asset(self, file_path, asset_name): pass
+        def download_asset(self, asset_name, dest_path): pass
+        def list_assets(self): return []
+        def delete_asset(self, asset_name): pass
+
+    class _NoopGitClient:
+        def commit_and_push(self, paths, message): pass
+
+    repository = EvaluationRepository(Path(jsonl_path))
+    return DurableEvaluationStore(
+        repository=repository, release=_NoopReleaseClient(), git=_NoopGitClient()
+    )
+
+
 def build_production_bundle(
-    eval_config: dict | None = None, buy_config: dict | None = None
+    eval_config: dict | None = None,
+    buy_config: dict | None = None,
+    durable_store=None,
 ) -> PipelineBundle:
     """本番用 PipelineBundle を構築する（Output=PublicHtmlRenderer, 通知=実MailNotifier）。
 
-    重い結線（Provider / Engine / Prediction / DurableStore / evaluation・buy
-    パイプライン）は既存の shadow_entrypoint.build_bundle をそのまま再利用する
-    （Legツールは import して呼ぶだけ・無改変。build_bundle を変更しない）。
-    build_bundle は Shadow用に NullNotifier / 空Renderer を組むため、本関数では
-    その evaluation_pipeline / buy_pipeline を流用しつつ、output_pipeline と
-    notification_pipeline のみ本番用（PublicHtmlRenderer / 実MailNotifier）へ
-    差し替えた PipelineBundle を新規に束ねて返す。
+    重い結線（Provider / Engine / Prediction / evaluation・buy パイプライン）は
+    既存の shadow_entrypoint.build_bundle をそのまま再利用する（Legツールは
+    import して呼ぶだけ・無改変。build_bundle を変更しない）。build_bundle は
+    Shadow用に NullNotifier / 空Renderer / durable_store=None を組むため、本関数
+    では、その evaluation_pipeline / buy_pipeline を流用しつつ、output_pipeline と
+    notification_pipeline のみ本番用へ差し替えた PipelineBundle を新規に束ねる。
 
-    PipelineBundle は frozen dataclass のため、evaluation/buy を流用し
-    output/notification を差し替えた新しい PipelineBundle を生成する。
-    既存 Pipeline クラスの責務は変更しない（コンストラクタへ渡すだけ）。
+    durable_store を渡した場合は、base.evaluation_pipeline と同一の内部部品
+    （race_source / feature_builder / engine / now_provider / config）を用いて
+    EvaluationPipeline を再構築し、durable_store を注入する（build_bundle は
+    durable_store=None のため、persist=True で保存するには本経路が必要）。
+    build_bundle の重い結線を複製せず、その公開済みパイプラインの部品を再利用
+    するだけ（新しい業務ロジックは作らない）。
 
     注意: 本関数は「組み立て」のみ。実送信・USE_REBUILD_PIPELINE=True への切替は
     行わない（Step5-0によりGO判定後にのみ許可）。
     """
     from actions.shadow_entrypoint import build_bundle
+    from pipelines.evaluation_pipeline import EvaluationPipeline
     from pipelines.notification_pipeline import NotificationPipeline
     from pipelines.output_pipeline import OutputPipeline
 
     # 1. 既存 build_bundle で重い結線を正しく構築（無改変・そのまま呼ぶ）
     base = build_bundle(eval_config=eval_config, buy_config=buy_config)
 
-    # 2. evaluation / buy はそのまま流用。output / notification のみ本番用へ差し替え。
+    # 2. durable_store 指定時は、base の EvaluationPipeline と同一部品で
+    #    durable_store を注入した EvaluationPipeline を再構築する。
+    #    未指定時は base の evaluation_pipeline をそのまま流用（persist=False運用）。
+    if durable_store is not None:
+        base_eval = base.evaluation_pipeline
+        evaluation_pipeline = EvaluationPipeline(
+            race_source=base_eval._race_source,
+            feature_builder=base_eval._feature_builder,
+            engine=base_eval._engine,
+            now_provider=base_eval._now_provider,
+            config=base_eval._config,
+            durable_store=durable_store,
+        )
+    else:
+        evaluation_pipeline = base.evaluation_pipeline
+
+    # 3. output / notification のみ本番用へ差し替え。
     return PipelineBundle(
-        evaluation_pipeline=base.evaluation_pipeline,
+        evaluation_pipeline=evaluation_pipeline,
         buy_pipeline=base.buy_pipeline,
         output_pipeline=OutputPipeline(production_output_renderers()),
         notification_pipeline=NotificationPipeline(
@@ -140,11 +193,15 @@ def run_production_race(
     output_paths: Mapping[str, str],
     *,
     bundle: PipelineBundle | None = None,
-    persist: bool = True,
+    persist: bool = False,
 ) -> dict[str, Any]:
     """本番起動入口: bundleを構築（または注入）して1レースを処理する。
 
     bundle 未指定時は build_production_bundle() で本番bundleを構築する。
+    persist は既定 False（durable_store を注入していない bundle で
+    persist=True にすると EvaluationPipeline が ValueError を送出するため）。
+    ローカル永続を行う場合は build_production_bundle(durable_store=
+    build_local_evaluation_store()) で bundle を構築し persist=True を渡すこと。
     テストでは Fake bundle を注入して実送信なしで検証する。
     実送信・USE_REBUILD_PIPELINE=True への切替はしない（GO後限定）。
     """
@@ -152,6 +209,36 @@ def run_production_race(
     return run_one_race(
         active, race_date, venue_num, race_number, output_paths, persist=persist
     )
+
+
+def run_production_day(
+    target_races: "list[tuple[str, int, int]]",
+    output_paths_for: "Callable[[str, int, int], Mapping[str, str]]",
+    *,
+    bundle: PipelineBundle | None = None,
+    persist: bool = False,
+) -> "list[dict[str, Any]]":
+    """複数レースを本番経路で順に処理する（orchestration・結線のみ）。
+
+    target_races: (race_date, venue_num, race_number) のリスト。
+      shadow_entrypoint.parse_target_races で環境変数から解析した形式と同一。
+    output_paths_for: レースごとの出力パス dict を返す関数。
+
+    bundle を1つ構築して全レースで使い回す（評価・購入・出力・通知は各レース
+    ごとに実行）。Evaluate Once は run_one_race 内で1レース1回保証される。
+    実送信・切替はしない（run_production_race と同じ制約）。
+    各レースの結果 dict をリストで返す（監査・テスト用）。
+    """
+    active = bundle if bundle is not None else build_production_bundle()
+    results: list[dict[str, Any]] = []
+    for race_date, venue_num, race_number in target_races:
+        paths = output_paths_for(race_date, venue_num, race_number)
+        results.append(
+            run_one_race(
+                active, race_date, venue_num, race_number, paths, persist=persist
+            )
+        )
+    return results
 
 
 def production_output_renderers() -> dict:
