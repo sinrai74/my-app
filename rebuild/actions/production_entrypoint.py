@@ -127,6 +127,55 @@ def build_local_evaluation_store(jsonl_path: str = "evaluations/production.jsonl
     )
 
 
+def build_github_evaluation_store(
+    jsonl_path: str = "evaluations/production.jsonl",
+    *,
+    repo_dir: str = ".",
+    tag: str = "data-store",
+    env: "Mapping[str, str] | None" = None,
+):
+    """本番用 DurableEvaluationStore を既存部品の結線だけで構成する。
+
+    既存部品をそのまま接続する（新しいPersistence設計は作らない）:
+      - EvaluationRepository（ローカルJSONL）
+      - GithubReleaseClient（owner/repo/tag/token）
+      - SubprocessGitClient（repo_dir）
+      - DurableEvaluationStore（上記3つを束ねる）
+
+    Credentials（token・repo）はハードコードせず、環境変数から取得する
+    （既存workflow notify_arashi.yml と同じ GITHUB_TOKEN / GITHUB_REPOSITORY
+    を利用）。env 引数は主にテスト用（未指定時は os.environ）。
+    GITHUB_REPOSITORY は "owner/repo" 形式（GitHub Actions標準）を分解する。
+
+    本関数は「構成」のみ。GitHub Releasesへの実push・実アップロードは
+    append_durably 呼び出し時に初めて発生し、本関数自体はネットワークに触れない。
+    必要な認証が env に無い場合は ValueError（穴埋め・仮値は使わない）。
+    """
+    import os
+    from pathlib import Path
+
+    from storage.clients.git_client import SubprocessGitClient
+    from storage.clients.github_release_client import GithubReleaseClient
+    from storage.durability import DurableEvaluationStore
+    from storage.repositories.evaluation_repository import EvaluationRepository
+
+    source = env if env is not None else os.environ
+    token = source.get("GITHUB_TOKEN", "")
+    repository = source.get("GITHUB_REPOSITORY", "")  # "owner/repo"
+    if not token or "/" not in repository:
+        raise ValueError(
+            "build_github_evaluation_store requires GITHUB_TOKEN and "
+            "GITHUB_REPOSITORY (owner/repo) in the environment; "
+            "credentials are never hardcoded"
+        )
+    owner, repo = repository.split("/", 1)
+
+    release = GithubReleaseClient(owner=owner, repo=repo, tag=tag, token=token)
+    git = SubprocessGitClient(repo_dir=Path(repo_dir))
+    repo_store = EvaluationRepository(Path(jsonl_path))
+    return DurableEvaluationStore(repository=repo_store, release=release, git=git)
+
+
 def build_production_bundle(
     eval_config: dict | None = None,
     buy_config: dict | None = None,

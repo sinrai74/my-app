@@ -348,3 +348,57 @@ class TestRunProductionDay(unittest.TestCase):
             reqs = res["requests"]
             self.assertTrue(all(r.channel == "mail" for r in reqs))
             self.assertTrue(all(not nr.sent for nr in res["notification_results"]))
+
+
+# ---------- GitHub Releases DurableStore 結線（実push なし） ----------
+
+class TestGithubEvaluationStoreWiring(unittest.TestCase):
+    def test_builds_durable_store_from_existing_parts(self):
+        from actions.production_entrypoint import build_github_evaluation_store
+        from storage.durability import DurableEvaluationStore
+        store = build_github_evaluation_store(
+            "evaluations/prod.jsonl", repo_dir=".", tag="data-store",
+            env={"GITHUB_TOKEN": "x-token", "GITHUB_REPOSITORY": "sinrai74/my-app"},
+        )
+        # 既存部品が正しく束ねられた DurableEvaluationStore が返る
+        self.assertIsInstance(store, DurableEvaluationStore)
+        # 構成のみ。ネットワーク・実push は発生していない（append未呼び出し）
+        from storage.clients.github_release_client import GithubReleaseClient
+        from storage.clients.git_client import SubprocessGitClient
+        self.assertIsInstance(store._release, GithubReleaseClient)
+        self.assertIsInstance(store._git, SubprocessGitClient)
+
+    def test_owner_repo_parsed_from_env(self):
+        from actions.production_entrypoint import build_github_evaluation_store
+        store = build_github_evaluation_store(
+            env={"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "sinrai74/my-app"},
+        )
+        self.assertEqual(store._release._owner, "sinrai74")
+        self.assertEqual(store._release._repo, "my-app")
+
+    def test_raises_without_token(self):
+        from actions.production_entrypoint import build_github_evaluation_store
+        with self.assertRaises(ValueError):
+            build_github_evaluation_store(
+                env={"GITHUB_TOKEN": "", "GITHUB_REPOSITORY": "o/r"})
+
+    def test_raises_without_valid_repository(self):
+        from actions.production_entrypoint import build_github_evaluation_store
+        with self.assertRaises(ValueError):
+            build_github_evaluation_store(
+                env={"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "no-slash"})
+
+    def test_no_hardcoded_credentials(self):
+        # ソースに token/secret がハードコードされていないこと（env経由のみ）
+        import inspect
+        from actions import production_entrypoint
+        src = inspect.getsource(production_entrypoint.build_github_evaluation_store)
+        self.assertIn("GITHUB_TOKEN", src)
+        self.assertNotIn("ghp_", src)  # 実トークンの痕跡がない
+
+    def test_injectable_into_production_bundle_signature(self):
+        # build_production_bundle が durable_store を受け取れる（注入口の存在）
+        import inspect
+        from actions.production_entrypoint import build_production_bundle
+        params = inspect.signature(build_production_bundle).parameters
+        self.assertIn("durable_store", params)
