@@ -58,10 +58,23 @@ class TestNotificationRequestBuilder(unittest.TestCase):
 
 # ---------- Evaluate Once (driver) ----------
 
-@dataclass
-class _EvalRec:
-    eval_id: str = "20260704_12_05"
-    race_date: str = "20260704"
+from models.evaluation import BuyDecision as _BuyDecision
+from models.evaluation import Prediction as _Prediction
+from models.evaluation import RaceEvaluation as _RaceEvaluation
+
+
+def _EvalRec(eval_id="20260704_12_05", race_date="20260704"):
+    """テスト用の実 RaceEvaluation（per-race本文生成に必要なフィールドを持つ）。"""
+    p = eval_id.split("_")
+    return _RaceEvaluation(
+        eval_id=eval_id, race_date=race_date, venue_num=int(p[1]),
+        venue_name="桐生", race_number=int(p[2]), is_night=False,
+        engine_name="ver4", engine_version="4.0", feature_schema_version=1,
+        model_version="m", evaluated_at="t", danger_score=3.5,
+        danger_breakdown={}, upset_score=9.5, upset_reasons=(), rank_index={},
+        featured_boats=None, win_probs=None, race_type="1残り荒れ型",
+        match_index=50.0, features=None,
+    )
 
 
 class _FakeEvalPipeline:
@@ -76,13 +89,39 @@ class _FakeEvalPipeline:
         return self._ev
 
 
+def _mk_decision(ev, purchased=True):
+    return _BuyDecision(
+        eval_id=ev.eval_id, purchased=purchased, buyscore=72.0,
+        investment_type="通常" if purchased else "見送り", n_bets=1 if purchased else 0,
+        cost=200 if purchased else 0, kelly_fraction=0.05, config_version="v",
+        skip_reason=None if purchased else "BuyScore不足",
+        purchased_combos=("6-1-3",) if purchased else (),
+    )
+
+
+def _mk_prediction(ev):
+    return _Prediction(
+        eval_id=ev.eval_id, pred_combo="6-1-3", pred_prob=0.046, pred_ev=3.03,
+        pred_odds=66.0, confidence=0.80, why_bet="理由", patterns=(),
+    )
+
+
 class _FakeBuyPipeline:
-    def __init__(self):
+    def __init__(self, purchased=True):
         self.seen_eval = None
+        self._purchased = purchased
+
+    def assess_decide_predict(self, evaluation):
+        self.seen_eval = evaluation
+        return (
+            SimpleNamespace(kind="assessment"),
+            _mk_decision(evaluation, self._purchased),
+            _mk_prediction(evaluation),
+        )
 
     def assess_and_decide(self, evaluation):
-        self.seen_eval = evaluation
-        return SimpleNamespace(kind="assessment"), SimpleNamespace(kind="decision")
+        a, d, _ = self.assess_decide_predict(evaluation)
+        return a, d
 
     def assess_race(self, evaluation):
         self.seen_eval = evaluation
@@ -111,10 +150,10 @@ class _FakeNotifPipeline:
         return [NotificationResult(r.channel, sent=False) for r in requests]
 
 
-def _fake_bundle(ev):
+def _fake_bundle(ev, purchased=True):
     return SimpleNamespace(
         evaluation_pipeline=_FakeEvalPipeline(ev),
-        buy_pipeline=_FakeBuyPipeline(),
+        buy_pipeline=_FakeBuyPipeline(purchased=purchased),
         output_pipeline=_FakeOutputPipeline(),
         notification_pipeline=_FakeNotifPipeline(),
     )
@@ -146,15 +185,17 @@ class TestEvaluateOnce(unittest.TestCase):
         run_one_race(bundle, "20260704", 12, 5, {"public": "/tmp/p.html"})
         self.assertTrue(bundle.evaluation_pipeline.persist_seen)
 
-    def test_notification_requests_are_mail_fixed_title(self):
+    def test_notification_requests_are_per_race_subject(self):
+        # per-race通知: 件名はレース識別を含む（固定titleではない）
         ev = _EvalRec()
         bundle = _fake_bundle(ev)
         result = run_one_race(bundle, "20260704", 12, 5, {"public": "/tmp/p.html"})
         reqs = bundle.notification_pipeline.sent_requests
         self.assertEqual(len(reqs), 1)
         self.assertEqual(reqs[0].channel, "mail")
-        self.assertEqual(reqs[0].title, PRODUCTION_MAIL_TITLE)
+        self.assertEqual(reqs[0].title, "【競艇AI】桐生 5R 予想")
         self.assertIsNone(reqs[0].destination)
+        self.assertIsNotNone(reqs[0].body)  # per-race本文が入っている
 
     def test_no_real_send(self):
         ev = _EvalRec()
@@ -163,17 +204,35 @@ class TestEvaluateOnce(unittest.TestCase):
         # すべて sent=False（実送信していない）
         self.assertTrue(all(not r.sent for r in result["notification_results"]))
 
+    def test_skip_when_not_purchased_no_request(self):
+        # purchased=False（見送り）はNotificationRequestを生成しない
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev, purchased=False)
+        result = run_one_race(bundle, "20260704", 12, 5, {"public": "/tmp/p.html"})
+        self.assertEqual(bundle.notification_pipeline.sent_requests, [])
+        self.assertEqual(result["requests"], [])
+
+    def test_request_when_purchased(self):
+        # purchased=True は per-race request を生成する
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev, purchased=True)
+        result = run_one_race(bundle, "20260704", 12, 5, {"public": "/tmp/p.html"})
+        self.assertEqual(len(result["requests"]), 1)
+        self.assertTrue(result["buy_decision"].purchased)
+
     def test_fallback_to_assess_race_when_no_decide(self):
-        # assess_and_decide が ValueError の構成でも assess_race で継続
+        # assess_decide_predict が ValueError の構成でも assess_race で継続
         ev = _EvalRec()
         bundle = _fake_bundle(ev)
 
         def _raise(evaluation):
             raise ValueError("no decision builder")
 
-        bundle.buy_pipeline.assess_and_decide = _raise
+        bundle.buy_pipeline.assess_decide_predict = _raise
         result = run_one_race(bundle, "20260704", 12, 5, {"public": "/tmp/p.html"})
         self.assertIsNone(result["buy_decision"])
+        # decision/prediction なし → requestは生成されない
+        self.assertEqual(result["requests"], [])
 
 
 # ---------- Production bundle wiring ----------

@@ -26,7 +26,11 @@ import logging
 from typing import Any, Callable, Mapping
 
 from actions.wiring import PipelineBundle
-from pipelines.notification_request_builder import build_mail_notification_request
+from notification.body_formatter import format_race_body, format_race_subject
+from pipelines.notification_request_builder import (
+    build_mail_notification_request,
+    build_per_race_mail_request,
+)
 
 log = logging.getLogger(__name__)
 
@@ -59,12 +63,13 @@ def run_one_race(
     log.info("Production evaluate done eval_id=%s", evaluation.eval_id)
 
     # 2. Buy: 同一 evaluation を渡す（再評価しない）
-    #    DI（purchase_result_source / decision_builder）が揃っていれば
-    #    assess_and_decide で BuyAssessment と BuyDecision を1回で得る。
-    #    未注入構成では assess_race のみ（BuyDecisionはNone）。
+    #    per-race通知本文（案C）は Prediction を要するため assess_decide_predict
+    #    で prediction も受け取る（_evaluate_bets呼び出しは1回のまま・Buyロジック
+    #    不変）。未注入構成では assess_race のみ（BuyDecision/predictionはNone）。
+    prediction = None
     try:
-        buy_assessment, buy_decision = (
-            bundle.buy_pipeline.assess_and_decide(evaluation)
+        buy_assessment, buy_decision, prediction = (
+            bundle.buy_pipeline.assess_decide_predict(evaluation)
         )
     except ValueError:
         buy_assessment = bundle.buy_pipeline.assess_race(evaluation)
@@ -75,11 +80,27 @@ def run_one_race(
         evaluation.race_date, dict(output_paths)
     )
 
-    # 4. RenderResult → NotificationRequest（mail・固定title・destination未設定）
-    requests = [
-        build_mail_notification_request(render_result)
-        for render_result in render_results.values()
-    ]
+    # 4. per-race NotificationRequest を組み立てる。
+    #    purchased=False（見送り）は通知しない（ユーザー確定）＝requestを作らない。
+    #    本文・件名は formatter が evaluation/prediction/decision の確定値を
+    #    整形して用意する（本層は評価・計算をしない）。
+    requests = []
+    if (buy_decision is not None and prediction is not None
+            and buy_decision.purchased):
+        render_result = next(iter(render_results.values())) if render_results else None
+        if render_result is not None:
+            body = format_race_body(evaluation, prediction, buy_decision)
+            subject = format_race_subject(evaluation)
+            requests.append(
+                build_per_race_mail_request(
+                    render_result,
+                    subject=subject,
+                    body=body,
+                    race_date=evaluation.race_date,
+                    venue_num=evaluation.venue_num,
+                    race_number=evaluation.race_number,
+                )
+            )
 
     # 5. Notification: 送信は Notifier の責務。driverは requests を渡すだけ。
     notification_results = bundle.notification_pipeline.send_all(requests)
@@ -89,6 +110,7 @@ def run_one_race(
         "evaluation": evaluation,
         "buy_assessment": buy_assessment,
         "buy_decision": buy_decision,
+        "prediction": prediction,
         "render_results": render_results,
         "requests": requests,
         "notification_results": notification_results,

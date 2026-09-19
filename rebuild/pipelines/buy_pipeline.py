@@ -160,13 +160,30 @@ class BuyPipeline:
         （資金管理ロジックの冪等性が保証されないため不可）。本メソッドは
         1回のpredict→assessから両方を導き、_evaluate_betsの単一呼び出しを
         保証する（K1維持）。
+
+        既存呼び出し元の (assessment, decision) 契約を維持するため、
+        prediction も必要な場合は assess_decide_predict() を用いる（本メソッドは
+        その薄いラッパー。ロジック不変・_evaluate_bets呼び出しは1回のまま）。
+        """
+        assessment, decision, _ = self.assess_decide_predict(evaluation)
+        return assessment, decision
+
+    def assess_decide_predict(
+        self, evaluation: RaceEvaluation
+    ) -> tuple[BuyAssessment, BuyDecision, Prediction]:
+        """assess_and_decide と同一処理で、Prediction も返す（戻り値追加のみ）。
+
+        per-race通知本文（Prediction依存）のために prediction を呼び出し元へ
+        渡す。_predict_and_assess は既に (prediction, assessment) を返しており、
+        本メソッドはその prediction を破棄せず返すだけ。**Buyロジック・
+        評価・買い判定・_evaluate_bets呼び出し回数（1回）は一切変更しない**。
         """
         if self._purchase_result_source is None or self._decision_builder is None:
             raise ValueError(
-                "assess_and_decide() requires both purchase_result_source and "
-                "decision_builder to be configured"
+                "assess_decide_predict() requires both purchase_result_source "
+                "and decision_builder to be configured"
             )
-        _, assessment = self._predict_and_assess(evaluation)
+        prediction, assessment = self._predict_and_assess(evaluation)
 
         purchase_result = self._purchase_result_source.last_purchase_result(
             evaluation.eval_id
@@ -174,7 +191,7 @@ class BuyPipeline:
         log.info("BuyPipeline decision_builder start eval_id=%s", evaluation.eval_id)
         decision = self._decision_builder.build(purchase_result, assessment)
         log.info("BuyPipeline decision ready eval_id=%s", evaluation.eval_id)
-        return assessment, decision
+        return assessment, decision, prediction
 
     def _predict_and_assess(
         self, evaluation: RaceEvaluation

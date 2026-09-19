@@ -50,3 +50,32 @@ def build_mail_notification_request(
         title=title,
         attachment_path=attachment_path,
     )
+
+
+def build_per_race_mail_request(
+    render_result: RenderResult,
+    *,
+    subject: str,
+    body: str,
+    race_date: str,
+    venue_num: int,
+    race_number: int,
+) -> NotificationRequest:
+    """per-race通知用の mail NotificationRequest を組み立てる（結線のみ）。
+
+    subject / body は呼び出し側（formatter）が用意した確定文字列を受け取る
+    だけ（本ビルダーは本文・件名を生成しない）。race識別子は message_key
+    生成用に NotificationRequest へ載せる。channel="mail"固定、destination=None
+    （send_email内部設定へ委譲）。
+    """
+    return NotificationRequest(
+        render_result=render_result,
+        channel=PRODUCTION_MAIL_CHANNEL,
+        destination=None,
+        title=subject,
+        attachment_path=None,
+        body=body,
+        race_date=race_date,
+        venue_num=venue_num,
+        race_number=race_number,
+    )

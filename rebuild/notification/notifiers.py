@@ -28,10 +28,15 @@ class NotificationRequest:
     - destination: 通知先（メールアドレス/チャンネル等。Noneは既存既定を使う）
     - title: タイトル（メール件名等。本文生成はしない・呼び出し側が用意）
     - attachment_path: 添付対象パス（Noneなら添付なし）
+    - body: メール本文テキスト（per-race通知用。呼び出し側のformatterが用意する。
+      Noneの場合は従来どおりrender_result.output_pathがbodyとして使われる）
+    - race_date / venue_num / race_number: レース識別子（message_key生成用。
+      per-race通知でservices層がmessage_keyを組み立てるために保持する）
     """
 
     __slots__ = ("render_result", "channel", "destination", "title",
-                 "attachment_path")
+                 "attachment_path", "body", "race_date", "venue_num",
+                 "race_number")
 
     def __init__(
         self,
@@ -40,12 +45,20 @@ class NotificationRequest:
         destination: Optional[str] = None,
         title: Optional[str] = None,
         attachment_path: Optional[str] = None,
+        body: Optional[str] = None,
+        race_date: Optional[str] = None,
+        venue_num: Optional[int] = None,
+        race_number: Optional[int] = None,
     ) -> None:
         self.render_result = render_result
         self.channel = channel
         self.destination = destination
         self.title = title
         self.attachment_path = attachment_path
+        self.body = body
+        self.race_date = race_date
+        self.venue_num = venue_num
+        self.race_number = race_number
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -55,6 +68,10 @@ class NotificationRequest:
             and self.destination == other.destination
             and self.title == other.title
             and self.attachment_path == other.attachment_path
+            and self.body == other.body
+            and self.race_date == other.race_date
+            and self.venue_num == other.venue_num
+            and self.race_number == other.race_number
         )
 
     def __repr__(self) -> str:
@@ -123,8 +140,10 @@ class MailNotifier:
         if sender is None:
             from notify_arashi import send_email as sender  # 遅延import・無改変
         subject = request.title or ""
-        # 本文は生成しない。成果物パスをそのまま渡す（既存関数の引数仕様に委ねる）
-        body = request.render_result.output_path
+        # 本文は生成しない。per-race通知では呼び出し側formatterが用意した
+        # request.body（plain text）を送る。bodyが無い場合は従来どおり
+        # 成果物パスを渡す（後方互換）。send_email自体は無改変。
+        body = request.body if request.body is not None else request.render_result.output_path
         ok = bool(sender(subject, body))
         return NotificationResult(self.channel, ok)
 
