@@ -288,28 +288,87 @@ def run_production_day(
     *,
     bundle: PipelineBundle | None = None,
     persist: bool = False,
-) -> "list[dict[str, Any]]":
-    """複数レースを本番経路で順に処理する（orchestration・結線のみ）。
+) -> "dict[str, Any]":
+    """複数レースを本番経路で順に処理する（orchestration＋ジョブレベル
+    フェイルセーフ）。
 
     target_races: (race_date, venue_num, race_number) のリスト。
       shadow_entrypoint.parse_target_races で環境変数から解析した形式と同一。
     output_paths_for: レースごとの出力パス dict を返す関数。
 
-    bundle を1つ構築して全レースで使い回す（評価・購入・出力・通知は各レース
-    ごとに実行）。Evaluate Once は run_one_race 内で1レース1回保証される。
+    ジョブレベルのフェイルセーフ（Phase0.5設計固定書 §590-593 確定仕様）:
+      - 1レースの処理失敗は記録してスキップし、ジョブ全体は続行する
+        （現行 `|| echo 続行` 方針の構造化）。
+      - 部分成功の定義: 成功率 80%以上 = partial(WARNING継続) /
+        80%未満 = failed(ERROR)。全レース失敗も failed。全レース成功は success。
+        判定結果は status（success/partial/failed）として返す。
+      - status は services/orchestration 層で判定する（SystemMetricsモデルは
+        判定ロジックを持たない・§19.3）。本関数がその判定を担う。
+
+    ※対象別のネットワークリトライ（GitHub/Gmail等・§585）は各クライアントの
+      RetryPolicyが担当する。本関数のフェイルセーフはレース単位のスキップ継続
+      とジョブ status 判定であり、_evaluate_bets等の再実行はしない。
+
     実送信・切替はしない（run_production_race と同じ制約）。
-    各レースの結果 dict をリストで返す（監査・テスト用）。
+
+    Returns:
+        {
+          "status": "success"|"partial"|"failed",
+          "total": <対象レース数>,
+          "success_count": <成功数>,
+          "failure_count": <失敗数>,
+          "success_rate": <0.0-1.0>,
+          "results": [<成功レースのrun_one_race結果dict>, ...],
+          "errors": [{"race": "date_venue_race", "error": "..."}, ...],
+        }
     """
     active = bundle if bundle is not None else build_production_bundle()
     results: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    total = len(target_races)
+
     for race_date, venue_num, race_number in target_races:
-        paths = output_paths_for(race_date, venue_num, race_number)
-        results.append(
-            run_one_race(
-                active, race_date, venue_num, race_number, paths, persist=persist
+        race_tag = f"{race_date}_{venue_num}_{race_number}"
+        try:
+            paths = output_paths_for(race_date, venue_num, race_number)
+            results.append(
+                run_one_race(
+                    active, race_date, venue_num, race_number, paths,
+                    persist=persist,
+                )
             )
-        )
-    return results
+        except Exception as exc:  # noqa: BLE001 レース単位で記録してスキップ・続行
+            log.warning(
+                "Production race failed (skipped, job continues) race=%s error=%s",
+                race_tag, exc,
+            )
+            errors.append({"race": race_tag, "error": f"{type(exc).__name__}: {exc}"})
+
+    success_count = len(results)
+    failure_count = len(errors)
+    success_rate = (success_count / total) if total > 0 else 0.0
+
+    # status 判定（§592）: 全成功=success / 80%以上=partial / 80%未満=failed
+    if failure_count == 0:
+        status = "success"
+    elif success_rate >= 0.8:
+        status = "partial"
+    else:
+        status = "failed"
+
+    log.info(
+        "Production day end total=%d success=%d failure=%d rate=%.3f status=%s",
+        total, success_count, failure_count, success_rate, status,
+    )
+    return {
+        "status": status,
+        "total": total,
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "success_rate": success_rate,
+        "results": results,
+        "errors": errors,
+    }
 
 
 def production_output_renderers() -> dict:

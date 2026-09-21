@@ -384,12 +384,16 @@ class TestRunProductionDay(unittest.TestCase):
         ev = _EvalRec()
         bundle = _fake_bundle(ev)
         targets = [("20260704", 12, 5), ("20260704", 12, 6), ("20260704", 1, 1)]
-        results = run_production_day(
+        result = run_production_day(
             targets,
             output_paths_for=lambda d, v, r: {"public": f"/tmp/{d}_{v}_{r}.html"},
             bundle=bundle,
         )
-        self.assertEqual(len(results), 3)
+        self.assertEqual(result["total"], 3)
+        self.assertEqual(result["success_count"], 3)
+        self.assertEqual(result["failure_count"], 0)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(result["results"]), 3)
         # evaluate_race は各レースにつき1回（Evaluate Once）→ 合計3回
         self.assertEqual(bundle.evaluation_pipeline.calls, 3)
 
@@ -398,15 +402,86 @@ class TestRunProductionDay(unittest.TestCase):
         ev = _EvalRec()
         bundle = _fake_bundle(ev)
         targets = [("20260704", 12, 5), ("20260704", 12, 6)]
-        results = run_production_day(
+        result = run_production_day(
             targets,
             output_paths_for=lambda d, v, r: {"public": f"/tmp/{d}_{v}_{r}.html"},
             bundle=bundle,
         )
-        for res in results:
+        for res in result["results"]:
             reqs = res["requests"]
             self.assertTrue(all(r.channel == "mail" for r in reqs))
             self.assertTrue(all(not nr.sent for nr in res["notification_results"]))
+
+
+class TestRunProductionDayFailsafe(unittest.TestCase):
+    """ジョブレベルのフェイルセーフ（§590-593）の検証。"""
+
+    def _bundle_that_fails_some(self, fail_on):
+        """特定レースで run_one_race が例外を投げる bundle を作る。"""
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+        orig_eval = bundle.evaluation_pipeline.evaluate_race
+
+        def _maybe_fail(race_date, venue_num, race_number, *, persist=False):
+            if (race_date, venue_num, race_number) in fail_on:
+                raise RuntimeError("simulated race failure")
+            return orig_eval(race_date, venue_num, race_number, persist=persist)
+
+        bundle.evaluation_pipeline.evaluate_race = _maybe_fail
+        return bundle
+
+    def test_one_failure_skipped_job_continues(self):
+        from actions.production_entrypoint import run_production_day
+        bundle = self._bundle_that_fails_some({("20260704", 12, 6)})
+        targets = [("20260704", 12, 5), ("20260704", 12, 6),
+                   ("20260704", 1, 1), ("20260704", 1, 2), ("20260704", 1, 3)]
+        result = run_production_day(
+            targets, lambda d, v, r: {"public": f"/tmp/{d}_{v}_{r}.html"},
+            bundle=bundle,
+        )
+        # 1件失敗・4件成功 → 成功率0.8 → partial（継続）
+        self.assertEqual(result["total"], 5)
+        self.assertEqual(result["success_count"], 4)
+        self.assertEqual(result["failure_count"], 1)
+        self.assertAlmostEqual(result["success_rate"], 0.8)
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["errors"][0]["race"], "20260704_12_6")
+
+    def test_below_80_percent_is_failed(self):
+        from actions.production_entrypoint import run_production_day
+        bundle = self._bundle_that_fails_some(
+            {("20260704", 12, 5), ("20260704", 12, 6)})
+        targets = [("20260704", 12, 5), ("20260704", 12, 6), ("20260704", 1, 1)]
+        result = run_production_day(
+            targets, lambda d, v, r: {"public": f"/tmp/{d}_{v}_{r}.html"},
+            bundle=bundle,
+        )
+        # 2件失敗・1件成功 → 成功率0.33 → failed
+        self.assertEqual(result["failure_count"], 2)
+        self.assertEqual(result["status"], "failed")
+
+    def test_all_success_is_success(self):
+        from actions.production_entrypoint import run_production_day
+        bundle = self._bundle_that_fails_some(set())
+        targets = [("20260704", 12, 5), ("20260704", 12, 6)]
+        result = run_production_day(
+            targets, lambda d, v, r: {"public": f"/tmp/{d}_{v}_{r}.html"},
+            bundle=bundle,
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["failure_count"], 0)
+
+    def test_all_fail_is_failed(self):
+        from actions.production_entrypoint import run_production_day
+        bundle = self._bundle_that_fails_some(
+            {("20260704", 12, 5), ("20260704", 12, 6)})
+        targets = [("20260704", 12, 5), ("20260704", 12, 6)]
+        result = run_production_day(
+            targets, lambda d, v, r: {"public": f"/tmp/{d}_{v}_{r}.html"},
+            bundle=bundle,
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["success_count"], 0)
 
 
 # ---------- GitHub Releases DurableStore 結線（実push なし） ----------
