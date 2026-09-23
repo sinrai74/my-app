@@ -588,6 +588,48 @@ class TestRunProductionDayIncomparable(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
 
 
+class TestRunProductionDayZeroRaces(unittest.TestCase):
+    """対象0件の扱い（ユーザー確定 S5.1 / Phase0.5 L636）。"""
+
+    def _run_empty(self):
+        from actions.production_entrypoint import run_production_day
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+        result = run_production_day(
+            [], lambda d, v, r: {"public": "/tmp/p.html"}, bundle=bundle,
+        )
+        return result, bundle
+
+    def test_zero_races_is_success_and_not_a_failure(self):
+        result, bundle = self._run_empty()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["failure_count"], 0)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["incomparable_count"], 0)
+        self.assertEqual(bundle.evaluation_pipeline.calls, 0)
+
+    def test_zero_races_logs_warning(self):
+        with self.assertLogs("actions.production_entrypoint", level="WARNING") as cm:
+            self._run_empty()
+        self.assertTrue(
+            any("no target races" in line for line in cm.output), cm.output
+        )
+
+    def test_non_empty_input_logs_no_zero_race_warning(self):
+        from actions.production_entrypoint import run_production_day
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+        with self.assertLogs("actions.production_entrypoint", level="INFO") as cm:
+            result = run_production_day(
+                [("20260704", 12, 5)], lambda d, v, r: {"public": "/tmp/p.html"},
+                bundle=bundle,
+            )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["success_count"], 1)
+        self.assertFalse(any("no target races" in line for line in cm.output))
+
+
 # ---------- GitHub Releases DurableStore 結線（実push なし） ----------
 
 class TestGithubEvaluationStoreWiring(unittest.TestCase):

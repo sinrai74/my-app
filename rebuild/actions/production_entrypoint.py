@@ -367,6 +367,9 @@ def run_production_day(
       - 部分成功の定義: 成功率 80%以上 = partial(WARNING継続) /
         80%未満 = failed(ERROR)。全レース失敗も failed。全レース成功は success。
         判定結果は status（success/partial/failed）として返す。
+      - 対象0件（target_races が空）は失敗ではなく WARNING ログのみを出し、
+        status=success のまま正常終了する（ユーザー確定 S5.1 / Phase0.5 L636）。
+        「2窓連続ERROR」は窓の定義が未確定のため実装しない。
       - Legacy `_evaluate_bets` が空listを返したレース（買い目候補なし＝Legacy
         戻り値の異常。見送りとは別事象）は incomparable として別枠に記録し、
         通常の失敗（errors/failure_count）には計上しない。Shadowの
@@ -399,6 +402,12 @@ def run_production_day(
     errors: list[dict[str, str]] = []
     incomparable: list[dict[str, str]] = []
     total = len(target_races)
+
+    if total == 0:
+        # 対象0件は異常終了ではなく WARNING（ユーザー確定 S5.1 / Phase0.5 L636
+        # 「レース0件はWARNING扱い」・L616 サイレント失敗の禁止）。
+        # 「開催日で0件が2窓連続したらERROR」は窓の定義が未確定のため未実装。
+        log.warning("Production day has no target races (0 races); job ends normally")
 
     for race_date, venue_num, race_number in target_races:
         race_tag = f"{race_date}_{venue_num}_{race_number}"
