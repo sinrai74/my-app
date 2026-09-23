@@ -6,7 +6,7 @@ import functools
 import os
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -55,7 +55,9 @@ class _PurchasingBuyPipeline:
 class _EntryRun:
     """1回の入口実行分の Fake 部品（Store は実ローカル DurableStore を包む）。"""
 
-    def __init__(self):
+    def __init__(self, counter=None, now=None):
+        self.counter = counter
+        self.now = now
         self.store_calls = []
         self.store = None
         self.engine = _CountingEngine()
@@ -68,6 +70,7 @@ class _EntryRun:
 
     def production_bundle_factory(self, *, durable_store):
         return SimpleNamespace(
+            race_source=_FakeRaceSource(),
             evaluation_pipeline=EvaluationPipeline(
                 race_source=_FakeRaceSource(),
                 feature_builder=_FakeFeatureBuilder(),
@@ -80,6 +83,12 @@ class _EntryRun:
         )
 
     def run(self, races):
+        from actions.notification_counter import DailyNotificationCounter
+
+        counter = self.counter or DailyNotificationCounter(
+            os.path.join(tempfile.mkdtemp(), "notification_counts")
+        )
+        now = self.now or datetime(2026, 7, 4, 12, 0, tzinfo=timezone(timedelta(hours=9)))
         return run_entry(
             races,
             env={},
@@ -88,6 +97,10 @@ class _EntryRun:
                 build_evaluation_only_bundle,
                 production_bundle_factory=self.production_bundle_factory,
             ),
+            counter_factory=lambda env=None: counter,
+            deadline_minutes_loader=lambda: 10,
+            daily_limit_loader=lambda: 10,
+            now_provider=lambda: now,
         )
 
 

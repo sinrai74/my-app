@@ -23,6 +23,7 @@ Production driver（薄い結線のみ・新しい業務ロジックを作らな
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 from actions.wiring import PipelineBundle
@@ -38,6 +39,32 @@ log = logging.getLogger(__name__)
 # Legacy _evaluate_bets が空listを返したときに PredictionProvider が送出する
 # ValueError のメッセージ先頭（Shadowと同じ識別方法。契約側は変更しない）。
 _INCOMPARABLE_ERROR_PREFIX = "_evaluate_bets returned an empty list"
+
+JST = timezone(timedelta(hours=9))
+# Race.close_time の実データ形式（実機確認値: "2026-09-22 15:24:00"）。
+# 他形式は受理しない（曖昧な解釈をしない）。
+CLOSE_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _now_jst() -> datetime:
+    return datetime.now(JST)
+
+
+def is_before_deadline(close_time: str, now: datetime, minutes_before: int) -> bool:
+    """S4.1: now <= close_time - minutes_before なら評価対象（True）。
+
+    close_time は CLOSE_TIME_FORMAT のJST時刻。空・不正形式は ValueError
+    （既定値で補完しない）。
+    """
+    if not close_time:
+        raise ValueError("close_time is empty (no default value is supplied)")
+    try:
+        closed = datetime.strptime(close_time, CLOSE_TIME_FORMAT)
+    except ValueError as exc:
+        raise ValueError(
+            f"close_time must be {CLOSE_TIME_FORMAT}: {close_time!r}"
+        ) from exc
+    return now <= closed.replace(tzinfo=JST) - timedelta(minutes=minutes_before)
 
 
 def _find_saved_evaluation(evaluation_repository, eval_id: str):
@@ -68,6 +95,7 @@ def run_one_race(
     *,
     persist: bool = True,
     evaluation_repository=None,
+    notification_budget: int | None = None,
 ) -> dict[str, Any]:
     """1レースを本番経路で処理する（結線のみ）。
 
@@ -81,6 +109,8 @@ def run_one_race(
       2. buy_assessment / buy_decision = buy_pipeline から同一 evaluation で取得
       3. render_results = output_pipeline.render_all(...)   （PublicHtmlRenderer等）
       4. requests = 各 render_result → build_mail_notification_request（mail・固定title）
+         notification_budget（S4.3の残り枠）が指定された場合は、その件数までに
+         絞る。0以下なら通知リクエストを作らない（ジョブは継続）。
       5. notification_pipeline.send_all(requests)
 
     evaluation_repository は bundle の durable_store が書き込む JSONL と同一パスを
@@ -149,6 +179,16 @@ def run_one_race(
                 )
             )
 
+    # 4b. S4.3 日次通知上限: 残り枠を超える分は作らない（ジョブは継続）。
+    if notification_budget is not None and len(requests) > max(notification_budget, 0):
+        log.warning(
+            "Daily notification limit reached; suppressing %d request(s) "
+            "eval_id=%s budget=%d",
+            len(requests) - max(notification_budget, 0),
+            evaluation.eval_id, notification_budget,
+        )
+        requests = requests[: max(notification_budget, 0)]
+
     # 5. Notification: 送信は Notifier の責務。driverは requests を渡すだけ。
     notification_results = bundle.notification_pipeline.send_all(requests)
 
@@ -209,6 +249,46 @@ def build_evaluation_repository(jsonl_path: str = "evaluations/production.jsonl"
     from storage.repositories.evaluation_repository import EvaluationRepository
 
     return EvaluationRepository(Path(jsonl_path))
+
+
+def build_github_notification_counter(
+    base_dir: str = "notification_counts",
+    *,
+    repo_dir: str = ".",
+    tag: str = "data-store-v2",
+    env: "Mapping[str, str] | None" = None,
+):
+    """S4.3 の日次通知件数カウンタを既存部品の結線だけで構成する。
+
+    評価JSONLと同じ既存クライアント（GithubReleaseClient / SubprocessGitClient）
+    を再利用するが、保存先ファイル・クラスは分離する
+    （EvaluationRepository / DurableEvaluationStore の責務は拡張しない）。
+    保存データは Phase0.5 ⑥ の表に無い新規データ（レビュー対象）。
+    認証は build_github_evaluation_store と同じ環境変数から取得する。
+    """
+    import os
+    from pathlib import Path
+
+    from actions.notification_counter import DailyNotificationCounter
+    from storage.clients.git_client import SubprocessGitClient
+    from storage.clients.github_release_client import GithubReleaseClient
+
+    source = env if env is not None else os.environ
+    token = source.get("GITHUB_TOKEN", "")
+    repository = source.get("GITHUB_REPOSITORY", "")
+    if not token or "/" not in repository:
+        raise ValueError(
+            "build_github_notification_counter requires GITHUB_TOKEN and "
+            "GITHUB_REPOSITORY (owner/repo) in the environment; "
+            "credentials are never hardcoded"
+        )
+    owner, repo = repository.split("/", 1)
+    return DailyNotificationCounter(
+        base_dir,
+        release=GithubReleaseClient(owner=owner, repo=repo, tag=tag, token=token),
+        git=SubprocessGitClient(repo_dir=Path(repo_dir)),
+        tag=tag,
+    )
 
 
 def build_github_evaluation_store(
@@ -310,6 +390,7 @@ def build_production_bundle(
 
     # 3. output / notification のみ本番用へ差し替え。
     return PipelineBundle(
+        race_source=base.race_source,
         evaluation_pipeline=evaluation_pipeline,
         buy_pipeline=base.buy_pipeline,
         output_pipeline=OutputPipeline(production_output_renderers()),
@@ -353,6 +434,10 @@ def run_production_day(
     bundle: PipelineBundle | None = None,
     persist: bool = False,
     evaluation_repository=None,
+    deadline_minutes: int | None = None,
+    now_provider: Callable[[], datetime] = _now_jst,
+    daily_notification_limit: int | None = None,
+    notification_counter=None,
 ) -> "dict[str, Any]":
     """複数レースを本番経路で順に処理する（orchestration＋ジョブレベル
     フェイルセーフ）。
@@ -367,6 +452,17 @@ def run_production_day(
       - 部分成功の定義: 成功率 80%以上 = partial(WARNING継続) /
         80%未満 = failed(ERROR)。全レース失敗も failed。全レース成功は success。
         判定結果は status（success/partial/failed）として返す。
+      - S4.1（締切）: deadline_minutes 指定時は、評価前に
+        `now <= close_time - deadline_minutes` を判定し、満たさないレースを
+        s4_excluded として記録して評価しない（RaceEvaluationを作らない）。
+        close_time は bundle.race_source.resolve_race から得る（評価時と同一の
+        race_source＝同一キャッシュ。別のHTTP経路は作らない）。
+      - S4.3（日次通知上限）: daily_notification_limit 指定時は
+        notification_counter（race_date単位の永続カウンタ）と併用し、残り枠まで
+        しか通知リクエストを作らない。ジョブは継続する。
+      - 有効対象数 = total - s4_excluded_count - incomparable_count。
+        全件S4除外(=S5.2)は success、全件incomparable は failed、
+        両者混在で有効対象0も failed。
       - 対象0件（target_races が空）は失敗ではなく WARNING ログのみを出し、
         status=success のまま正常終了する（ユーザー確定 S5.1 / Phase0.5 L636）。
         「2窓連続ERROR」は窓の定義が未確定のため実装しない。
@@ -392,16 +488,24 @@ def run_production_day(
           "failure_count": <失敗数>,
           "success_rate": <0.0-1.0>,  # success_count / (total - incomparable_count)
           "incomparable_count": <比較不能数>,
+          "s4_excluded_count": <S4除外数>,
           "results": [<成功レースのrun_one_race結果dict>, ...],
           "errors": [{"race": "date_venue_race", "error": "..."}, ...],
           "incomparable": [{"race": "date_venue_race", "reason": "..."}, ...],
+          "s4_excluded": [{"race": "date_venue_race", "reason": "..."}, ...],
         }
     """
     active = bundle if bundle is not None else build_production_bundle()
     results: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     incomparable: list[dict[str, str]] = []
+    s4_excluded: list[dict[str, str]] = []
     total = len(target_races)
+    if daily_notification_limit is not None and notification_counter is None:
+        raise ValueError(
+            "daily_notification_limit requires notification_counter "
+            "(counts must persist across runs; no default value is supplied)"
+        )
 
     if total == 0:
         # 対象0件は異常終了ではなく WARNING（ユーザー確定 S5.1 / Phase0.5 L636
@@ -412,14 +516,40 @@ def run_production_day(
     for race_date, venue_num, race_number in target_races:
         race_tag = f"{race_date}_{venue_num}_{race_number}"
         try:
-            paths = output_paths_for(race_date, venue_num, race_number)
-            results.append(
-                run_one_race(
-                    active, race_date, venue_num, race_number, paths,
-                    persist=persist,
-                    evaluation_repository=evaluation_repository,
+            if deadline_minutes is not None:
+                race = bundle.race_source.resolve_race(
+                    race_date, venue_num, race_number
                 )
+                if not is_before_deadline(
+                    race.close_time, now_provider(), deadline_minutes
+                ):
+                    reason = (
+                        f"deadline: close_time={race.close_time} "
+                        f"(cutoff {deadline_minutes} min before)"
+                    )
+                    log.warning(
+                        "Production race excluded by S4 deadline policy race=%s %s",
+                        race_tag, reason,
+                    )
+                    s4_excluded.append({"race": race_tag, "reason": reason})
+                    continue
+            notification_budget = None
+            if daily_notification_limit is not None:
+                notification_budget = max(
+                    daily_notification_limit
+                    - notification_counter.count(race_date),
+                    0,
+                )
+            paths = output_paths_for(race_date, venue_num, race_number)
+            race_result = run_one_race(
+                active, race_date, venue_num, race_number, paths,
+                persist=persist,
+                evaluation_repository=evaluation_repository,
+                notification_budget=notification_budget,
             )
+            if daily_notification_limit is not None:
+                notification_counter.add(race_date, len(race_result["requests"]))
+            results.append(race_result)
         except ValueError as exc:
             if not str(exc).startswith(_INCOMPARABLE_ERROR_PREFIX):
                 log.warning(
@@ -445,15 +575,20 @@ def run_production_day(
     success_count = len(results)
     failure_count = len(errors)
     incomparable_count = len(incomparable)
-    # 成功率の分母は incomparable を除外した対象数（ユーザー確定）
-    comparable_total = total - incomparable_count
+    s4_excluded_count = len(s4_excluded)
+    # 成功率の分母は incomparable と S4除外を除外した有効対象数（ユーザー確定）
+    comparable_total = total - incomparable_count - s4_excluded_count
     success_rate = (success_count / comparable_total) if comparable_total > 0 else 0.0
 
     # status 判定（§592）: 全成功=success / 80%以上=partial / 80%未満=failed
-    # 全件incomparable（分母0かつincomparableあり）は failed（ユーザー確定）。
+    # 有効対象0のとき（ユーザー確定）:
+    #   incomparable あり → failed（全件incomparable・S4除外との混在とも）
+    #   incomparable なし・S4除外のみ → success（S5.2 正常終了）
     # 対象0件（total=0）の扱いは従来どおり変更しない。
-    if incomparable_count > 0 and comparable_total <= 0:
+    if comparable_total <= 0 and incomparable_count > 0:
         status = "failed"
+    elif comparable_total <= 0 and s4_excluded_count > 0:
+        status = "success"
     elif failure_count == 0:
         status = "success"
     elif success_rate >= 0.8:
@@ -463,9 +598,9 @@ def run_production_day(
 
     log.info(
         "Production day end total=%d success=%d failure=%d incomparable=%d "
-        "rate=%.3f status=%s",
+        "s4_excluded=%d rate=%.3f status=%s",
         total, success_count, failure_count, incomparable_count,
-        success_rate, status,
+        s4_excluded_count, success_rate, status,
     )
     return {
         "status": status,
@@ -473,10 +608,12 @@ def run_production_day(
         "success_count": success_count,
         "failure_count": failure_count,
         "incomparable_count": incomparable_count,
+        "s4_excluded_count": s4_excluded_count,
         "success_rate": success_rate,
         "results": results,
         "errors": errors,
         "incomparable": incomparable,
+        "s4_excluded": s4_excluded,
     }
 
 

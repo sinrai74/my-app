@@ -298,6 +298,7 @@ class TestProductionEntry(unittest.TestCase):
         from actions.wiring import PipelineBundle
 
         base = SimpleNamespace(
+            race_source=SimpleNamespace(tag="race-source"),
             evaluation_pipeline=SimpleNamespace(tag="eval"),
             buy_pipeline=SimpleNamespace(tag="buy"),
             output_pipeline=SimpleNamespace(tag="shadow-output"),

@@ -235,8 +235,13 @@ class TestReuseRequiresPersist(unittest.TestCase):
 # ---------- 実 EvaluationPipeline の persist 経路を通す監査テスト ----------
 
 class _FakeRaceSource:
+    """本番仕様どおり close_time（実データ形式）を持つ Race を返す。"""
+
     def resolve_race(self, race_date, venue_num, race_number):
-        return SimpleNamespace(weather=None)
+        close_time = (
+            f"{race_date[:4]}-{race_date[4:6]}-{race_date[6:]} 15:24:00"
+        )
+        return SimpleNamespace(weather=None, close_time=close_time)
 
     def resolve_boats(self, race_date, venue_num, race_number):
         return []

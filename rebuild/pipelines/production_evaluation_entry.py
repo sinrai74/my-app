@@ -10,6 +10,8 @@ Durable保存を、実際の実行入口から利用可能にする。公開HTML
     （Phase0.5 §3.4/§④ の保存先。通常実行の正本＝checkout 済み JSONL・C-1）。
     書込は append_durably（A）。1回の実行＝1日（TARGET_RACES の日付混在は入力エラー）。
   - Releases tag: data-store-v2（Step3 S6。現行 data-store へは書き込まない）
+  - S4: config/pipeline.json「締切前分数」で評価前の締切判定、
+    config/delivery.json「1日投稿数上限」＋日次通知カウンタで通知前の上限
   - Output: 空 Renderer（出力先パスを新設しない）
   - Notification: NullNotifier のみ（実送信不能）
   - 実行: run_production_day(persist=True, evaluation_repository=...)
@@ -27,12 +29,18 @@ import os
 import sys
 from typing import Any, Callable, Mapping
 
+from actions.config_loader import (
+    load_daily_notification_limit,
+    load_deadline_minutes,
+)
 from actions.production_entrypoint import (
     build_evaluation_repository,
     build_github_evaluation_store,
+    build_github_notification_counter,
     build_production_bundle,
     run_production_day,
 )
+from actions.config_loader import ConfigError
 from actions.wiring import PipelineBundle
 
 log = logging.getLogger(__name__)
@@ -78,6 +86,7 @@ def build_evaluation_only_bundle(
 
     production = production_bundle_factory(durable_store=durable_store)
     return PipelineBundle(
+        race_source=production.race_source,
         evaluation_pipeline=production.evaluation_pipeline,
         buy_pipeline=production.buy_pipeline,
         output_pipeline=OutputPipeline({}),
@@ -100,18 +109,30 @@ def run_entry(
     repository_factory: Callable[..., Any] = build_evaluation_repository,
     bundle_factory: Callable[..., PipelineBundle] = build_evaluation_only_bundle,
     day_runner: Callable[..., dict] = run_production_day,
+    counter_factory: Callable[..., Any] = build_github_notification_counter,
+    deadline_minutes_loader: Callable[[], int] = load_deadline_minutes,
+    daily_limit_loader: Callable[[], int] = load_daily_notification_limit,
+    now_provider: Callable[[], Any] | None = None,
 ) -> dict:
     """対象日の同一JSONLで Store / Repository を組み、run_production_day を呼ぶ。"""
     jsonl_path = evaluations_path_for(single_race_date(target_races))
     store = store_factory(jsonl_path, tag=RELEASE_TAG, env=env)
     repository = repository_factory(jsonl_path)
     bundle = bundle_factory(store)
+    deadline_minutes = deadline_minutes_loader()
+    daily_limit = daily_limit_loader()
+    counter = counter_factory(env=env)
+    extra = {} if now_provider is None else {"now_provider": now_provider}
     return day_runner(
         target_races,
         _no_output_paths,
         bundle=bundle,
         persist=True,
         evaluation_repository=repository,
+        deadline_minutes=deadline_minutes,
+        daily_notification_limit=daily_limit,
+        notification_counter=counter,
+        **extra,
     )
 
 
@@ -143,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         report = run_entry(races)
-    except ValueError as exc:
+    except (ValueError, ConfigError) as exc:
         log.error("Production evaluation entry configuration error: %s", exc)
         return 1
     reused = sum(1 for r in report["results"] if r.get("evaluation_reused"))

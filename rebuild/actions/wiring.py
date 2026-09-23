@@ -25,8 +25,14 @@ from features.feature_builder import FeatureBuilder
 
 @dataclass(frozen=True)
 class PipelineBundle:
-    """組み立て済みPipeline一式（DIの結果を束ねるだけの入れ物）。"""
+    """組み立て済みPipeline一式（DIの結果を束ねるだけの入れ物）。
 
+    race_source は EvaluationPipeline が使うものと同一インスタンス。
+    本番のS4締切判定（評価前）が close_time を得るために保持するだけで、
+    判定・計算はここでは行わない（別経路のHTTP取得を作らないため）。
+    """
+
+    race_source: _RaceSource
     evaluation_pipeline: EvaluationPipeline
     buy_pipeline: BuyPipeline
     output_pipeline: OutputPipeline
@@ -76,6 +82,7 @@ def assemble_pipelines(
         notification_service or NotificationService({})
     )
     return PipelineBundle(
+        race_source=race_source,
         evaluation_pipeline=evaluation_pipeline,
         buy_pipeline=buy_pipeline,
         output_pipeline=output_pipeline,
