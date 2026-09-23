@@ -484,6 +484,110 @@ class TestRunProductionDayFailsafe(unittest.TestCase):
         self.assertEqual(result["success_count"], 0)
 
 
+class TestRunProductionDayIncomparable(unittest.TestCase):
+    """買い目候補なし（_evaluate_bets 空list）の扱い（ユーザー確定）。
+
+    通常の失敗ではなく incomparable として別枠に記録し、failure_count・
+    成功率の分母から除外する。ジョブは継続する。
+    """
+
+    _MSG = (
+        "_evaluate_bets returned an empty list; no bet candidate is "
+        "available for this race (no default value is supplied)"
+    )
+
+    def _bundle(self, incomparable_on=frozenset(), fail_on=frozenset()):
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+        orig_eval = bundle.evaluation_pipeline.evaluate_race
+
+        def _maybe(race_date, venue_num, race_number, *, persist=False):
+            key = (race_date, venue_num, race_number)
+            if key in incomparable_on:
+                raise ValueError(self._MSG)
+            if key in fail_on:
+                raise RuntimeError("simulated race failure")
+            return orig_eval(race_date, venue_num, race_number, persist=persist)
+
+        bundle.evaluation_pipeline.evaluate_race = _maybe
+        return bundle
+
+    def _run(self, targets, **kwargs):
+        from actions.production_entrypoint import run_production_day
+        return run_production_day(
+            targets, lambda d, v, r: {"public": f"/tmp/{d}_{v}_{r}.html"},
+            bundle=self._bundle(**kwargs),
+        )
+
+    def test_not_counted_as_failure_and_job_continues(self):
+        targets = [("20260704", 12, 5), ("20260704", 12, 6), ("20260704", 1, 1)]
+        result = self._run(targets, incomparable_on={("20260704", 12, 6)})
+        self.assertEqual(result["total"], 3)
+        self.assertEqual(result["failure_count"], 0)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["success_count"], 2)  # 後続レースも処理される
+
+    def test_recorded_in_separate_bucket(self):
+        result = self._run(
+            [("20260704", 12, 5), ("20260704", 12, 6)],
+            incomparable_on={("20260704", 12, 6)},
+        )
+        self.assertEqual(result["incomparable_count"], 1)
+        self.assertEqual(result["incomparable"][0]["race"], "20260704_12_6")
+        self.assertTrue(
+            result["incomparable"][0]["reason"].startswith(
+                "_evaluate_bets returned an empty list"
+            )
+        )
+
+    def test_excluded_from_success_rate_denominator(self):
+        # 3件中1件がincomparable → 分母2・成功2 → rate=1.0・success
+        result = self._run(
+            [("20260704", 12, 5), ("20260704", 12, 6), ("20260704", 1, 1)],
+            incomparable_on={("20260704", 12, 6)},
+        )
+        self.assertAlmostEqual(result["success_rate"], 1.0)
+        self.assertEqual(result["status"], "success")
+
+    def test_denominator_excludes_incomparable_with_failure(self):
+        # 4件中1件incomparable・1件失敗 → 分母3・成功2 → rate≈0.667 → failed
+        result = self._run(
+            [("20260704", 12, 5), ("20260704", 12, 6),
+             ("20260704", 1, 1), ("20260704", 1, 2)],
+            incomparable_on={("20260704", 12, 6)},
+            fail_on={("20260704", 1, 2)},
+        )
+        self.assertEqual(result["incomparable_count"], 1)
+        self.assertEqual(result["failure_count"], 1)
+        self.assertAlmostEqual(result["success_rate"], 2 / 3)
+        self.assertEqual(result["status"], "failed")
+
+    def test_all_incomparable_is_failed(self):
+        targets = [("20260704", 12, 5), ("20260704", 12, 6)]
+        result = self._run(targets, incomparable_on=set(targets))
+        self.assertEqual(result["incomparable_count"], 2)
+        self.assertEqual(result["failure_count"], 0)
+        self.assertEqual(result["success_count"], 0)
+        self.assertEqual(result["status"], "failed")
+
+    def test_other_value_error_is_still_a_failure(self):
+        from actions.production_entrypoint import run_production_day
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+
+        def _raise(race_date, venue_num, race_number, *, persist=False):
+            raise ValueError("some other value error")
+
+        bundle.evaluation_pipeline.evaluate_race = _raise
+        result = run_production_day(
+            [("20260704", 12, 5)], lambda d, v, r: {"public": "/tmp/p.html"},
+            bundle=bundle,
+        )
+        self.assertEqual(result["failure_count"], 1)
+        self.assertEqual(result["incomparable_count"], 0)
+        self.assertEqual(result["status"], "failed")
+
+
 # ---------- GitHub Releases DurableStore 結線（実push なし） ----------
 
 class TestGithubEvaluationStoreWiring(unittest.TestCase):

@@ -31,8 +31,32 @@ from pipelines.notification_request_builder import (
     build_mail_notification_request,
     build_per_race_mail_request,
 )
+from storage.exceptions import StorageError
 
 log = logging.getLogger(__name__)
+
+# Legacy _evaluate_bets が空listを返したときに PredictionProvider が送出する
+# ValueError のメッセージ先頭（Shadowと同じ識別方法。契約側は変更しない）。
+_INCOMPARABLE_ERROR_PREFIX = "_evaluate_bets returned an empty list"
+
+
+def _find_saved_evaluation(evaluation_repository, eval_id: str):
+    """保存済み RaceEvaluation を eval_id で1件だけ取得する（無ければ None）。
+
+    既存 EvaluationRepository.load_all() を読むだけ（Repositoryは無改変）。
+    - JSONL破損は load_all の ParseError をそのまま送出する（未評価とみなさない）。
+    - 同一 eval_id の重複レコードは正常状態ではないため、どれかを選択・修復せず
+      StorageError とする（find_by_eval_id の先頭採用は使わない）。
+    """
+    matches = [
+        ev for ev in evaluation_repository.load_all() if ev.eval_id == eval_id
+    ]
+    if len(matches) > 1:
+        raise StorageError(
+            f"duplicate eval_id records in evaluations store: {eval_id} "
+            f"(count={len(matches)}); not selecting or repairing"
+        )
+    return matches[0] if matches else None
 
 
 def run_one_race(
@@ -43,24 +67,47 @@ def run_one_race(
     output_paths: Mapping[str, str],
     *,
     persist: bool = True,
+    evaluation_repository=None,
 ) -> dict[str, Any]:
     """1レースを本番経路で処理する（結線のみ）。
 
     順序（Evaluate Once）:
-      1. evaluation = evaluation_pipeline.evaluate_race(..., persist=persist)
-         ※ RaceEvaluation はここで1回だけ生成・保存される
+      1. evaluation を1回だけ得る:
+         - evaluation_repository 注入時: eval_id で保存済み評価を確認し、
+           あれば再利用（evaluate_race を呼ばない）。無ければ
+           evaluation_pipeline.evaluate_race(..., persist=True) で評価し、
+           評価直後に durable_store.append_durably で保存する。
+         - 未注入時: 従来どおり evaluate_race(..., persist=persist)。
       2. buy_assessment / buy_decision = buy_pipeline から同一 evaluation で取得
       3. render_results = output_pipeline.render_all(...)   （PublicHtmlRenderer等）
       4. requests = 各 render_result → build_mail_notification_request（mail・固定title）
       5. notification_pipeline.send_all(requests)
 
+    evaluation_repository は bundle の durable_store が書き込む JSONL と同一パスを
+    読むこと（通常実行の正本＝checkout された evaluations JSONL）。
     戻り値は各段の結果（テスト・監査用）。値の加工・再評価はしない。
     """
-    # 1. RaceEvaluation を1回だけ生成（persist=True で DurableStore へ保存）
-    evaluation = bundle.evaluation_pipeline.evaluate_race(
-        race_date, venue_num, race_number, persist=persist
+    # 1. RaceEvaluation を1回だけ得る（再利用 or 初回評価＋評価直後保存）
+    evaluation = None
+    reused = False
+    if evaluation_repository is not None:
+        if not persist:
+            raise ValueError(
+                "evaluation_repository requires persist=True "
+                "(unevaluated races must be saved immediately after evaluation)"
+            )
+        # eval_id 採番規則（Phase0.5 L156 / evaluation_pipeline と同一）
+        eval_id = f"{race_date}_{venue_num:02d}_{race_number:02d}"
+        evaluation = _find_saved_evaluation(evaluation_repository, eval_id)
+        reused = evaluation is not None
+    if evaluation is None:
+        evaluation = bundle.evaluation_pipeline.evaluate_race(
+            race_date, venue_num, race_number, persist=persist
+        )
+    log.info(
+        "Production evaluation ready eval_id=%s reused=%s",
+        evaluation.eval_id, reused,
     )
-    log.info("Production evaluate done eval_id=%s", evaluation.eval_id)
 
     # 2. Buy: 同一 evaluation を渡す（再評価しない）
     #    per-race通知本文（案C）は Prediction を要するため assess_decide_predict
@@ -108,6 +155,7 @@ def run_one_race(
     return {
         "eval_id": evaluation.eval_id,
         "evaluation": evaluation,
+        "evaluation_reused": reused,
         "buy_assessment": buy_assessment,
         "buy_decision": buy_decision,
         "prediction": prediction,
@@ -147,6 +195,20 @@ def build_local_evaluation_store(jsonl_path: str = "evaluations/production.jsonl
     return DurableEvaluationStore(
         repository=repository, release=_NoopReleaseClient(), git=_NoopGitClient()
     )
+
+
+def build_evaluation_repository(jsonl_path: str = "evaluations/production.jsonl"):
+    """保存済み評価の確認用に EvaluationRepository を返す（既存クラスを生成するだけ）。
+
+    run_one_race / run_production_day の evaluation_repository に渡す。
+    durable_store（build_local_evaluation_store / build_github_evaluation_store）と
+    同じ jsonl_path を指定すること（通常実行の正本＝checkout された JSONL）。
+    """
+    from pathlib import Path
+
+    from storage.repositories.evaluation_repository import EvaluationRepository
+
+    return EvaluationRepository(Path(jsonl_path))
 
 
 def build_github_evaluation_store(
@@ -265,6 +327,7 @@ def run_production_race(
     *,
     bundle: PipelineBundle | None = None,
     persist: bool = False,
+    evaluation_repository=None,
 ) -> dict[str, Any]:
     """本番起動入口: bundleを構築（または注入）して1レースを処理する。
 
@@ -278,7 +341,8 @@ def run_production_race(
     """
     active = bundle if bundle is not None else build_production_bundle()
     return run_one_race(
-        active, race_date, venue_num, race_number, output_paths, persist=persist
+        active, race_date, venue_num, race_number, output_paths,
+        persist=persist, evaluation_repository=evaluation_repository,
     )
 
 
@@ -288,6 +352,7 @@ def run_production_day(
     *,
     bundle: PipelineBundle | None = None,
     persist: bool = False,
+    evaluation_repository=None,
 ) -> "dict[str, Any]":
     """複数レースを本番経路で順に処理する（orchestration＋ジョブレベル
     フェイルセーフ）。
@@ -302,6 +367,11 @@ def run_production_day(
       - 部分成功の定義: 成功率 80%以上 = partial(WARNING継続) /
         80%未満 = failed(ERROR)。全レース失敗も failed。全レース成功は success。
         判定結果は status（success/partial/failed）として返す。
+      - Legacy `_evaluate_bets` が空listを返したレース（買い目候補なし＝Legacy
+        戻り値の異常。見送りとは別事象）は incomparable として別枠に記録し、
+        通常の失敗（errors/failure_count）には計上しない。Shadowの
+        「比較不能」(Step6-2c-12・案A)と同じ事象を、Production側の責務
+        （status判定）に合わせて扱う。成功率の分母からも除外する。
       - status は services/orchestration 層で判定する（SystemMetricsモデルは
         判定ロジックを持たない・§19.3）。本関数がその判定を担う。
 
@@ -317,14 +387,17 @@ def run_production_day(
           "total": <対象レース数>,
           "success_count": <成功数>,
           "failure_count": <失敗数>,
-          "success_rate": <0.0-1.0>,
+          "success_rate": <0.0-1.0>,  # success_count / (total - incomparable_count)
+          "incomparable_count": <比較不能数>,
           "results": [<成功レースのrun_one_race結果dict>, ...],
           "errors": [{"race": "date_venue_race", "error": "..."}, ...],
+          "incomparable": [{"race": "date_venue_race", "reason": "..."}, ...],
         }
     """
     active = bundle if bundle is not None else build_production_bundle()
     results: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    incomparable: list[dict[str, str]] = []
     total = len(target_races)
 
     for race_date, venue_num, race_number in target_races:
@@ -335,8 +408,24 @@ def run_production_day(
                 run_one_race(
                     active, race_date, venue_num, race_number, paths,
                     persist=persist,
+                    evaluation_repository=evaluation_repository,
                 )
             )
+        except ValueError as exc:
+            if not str(exc).startswith(_INCOMPARABLE_ERROR_PREFIX):
+                log.warning(
+                    "Production race failed (skipped, job continues) race=%s error=%s",
+                    race_tag, exc,
+                )
+                errors.append(
+                    {"race": race_tag, "error": f"{type(exc).__name__}: {exc}"}
+                )
+                continue
+            log.warning(
+                "Production race incomparable (skipped, job continues) race=%s "
+                "reason=%s", race_tag, exc,
+            )
+            incomparable.append({"race": race_tag, "reason": str(exc)})
         except Exception as exc:  # noqa: BLE001 レース単位で記録してスキップ・続行
             log.warning(
                 "Production race failed (skipped, job continues) race=%s error=%s",
@@ -346,10 +435,17 @@ def run_production_day(
 
     success_count = len(results)
     failure_count = len(errors)
-    success_rate = (success_count / total) if total > 0 else 0.0
+    incomparable_count = len(incomparable)
+    # 成功率の分母は incomparable を除外した対象数（ユーザー確定）
+    comparable_total = total - incomparable_count
+    success_rate = (success_count / comparable_total) if comparable_total > 0 else 0.0
 
     # status 判定（§592）: 全成功=success / 80%以上=partial / 80%未満=failed
-    if failure_count == 0:
+    # 全件incomparable（分母0かつincomparableあり）は failed（ユーザー確定）。
+    # 対象0件（total=0）の扱いは従来どおり変更しない。
+    if incomparable_count > 0 and comparable_total <= 0:
+        status = "failed"
+    elif failure_count == 0:
         status = "success"
     elif success_rate >= 0.8:
         status = "partial"
@@ -357,17 +453,21 @@ def run_production_day(
         status = "failed"
 
     log.info(
-        "Production day end total=%d success=%d failure=%d rate=%.3f status=%s",
-        total, success_count, failure_count, success_rate, status,
+        "Production day end total=%d success=%d failure=%d incomparable=%d "
+        "rate=%.3f status=%s",
+        total, success_count, failure_count, incomparable_count,
+        success_rate, status,
     )
     return {
         "status": status,
         "total": total,
         "success_count": success_count,
         "failure_count": failure_count,
+        "incomparable_count": incomparable_count,
         "success_rate": success_rate,
         "results": results,
         "errors": errors,
+        "incomparable": incomparable,
     }
 
 
