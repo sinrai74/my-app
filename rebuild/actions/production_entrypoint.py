@@ -596,6 +596,17 @@ def run_production_day(
     else:
         status = "failed"
 
+    # S5.2（ユーザー確定）: 母集団はあったが、運用ポリシー適用後の実処理対象が
+    # 0件だったことを明示する（正常終了のため INFO）。S5.1（母集団0・WARNING）
+    # とは条件が異なる。判定は既存値のみを使い、status/success_rate/戻り値は
+    # 変更しない。
+    if total > 0 and comparable_total <= 0 and incomparable_count == 0:
+        log.info(
+            "Production day S5.2: all targets excluded by production policies "
+            "(no processing target remained) total=%d s4_excluded=%d",
+            total, s4_excluded_count,
+        )
+
     log.info(
         "Production day end total=%d success=%d failure=%d incomparable=%d "
         "s4_excluded=%d rate=%.3f status=%s",

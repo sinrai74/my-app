@@ -203,6 +203,87 @@ class TestDeadlineInProductionDay(unittest.TestCase):
         self.assertEqual(result["s4_excluded_count"], 0)
 
 
+class TestS5_2AllExcluded(unittest.TestCase):
+    """S5.2: 母集団あり・ポリシー適用後0件のINFOログ（正常終了）。"""
+
+    LOGGER = "actions.production_entrypoint"
+    S5_2 = "Production day S5.2"
+    S5_1 = "no target races"
+
+    def _run(self, races, **kwargs):
+        return run_production_day(
+            races, lambda d, v, r: PATHS, bundle=kwargs.pop("bundle", _bundle()),
+            **kwargs,
+        )
+
+    def test_case1_all_s4_excluded_logs_s5_2(self):
+        races = [(DATE, 1, 1), (DATE, 1, 2)]
+        with self.assertLogs(self.LOGGER, level="INFO") as cm:
+            result = self._run(
+                races, deadline_minutes=10, now_provider=_at(15, 20),
+            )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["s4_excluded_count"], 2)
+        self.assertEqual(result["incomparable_count"], 0)
+        line = [l for l in cm.output if self.S5_2 in l]
+        self.assertEqual(len(line), 1, cm.output)
+        self.assertIn("total=2", line[0])
+        self.assertIn("s4_excluded=2", line[0])
+
+    def test_case2_zero_population_is_s5_1_not_s5_2(self):
+        with self.assertLogs(self.LOGGER, level="INFO") as cm:
+            result = self._run([], deadline_minutes=10, now_provider=_at(15, 20))
+        self.assertEqual(result["status"], "success")
+        self.assertFalse(any(self.S5_2 in l for l in cm.output), cm.output)
+        self.assertTrue(any(self.S5_1 in l for l in cm.output), cm.output)
+
+    def test_case3_all_incomparable_is_not_s5_2(self):
+        bundle = _bundle()
+
+        def _empty_list(race_date, venue_num, race_number, *, persist=False):
+            raise ValueError(
+                "_evaluate_bets returned an empty list; no bet candidate is "
+                "available for this race"
+            )
+
+        bundle.evaluation_pipeline.evaluate_race = _empty_list
+        with self.assertLogs(self.LOGGER, level="INFO") as cm:
+            result = self._run([(DATE, 1, 1)], bundle=bundle)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["incomparable_count"], 1)
+        self.assertFalse(any(self.S5_2 in l for l in cm.output), cm.output)
+
+    def test_case4_mixed_s4_and_incomparable_is_not_s5_2(self):
+        bundle = _bundle()
+        closes = {(DATE, 1, 1): CLOSE, (DATE, 1, 2): "2026-09-22 12:00:00"}
+
+        def resolve(race_date, venue_num, race_number):
+            return SimpleNamespace(
+                close_time=closes[(race_date, venue_num, race_number)],
+                weather=None,
+            )
+
+        def _empty_list(race_date, venue_num, race_number, *, persist=False):
+            raise ValueError(
+                "_evaluate_bets returned an empty list; no bet candidate is "
+                "available for this race"
+            )
+
+        bundle.race_source.resolve_race = resolve
+        bundle.evaluation_pipeline.evaluate_race = _empty_list
+        with self.assertLogs(self.LOGGER, level="INFO") as cm:
+            result = self._run(
+                [(DATE, 1, 1), (DATE, 1, 2)], bundle=bundle,
+                deadline_minutes=10, now_provider=_at(12, 0),
+            )
+        # 1件はS4除外（close_time 12:00 は 12:00時点で締切10分前を過ぎている）、
+        # 残り1件は incomparable → 有効対象0だが S5.2 ではない
+        self.assertEqual(result["s4_excluded_count"], 1)
+        self.assertEqual(result["incomparable_count"], 1)
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(any(self.S5_2 in l for l in cm.output), cm.output)
+
+
 class TestDailyNotificationLimit(unittest.TestCase):
     def _counter(self):
         return DailyNotificationCounter(
