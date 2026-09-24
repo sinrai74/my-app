@@ -631,6 +631,81 @@ class TestRunProductionDayZeroRaces(unittest.TestCase):
         self.assertFalse(any("no target races" in line for line in cm.output))
 
 
+class TestRunProductionDayS6Counters(unittest.TestCase):
+    """S6: races_evaluated / records_written（results件数とは別物）。"""
+
+    def _run(self, bundle, races=None, persist=True):
+        from actions.production_entrypoint import run_production_day
+        return run_production_day(
+            races or [("20260704", 12, 5)],
+            lambda d, v, r: {"public": "/tmp/p.html"},
+            bundle=bundle, persist=persist,
+        )
+
+    def test_counts_on_successful_evaluation(self):
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+        result = self._run(bundle)
+        self.assertEqual(result["races_evaluated"], 1)
+        self.assertEqual(result["records_written"], 1)
+
+    def test_not_counted_when_evaluation_fails(self):
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+
+        def _boom(race_date, venue_num, race_number, *, persist=False):
+            raise RuntimeError("evaluate failed")
+
+        bundle.evaluation_pipeline.evaluate_race = _boom
+        result = self._run(bundle)
+        self.assertEqual(result["races_evaluated"], 0)
+        self.assertEqual(result["records_written"], 0)
+        self.assertEqual(result["failure_count"], 1)
+
+    def test_not_counted_when_append_durably_fails(self):
+        """local append成功 / upload失敗（StorageError）→ 0（D案）。"""
+        from storage.exceptions import StorageError
+
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+
+        def _store_fail(race_date, venue_num, race_number, *, persist=False):
+            raise StorageError("upload failed after local append")
+
+        bundle.evaluation_pipeline.evaluate_race = _store_fail
+        result = self._run(bundle)
+        self.assertEqual(result["races_evaluated"], 0)
+        self.assertEqual(result["records_written"], 0)
+
+    def test_counted_even_when_race_fails_after_evaluation(self):
+        """evaluate成功後にBuyがincomparable → counts は1のまま。"""
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+
+        def _empty_list(evaluation):
+            raise ValueError(
+                "_evaluate_bets returned an empty list; no bet candidate is "
+                "available for this race"
+            )
+
+        # run_one_race は assess_decide_predict の ValueError を assess_race へ
+        # フォールバックする既存構造のため、両方を同じ契約で失敗させる。
+        bundle.buy_pipeline.assess_decide_predict = _empty_list
+        bundle.buy_pipeline.assess_race = _empty_list
+        result = self._run(bundle)
+        self.assertEqual(result["races_evaluated"], 1)
+        self.assertEqual(result["records_written"], 1)
+        self.assertEqual(result["incomparable_count"], 1)
+        self.assertEqual(result["success_count"], 0)  # results件数とは別物
+
+    def test_records_written_not_counted_without_persist(self):
+        ev = _EvalRec()
+        bundle = _fake_bundle(ev)
+        result = self._run(bundle, persist=False)
+        self.assertEqual(result["races_evaluated"], 1)
+        self.assertEqual(result["records_written"], 0)
+
+
 # ---------- GitHub Releases DurableStore 結線（実push なし） ----------
 
 class TestGithubEvaluationStoreWiring(unittest.TestCase):

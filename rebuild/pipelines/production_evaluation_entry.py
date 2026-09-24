@@ -27,7 +27,10 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
+
+_JST = timezone(timedelta(hours=9))
 
 from actions.config_loader import (
     load_daily_notification_limit,
@@ -41,6 +44,12 @@ from actions.production_entrypoint import (
     run_production_day,
 )
 from actions.config_loader import ConfigError
+from actions.metrics_reporter import (
+    JOB_NAME,
+    RELEASE_TAG as METRICS_RELEASE_TAG,
+    MetricsReporter,
+    build_errors,
+)
 from actions.wiring import PipelineBundle
 
 log = logging.getLogger(__name__)
@@ -136,6 +145,77 @@ def run_entry(
     )
 
 
+SNAPSHOT_PATH = "system_metrics.json"
+MONTHLY_DIR = "metrics"
+
+
+def build_metrics_reporter(
+    env: Mapping[str, str] | None = None,
+) -> MetricsReporter:
+    """S6: MetricsStore（既存・無変更）と ReleaseClient を結線するだけ。
+
+    Metrics は git管理外・Releasesのみ（S6の設計判断）のため commit はしない。
+    認証情報が無い場合は Release退避なしのReporterを返す（保存は行う）。
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    from storage.clients.github_release_client import GithubReleaseClient
+    from storage.metrics_store import MetricsStore
+
+    source = env if env is not None else _os.environ
+    store = MetricsStore(_Path(SNAPSHOT_PATH), _Path(MONTHLY_DIR))
+    token = source.get("GITHUB_TOKEN", "")
+    repository = source.get("GITHUB_REPOSITORY", "")
+    release = None
+    if token and "/" in repository:
+        owner, repo = repository.split("/", 1)
+        release = GithubReleaseClient(
+            owner=owner, repo=repo, tag=METRICS_RELEASE_TAG, token=token
+        )
+    else:
+        log.warning(
+            "Metrics release skipped: GITHUB_TOKEN/GITHUB_REPOSITORY not set"
+        )
+    return MetricsReporter(
+        store, monthly_dir=MONTHLY_DIR, release=release, job_name=JOB_NAME
+    )
+
+
+def emit_metrics(
+    *,
+    race_date: str,
+    run_id: str,
+    started_at: datetime,
+    finished_at: datetime,
+    status: str,
+    counters: Mapping[str, Any],
+    errors: Mapping[str, Any],
+    reporter_factory: Callable[..., MetricsReporter] = build_metrics_reporter,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """SystemMetrics を1件出力する。失敗しても呼び出し元へ例外を流さない。"""
+    try:
+        reporter = reporter_factory(env=env)
+        metrics = reporter.build(
+            race_date=race_date,
+            run_id=run_id,
+            started_at=started_at.isoformat(),
+            finished_at=finished_at.isoformat(),
+            duration_seconds=(finished_at - started_at).total_seconds(),
+            status=status,
+            counters=counters,
+            errors=errors,
+        )
+        reporter.report(metrics)
+        log.info(
+            "SystemMetrics written metrics_id=%s status=%s",
+            metrics.metrics_id, status,
+        )
+    except Exception as exc:  # noqa: BLE001 計測の失敗でジョブを変えない（⑥欠損許容）
+        log.warning("SystemMetrics output failed: %s", exc)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLIエントリ（入力取得・組み立て・呼び出し・終了コードのみ）。
 
@@ -158,15 +238,53 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         races = parse_target_races(os.environ.get("TARGET_RACES"))
-        single_race_date(races)
+        race_date = single_race_date(races)
     except ValueError as exc:
+        # race_date 未確定（Production処理開始前）はMetrics対象外
         log.error("TARGET_RACES error: %s", exc)
         return 1
+
+    # ここから「Production処理開始」（S6の明示仕様: single_race_date 完了後）。
+    # 以降は途中で例外終了しても SystemMetrics を出す（status=failed）。
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    started_at = datetime.now(_JST)
+    report: dict | None = None
+    metrics_status = "failed"
+    metrics_errors: dict[str, Any] = {}
     try:
-        report = run_entry(races)
-    except (ValueError, ConfigError) as exc:
-        log.error("Production evaluation entry configuration error: %s", exc)
-        return 1
+        try:
+            try:
+                report = run_entry(races)
+                metrics_status = report["status"]
+                metrics_errors = build_errors(report["errors"])
+            except BaseException as exc:  # noqa: BLE001 Metrics出力後に再送出
+                metrics_errors = build_errors(exception=exc)
+                raise
+        except (ValueError, ConfigError) as exc:
+            # 既存の終了コード規約（設定不備は1）を維持する
+            log.error(
+                "Production evaluation entry configuration error: %s", exc
+            )
+            return 1
+    finally:
+        if run_id:
+            counters: dict[str, Any] = {"races_found": len(races)}
+            if report is not None:
+                counters["races_evaluated"] = report["races_evaluated"]
+                counters["races_skipped"] = report["s4_excluded_count"]
+                counters["records_written"] = report["records_written"]
+            emit_metrics(
+                race_date=race_date,
+                run_id=run_id,
+                started_at=started_at,
+                finished_at=datetime.now(_JST),
+                status=metrics_status,
+                counters=counters,
+                errors=metrics_errors,
+            )
+        else:
+            log.info("SystemMetrics skipped: GITHUB_RUN_ID is not set")
+
     reused = sum(1 for r in report["results"] if r.get("evaluation_reused"))
     log.info(
         "Production evaluation entry done status=%s total=%d success=%d "

@@ -96,6 +96,7 @@ def run_one_race(
     persist: bool = True,
     evaluation_repository=None,
     notification_budget: int | None = None,
+    counters: "dict[str, int] | None" = None,
 ) -> dict[str, Any]:
     """1レースを本番経路で処理する（結線のみ）。
 
@@ -134,6 +135,15 @@ def run_one_race(
         evaluation = bundle.evaluation_pipeline.evaluate_race(
             race_date, venue_num, race_number, persist=persist
         )
+        if counters is not None:
+            # S6: evaluate_race が成功して RaceEvaluation を返した件数。
+            # persist=True では「戻り値がある＝append_durably が例外なく完了」
+            # なので records_written も同時に数える（意味は別）。
+            counters["races_evaluated"] = counters.get("races_evaluated", 0) + 1
+            if persist:
+                counters["records_written"] = (
+                    counters.get("records_written", 0) + 1
+                )
     log.info(
         "Production evaluation ready eval_id=%s reused=%s",
         evaluation.eval_id, reused,
@@ -500,6 +510,8 @@ def run_production_day(
     errors: list[dict[str, str]] = []
     incomparable: list[dict[str, str]] = []
     s4_excluded: list[dict[str, str]] = []
+    # S6 counters（実測値のみ。未計測項目はキーを作らない）
+    race_counters: dict[str, int] = {}
     total = len(target_races)
     if daily_notification_limit is not None and notification_counter is None:
         raise ValueError(
@@ -546,6 +558,7 @@ def run_production_day(
                 persist=persist,
                 evaluation_repository=evaluation_repository,
                 notification_budget=notification_budget,
+                counters=race_counters,
             )
             if daily_notification_limit is not None:
                 notification_counter.add(race_date, len(race_result["requests"]))
@@ -620,6 +633,8 @@ def run_production_day(
         "failure_count": failure_count,
         "incomparable_count": incomparable_count,
         "s4_excluded_count": s4_excluded_count,
+        "races_evaluated": race_counters.get("races_evaluated", 0),
+        "records_written": race_counters.get("records_written", 0),
         "success_rate": success_rate,
         "results": results,
         "errors": errors,
