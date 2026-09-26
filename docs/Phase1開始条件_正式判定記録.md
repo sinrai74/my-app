@@ -244,3 +244,147 @@ No.14 が未充足であることを理由に、新しい条件・例外ルー�
 - Legacy コード / Shadow 関連
 - G1〜G8 の判定
 - ⑨の17資産（保全作業は実施していない）
+
+---
+
+# 【正式更新】2026-09-26 ⑨-3・⑨-10 保全完了と F-1 判断の確定
+
+ステータス: **正式判断（No.14 の対象資産に関する更新のみ）**
+
+本節は §0〜§8 の判断（2026-09-26 作成時点）を削除・改変せず、その後に実施した保全作業と
+その結果による判定の変化を追記するものである。本節の記載が現在状態を示す。
+
+## 9.1 F-1 正式判断（hit_record 残存データの扱い）
+
+git履歴 `8d2752a` から確認できる 165件・22列（対象期間 20260628〜20260703）の hit_record について、
+以下を正式に確定した。
+
+- **「現存する歴史的残存データ」と位置づける。**
+- ⑨-1 が要求する「全実績・44列スキーマ」を満たす**正式な現行 hit_record とは認定しない**。
+- **22列→44列の変換は行わない**（正式な移行仕様が存在しないため）。
+- **再構成・推定・補完は行わない**（`docs/incidents/2026-07-13_…` 対応方針1と整合）。
+- **原形を維持**して保全する（列追加・値変更を行わない）。
+- 現行運用の `hit_record.csv` と**同一 asset 名では保存しない**。
+- 既存 `data-store` Release へ、asset 名 **`hit_record_legacy22_20260703.csv`** として保全した。
+- 本 asset の追加は Phase0.5 §⑥ L439「表にない新ファイルの作成はレビュー必須」に該当するため、
+  **本 F-1 判断をもってその追加を承認する**。
+- **この保全によって ⑨-1 の要件を満たしたとは扱わない。**
+
+## 9.2 今回の保全実績
+
+### ⑨-3 local_course_stats.csv — 保全完了
+
+| 項目 | 内容 |
+|---|---|
+| 保全先 | 既存 `data-store` Release（新しい Release / tag は作成していない） |
+| asset 名 | `local_course_stats.csv` |
+| 件数 | 205,278件（ヘッダ除く） |
+| 列 | 15列（racer_no, venue_code, venue_name, course, starts, first..sixth, first_rate, top2_rate, top3_rate, last_updated）。Phase0.5 §⑥ L263 の固定列と完全一致 |
+| サイズ | 10,017,001 bytes（Release表示 9.55 MB） |
+| 内容 | 原形のまま。`last_updated` が全行 0 である点も含め、値の修正・再計算・再構成は行っていない |
+| `.bak` | `local_course_stats.csv.bak` が同時に生成された。これは `x_release_storage.upload_file()` の既存の世代交代処理によるものであり、初回アップロードのため本体と同一 sha256 である |
+| git | `.gitignore` の方針（運用データは git に置かない）に従い、**git commit には含めていない** |
+
+保存先の根拠: Phase0.5 §⑥ L431「local_course_stats.csv ／ 週次再構築 ／ 全置換 ／ **構築毎にReleases**」。
+
+### ⑨-10 lzh_extract.py — 保全完了
+
+| 項目 | 内容 |
+|---|---|
+| 保全先 | git（リポジトリ直下） |
+| commit | **`00d8b04`**「chore: lzh_extract.py（Phase0 ⑨-10 ロジック資産）をGit管理下に追加」（1ファイル・448行） |
+| 公開API | `extract_all(data: bytes) -> dict[str, bytes]`（L433）／ `BadLzhFile`（L31） |
+| 依存 | 標準ライブラリのみ（外部Cライブラリ不要） |
+| 整合性 | `download_k_history.py` が `import lzh_extract` し `extract_all()` / `BadLzhFile` を使用する呼び出しと API が一致 |
+| Legacy | `download_k_history.py` を含む Legacy コードは**変更していない**（新規ファイルの追加のみ） |
+
+保存先の根拠: ⑨-10 はロジック資産であり、`.gitignore` の方針（ソースコードは git に保存）に合致する。
+
+### hit_record 残存データ — 保全完了（⑨-1 の充足とは別）
+
+| 項目 | 内容 |
+|---|---|
+| 保全先 | 既存 `data-store` Release |
+| asset 名 | `hit_record_legacy22_20260703.csv` |
+| 件数 | 165件 |
+| 列 | 22列（date, venue, venue_num, race, night, race_type, why_bet, confidence, pred_combo, pred_prob, pred_ev, pred_odds, upset_score, wind_speed, wind_dir, wave, result_combo, payout, hit, profit, n_bets, cost） |
+| 対象期間 | 20260628〜20260703 |
+| サイズ | 26,185 bytes（Release表示 25.6 KB） |
+| 出所 | git履歴 `8d2752a`（2026-07-03）時点の hit_record.csv を原形のまま抽出 |
+| `.bak` | `hit_record_legacy22_20260703.csv.bak` が同時生成。`upload_file()` の既存世代交代処理によるもので、初回のため本体と同一 sha256 |
+| 現行 hit_record.csv | **追加していない**。`data-store` に `hit_record.csv` は存在せず、現行の世代管理には混入していない |
+| 変換 | 22列→44列の変換は行っていない |
+
+## 9.3 ⑨17資産の再確認（2026-09-26）
+
+| ⑨ | 資産 | 保全先 | 状態 | 今回の変化 |
+|---|---|---|---|---|
+| 1 | hit_record.csv（全実績・44列スキーマ）＋schema_version管理の仕組み | ― | **未充足** | 残存データを別名で保全したが、要件は未達（9.4） |
+| 2 | motor_history.csv | git ＋ Releases | 保全済み | ― |
+| 3 | local_course_stats.csv ＋ k_race_history進捗 | Releases | **保全完了** | **未保全 → 保全完了** |
+| 4 | Releases上の全アーカイブ | `data-store` | 保全済み（Release実在・asset 10件） | asset 4件増 |
+| 5 | buyscore_log.jsonl / daily_stats.json | Releases（daily_stats.json は git にも） | 保全済み | ― |
+| 6 | x_asahi_scoring.py | git | 保全済み | ― |
+| 7 | x_buyscore.py | git | 保全済み | ― |
+| 8 | x_ranking.py | git | 保全済み | ― |
+| 9 | notify_arashi.py（fetch_programs・FANパーサー） | git | 保全済み | ― |
+| 10 | x_kfile_race_parser / lzh_extract | git | **保全完了** | **一部未保全 → 保全完了** |
+| 11 | x_release_storage.py | git | 保全済み | ― |
+| 12 | x_verification.py | git | 保全済み | ― |
+| 13 | asahi_config.json / buyscore_config.json | git | 保全済み | ― |
+| 14 | scoring_spec.md / local_course_stats_design.md | git | 保全済み | ― |
+| 15 | requirements-ml.txt | git | 保全済み | ― |
+| 16 | ymlのcron設計 | git | 保全済み | ― |
+| 17 | 「朝刊のみ」ポリシー | 設計書 | 保全済み | ― |
+
+## 9.4 ⑨-1 を未充足のまま維持する理由
+
+- ⑨-1 が要求するのは「hit_record.csv（**全実績**・**44列スキーマ**）」である。
+- 今回保全した `hit_record_legacy22_20260703.csv` は **22列・165件・6日分（20260628〜0703）**であり、
+  全実績でも 44列スキーマでもない。
+- 22列を44列へ変換する正式な移行仕様は存在しない（`hit_record_migration.py` は「レガシー44列 → 新形式」の
+  1方向のみを対象とし、44列でも拡張形式でもないヘッダは StorageError とする）。
+- 20260704 以降の実績は git・Releases・ローカルのいずれにも存在しない。20260705〜0707 は
+  `docs/incidents/2026-07-13_hit-record-gap-unrecoverable.md` により復旧不能確定。
+- `rebuild/tests/regression/golden/hit_record_golden_100.csv`（44列・100件）は ⑭ の回帰試験用データであり、
+  全実績の代替ではない。
+- したがって、**「165件22列の歴史的残存データを別名 asset として保全したこと」と「⑨-1 が要求する
+  全実績・44列スキーマを満たすこと」は別問題である。**
+- なお ⑨-1 後半の「schema_version 管理の仕組み」は git 上に保全済み（`hit_record_mapper.py` /
+  `hit_record_repository.py` / `hit_record_migration.py`）。
+
+## 9.5 No.14 の正式判定（更新後）
+
+⑨-3 と ⑨-10 は保全完了したが、**⑨-1 が未充足**であるため、Phase 0 §⑩ の完了条件
+「⑨の資産すべてが Releases または git で保全されている」を満たさない。
+
+**No.14: 未充足（維持）**
+
+⑨-3・⑨-10 が解消されたことのみを理由に No.14 を充足へ変更しない。
+本節は Phase 1 開始の判断ではなく、Phase 1 は開始していない。
+
+## 9.6 更新後の判定一覧
+
+| No. | 判定 |
+|---|---|
+| 1 | 充足（commit `aa17242`） |
+| 2〜13 | 充足 |
+| 14 | **未充足**（⑨-1 のみ未達） |
+
+## 9.7 本節で実施していないこと
+
+- Phase 1 の開始、および開始可否の判断
+- ⑨-1 を充足とする解釈
+- hit_record の 22列→44列 変換、欠損期間の推定・再構成
+- Legacy コード、Feature Freeze 対象（評価式・スコア・スキーマ）、Shadow comparator / runner の変更
+- 新しい Release / tag の作成
+- 新しい完了条件・Step の作成
+
+---
+
+## 変更履歴
+
+| 更新日 | 更新内容 | 根拠 |
+|---|---|---|
+| 2026-09-26 | 初版作成。No.1〜No.13 充足、No.14 未充足として記録 | commit `aa17242`、Phase0 ⑨⑩、Phase0.5 §⑱、実体確認結果 |
+| 2026-09-26 | §9 追記。F-1 判断確定、⑨-3・⑨-10 保全完了、⑨-1 未充足維持、No.14 未充足維持 | `data-store` Release の保全結果（`local_course_stats.csv` 9.55MB / `hit_record_legacy22_20260703.csv` 25.6KB）、commit `00d8b04`、Phase0 ⑨⑩、Phase0.5 §⑥ L263・L431・L439 |
