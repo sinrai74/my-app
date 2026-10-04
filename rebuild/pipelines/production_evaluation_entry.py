@@ -56,6 +56,21 @@ log = logging.getLogger(__name__)
 
 RELEASE_TAG = "data-store-v2"  # Step3 S6（確定）
 
+# rebuild/config（本ファイル rebuild/pipelines/ の2つ上の下）。cwd に依存しない。
+REBUILD_CONFIG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config"
+)
+
+
+def load_deadline_minutes_from_rebuild_config() -> int:
+    """rebuild/config/pipeline.json の「締切前分数」を読む（cwd非依存）。"""
+    return load_deadline_minutes(REBUILD_CONFIG_DIR)
+
+
+def load_daily_limit_from_rebuild_config() -> int:
+    """rebuild/config/delivery.json の「1日投稿数上限」を読む（cwd非依存）。"""
+    return load_daily_notification_limit(REBUILD_CONFIG_DIR)
+
 
 def evaluations_path_for(race_date: str) -> str:
     """評価JSONLの保存先（Phase0.5 §3.4 / §④: evaluations/{date}.jsonl）。"""
@@ -119,8 +134,10 @@ def run_entry(
     bundle_factory: Callable[..., PipelineBundle] = build_evaluation_only_bundle,
     day_runner: Callable[..., dict] = run_production_day,
     counter_factory: Callable[..., Any] = build_github_notification_counter,
-    deadline_minutes_loader: Callable[[], int] = load_deadline_minutes,
-    daily_limit_loader: Callable[[], int] = load_daily_notification_limit,
+    deadline_minutes_loader: Callable[[], int] = (
+        load_deadline_minutes_from_rebuild_config
+    ),
+    daily_limit_loader: Callable[[], int] = load_daily_limit_from_rebuild_config,
     now_provider: Callable[[], Any] | None = None,
 ) -> dict:
     """対象日の同一JSONLで Store / Repository を組み、run_production_day を呼ぶ。"""

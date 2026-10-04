@@ -241,5 +241,75 @@ class TestMain(_InTempDir):
                 os.environ["TARGET_RACES"] = saved
 
 
+import inspect  # noqa: E402
+import json  # noqa: E402
+
+from actions.config_loader import (  # noqa: E402
+    load_daily_notification_limit,
+    load_deadline_minutes,
+)
+from pipelines.production_evaluation_entry import (  # noqa: E402
+    REBUILD_CONFIG_DIR,
+    load_daily_limit_from_rebuild_config,
+    load_deadline_minutes_from_rebuild_config,
+)
+
+_EXPECTED_REBUILD_CONFIG = Path(__file__).resolve().parents[2] / "config"
+
+
+class TestRebuildConfigResolution(_InTempDir):
+    """設定（pipeline.json / delivery.json）が cwd ではなく rebuild/config から読まれる。"""
+
+    def test_config_dir_points_to_rebuild_config(self):
+        self.assertEqual(Path(REBUILD_CONFIG_DIR).resolve(), _EXPECTED_REBUILD_CONFIG)
+        self.assertTrue((_EXPECTED_REBUILD_CONFIG / "pipeline.json").is_file())
+        self.assertTrue((_EXPECTED_REBUILD_CONFIG / "delivery.json").is_file())
+
+    def test_default_loaders_do_not_depend_on_cwd(self):
+        # cwd は config/ の無い一時フォルダ（_InTempDir）
+        self.assertFalse(Path("config").exists())
+        self.assertEqual(
+            load_deadline_minutes_from_rebuild_config(),
+            load_deadline_minutes(str(_EXPECTED_REBUILD_CONFIG)),
+        )
+        self.assertEqual(
+            load_daily_limit_from_rebuild_config(),
+            load_daily_notification_limit(str(_EXPECTED_REBUILD_CONFIG)),
+        )
+
+    def test_default_loaders_ignore_config_in_cwd(self):
+        decoy = Path("config")
+        decoy.mkdir()
+        with open(decoy / "pipeline.json", "w", encoding="utf-8") as f:
+            json.dump({"_version": 1, "締切前分数": 97}, f, ensure_ascii=False)
+        with open(decoy / "delivery.json", "w", encoding="utf-8") as f:
+            json.dump({"_version": 1, "1日投稿数上限": 98}, f, ensure_ascii=False)
+        # cwd 側の config/ は有効な設定として読める（値が異なる）
+        self.assertEqual(load_deadline_minutes("config"), 97)
+        self.assertEqual(load_daily_notification_limit("config"), 98)
+        # 既定ローダーは cwd 側ではなく rebuild/config を読む
+        self.assertEqual(
+            load_deadline_minutes_from_rebuild_config(),
+            load_deadline_minutes(str(_EXPECTED_REBUILD_CONFIG)),
+        )
+        self.assertEqual(
+            load_daily_limit_from_rebuild_config(),
+            load_daily_notification_limit(str(_EXPECTED_REBUILD_CONFIG)),
+        )
+        self.assertNotEqual(load_deadline_minutes_from_rebuild_config(), 97)
+        self.assertNotEqual(load_daily_limit_from_rebuild_config(), 98)
+
+    def test_run_entry_defaults_use_rebuild_config_loaders(self):
+        params = inspect.signature(run_entry).parameters
+        self.assertIs(
+            params["deadline_minutes_loader"].default,
+            load_deadline_minutes_from_rebuild_config,
+        )
+        self.assertIs(
+            params["daily_limit_loader"].default,
+            load_daily_limit_from_rebuild_config,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
