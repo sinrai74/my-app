@@ -651,7 +651,7 @@ def production_output_renderers() -> dict:
     """
     from output.renderers import PublicHtmlRenderer
 
-    return {"public": PublicHtmlRenderer("public")}
+    return {"public": PublicHtmlRenderer()}
 
 
 def production_notification_service():
