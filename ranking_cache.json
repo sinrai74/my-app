@@ -5492,20 +5492,20 @@
   ],
   "hot_motor": [
     {
-      "venue": "児島",
-      "venue_num": 16,
-      "motor_no": 58,
-      "motor_2rate": 35.38,
+      "venue": "多摩川",
+      "venue_num": 5,
+      "motor_no": 70,
+      "motor_2rate": 31.37,
       "races_today": [
-        4,
-        9
+        7,
+        12
       ],
-      "races_today_str": "4R・9R",
+      "races_today_str": "7R・12R",
       "score": 92,
-      "recent5": "1-1-1-1-4",
-      "recent10_2rate": 90.0,
-      "official_2rate": 35.38,
-      "gap": 54.6
+      "recent5": "1-1-1-1-1",
+      "recent10_2rate": 100.0,
+      "official_2rate": 31.37,
+      "gap": 68.6
     },
     {
       "venue": "多摩川",
@@ -5517,27 +5517,27 @@
         10
       ],
       "races_today_str": "5R・10R",
-      "score": 90,
-      "recent5": "1-1-1-2-1",
+      "score": 89,
+      "recent5": "1-2-1-2-1",
       "recent10_2rate": 100.0,
       "official_2rate": 38.1,
       "gap": 61.9
     },
     {
-      "venue": "多摩川",
-      "venue_num": 5,
-      "motor_no": 70,
-      "motor_2rate": 31.37,
+      "venue": "常滑",
+      "venue_num": 8,
+      "motor_no": 8,
+      "motor_2rate": null,
       "races_today": [
-        7,
-        12
+        2,
+        8
       ],
-      "races_today_str": "7R・12R",
-      "score": 89,
-      "recent5": "1-1-1-1-1",
-      "recent10_2rate": 100.0,
-      "official_2rate": 31.37,
-      "gap": 68.6
+      "races_today_str": "2R・8R",
+      "score": 87,
+      "recent5": "2-1-1-1-1",
+      "recent10_2rate": 90.0,
+      "official_2rate": 32.0,
+      "gap": 58.0
     },
     {
       "venue": "多摩川",
@@ -5549,58 +5549,137 @@
         11
       ],
       "races_today_str": "3R・11R",
-      "score": 83,
+      "score": 86,
       "recent5": "1-1-1-1-1",
       "recent10_2rate": 100.0,
       "official_2rate": 35.29,
       "gap": 64.7
     },
     {
+      "venue": "大村",
+      "venue_num": 24,
+      "motor_no": 37,
+      "motor_2rate": 48.05,
+      "races_today": [
+        3,
+        10
+      ],
+      "races_today_str": "3R・10R",
+      "score": 86,
+      "recent5": "1-1-2-1-2",
+      "recent10_2rate": 80.0,
+      "official_2rate": 48.05,
+      "gap": 32.0
+    },
+    {
       "venue": "児島",
       "venue_num": 16,
-      "motor_no": 35,
-      "motor_2rate": 44.2,
+      "motor_no": 58,
+      "motor_2rate": 35.38,
       "races_today": [
-        8
+        4,
+        9
       ],
-      "races_today_str": "8R",
-      "score": 83,
-      "recent5": "1-1-1-3-1",
-      "recent10_2rate": 70.0,
-      "official_2rate": 44.2,
-      "gap": 25.8
+      "races_today_str": "4R・9R",
+      "score": 85,
+      "recent5": "1-1-4-1-4",
+      "recent10_2rate": 80.0,
+      "official_2rate": 35.38,
+      "gap": 44.6
     },
     {
       "venue": "江戸川",
       "venue_num": 3,
-      "motor_no": 71,
-      "motor_2rate": 50.63,
+      "motor_no": 31,
+      "motor_2rate": 40.51,
       "races_today": [
-        1,
-        5
+        7
       ],
-      "races_today_str": "1R・5R",
-      "score": 82,
-      "recent5": "4-1-1-2-6",
+      "races_today_str": "7R",
+      "score": 81,
+      "recent5": "2-2-1-2-1",
       "recent10_2rate": 70.0,
-      "official_2rate": 50.63,
-      "gap": 19.4
+      "official_2rate": 40.51,
+      "gap": 29.5
     },
     {
-      "venue": "多摩川",
-      "venue_num": 5,
-      "motor_no": 61,
-      "motor_2rate": 40.83,
+      "venue": "大村",
+      "venue_num": 24,
+      "motor_no": 72,
+      "motor_2rate": 30.38,
       "races_today": [
-        2,
-        12
+        6,
+        10
       ],
-      "races_today_str": "2R・12R",
+      "races_today_str": "6R・10R",
       "score": 81,
-      "recent5": "2-1-1-1-3",
+      "recent5": "6-2-1-2-1",
+      "recent10_2rate": 80.0,
+      "official_2rate": 30.38,
+      "gap": 49.6
+    },
+    {
+      "venue": "常滑",
+      "venue_num": 8,
+      "motor_no": 25,
+      "motor_2rate": null,
+      "races_today": [
+        5
+      ],
+      "races_today_str": "5R",
+      "score": 80,
+      "recent5": "1-1-2-1-2",
+      "recent10_2rate": 80.0,
+      "official_2rate": 32.0,
+      "gap": 48.0
+    },
+    {
+      "venue": "児島",
+      "venue_num": 16,
+      "motor_no": 15,
+      "motor_2rate": 28.77,
+      "races_today": [
+        6,
+        11
+      ],
+      "races_today_str": "6R・11R",
+      "score": 80,
+      "recent5": "1-2-2-1-1",
       "recent10_2rate": 70.0,
-      "official_2rate": 40.83,
-      "gap": 29.2
+      "official_2rate": 28.77,
+      "gap": 41.2
+    },
+    {
+      "venue": "若松",
+      "venue_num": 20,
+      "motor_no": 51,
+      "motor_2rate": 43.02,
+      "races_today": [
+        1,
+        9
+      ],
+      "races_today_str": "1R・9R",
+      "score": 80,
+      "recent5": "1-2-4-2-4",
+      "recent10_2rate": 80.0,
+      "official_2rate": 43.02,
+      "gap": 37.0
+    },
+    {
+      "venue": "若松",
+      "venue_num": 20,
+      "motor_no": 49,
+      "motor_2rate": 52.22,
+      "races_today": [
+        4,
+        11
+      ],
+      "races_today_str": "4R・11R",
+      "score": 80,
+      "recent5": "2-3-2-2-2",
+      "recent10_2rate": 80.0,
+      "official_2rate": 52.22,
+      "gap": 27.8
     },
     {
       "venue": "若松",
@@ -5613,10 +5692,26 @@
       ],
       "races_today_str": "6R・11R",
       "score": 80,
-      "recent5": "2-1-1-2-1",
-      "recent10_2rate": 90.0,
+      "recent5": "1-2-1-2-1",
+      "recent10_2rate": 100.0,
       "official_2rate": 37.98,
-      "gap": 52.0
+      "gap": 62.0
+    },
+    {
+      "venue": "江戸川",
+      "venue_num": 3,
+      "motor_no": 71,
+      "motor_2rate": 50.63,
+      "races_today": [
+        1,
+        5
+      ],
+      "races_today_str": "1R・5R",
+      "score": 79,
+      "recent5": "1-1-2-6-6",
+      "recent10_2rate": 70.0,
+      "official_2rate": 50.63,
+      "gap": 19.4
     },
     {
       "venue": "江戸川",
@@ -5629,90 +5724,58 @@
       ],
       "races_today_str": "2R・11R",
       "score": 79,
-      "recent5": "1-1-1-1-2",
+      "recent5": "1-1-1-2-2",
       "recent10_2rate": 80.0,
       "official_2rate": 36.9,
       "gap": 43.1
     },
     {
-      "venue": "常滑",
-      "venue_num": 8,
-      "motor_no": 8,
-      "motor_2rate": null,
+      "venue": "多摩川",
+      "venue_num": 5,
+      "motor_no": 53,
+      "motor_2rate": 31.3,
       "races_today": [
         2,
-        8
+        11
       ],
-      "races_today_str": "2R・8R",
+      "races_today_str": "2R・11R",
       "score": 79,
-      "recent5": "2-2-2-1-1",
-      "recent10_2rate": 70.0,
-      "official_2rate": 32.0,
-      "gap": 38.0
+      "recent5": "4-1-2-1-2",
+      "recent10_2rate": 80.0,
+      "official_2rate": 31.3,
+      "gap": 48.7
     },
     {
-      "venue": "常滑",
-      "venue_num": 8,
+      "venue": "若松",
+      "venue_num": 20,
       "motor_no": 38,
-      "motor_2rate": null,
+      "motor_2rate": 31.98,
       "races_today": [
-        6,
+        2,
         10
       ],
-      "races_today_str": "6R・10R",
+      "races_today_str": "2R・10R",
       "score": 79,
-      "recent5": "1-1-1-2-2",
+      "recent5": "3-2-1-2-1",
       "recent10_2rate": 80.0,
-      "official_2rate": 32.0,
+      "official_2rate": 31.98,
       "gap": 48.0
     },
     {
-      "venue": "大村",
-      "venue_num": 24,
-      "motor_no": 72,
-      "motor_2rate": 30.38,
+      "venue": "桐生",
+      "venue_num": 1,
+      "motor_no": 27,
+      "motor_2rate": 51.4,
       "races_today": [
-        6,
-        10
+        4,
+        12
       ],
-      "races_today_str": "6R・10R",
-      "score": 79,
-      "recent5": "6-1-6-2-1",
-      "recent10_2rate": 70.0,
-      "official_2rate": 30.38,
-      "gap": 39.6
-    },
-    {
-      "venue": "多摩川",
-      "venue_num": 5,
-      "motor_no": 19,
-      "motor_2rate": 36.36,
-      "races_today": [
-        6,
-        10
-      ],
-      "races_today_str": "6R・10R",
+      "races_today_str": "4R・12R",
       "score": 78,
-      "recent5": "1-1-1-1-4",
+      "recent5": "4-1-2-1-2",
       "recent10_2rate": 80.0,
-      "official_2rate": 36.36,
-      "gap": 43.6
-    },
-    {
-      "venue": "びわこ",
-      "venue_num": 11,
-      "motor_no": 22,
-      "motor_2rate": 28.3,
-      "races_today": [
-        6,
-        11
-      ],
-      "races_today_str": "6R・11R",
-      "score": 78,
-      "recent5": "2-1-2-4-3",
-      "recent10_2rate": 80.0,
-      "official_2rate": 28.3,
-      "gap": 51.7
+      "official_2rate": 51.4,
+      "gap": 28.6
     },
     {
       "venue": "児島",
@@ -5725,42 +5788,10 @@
       ],
       "races_today_str": "5R・11R",
       "score": 78,
-      "recent5": "2-1-2-2-3",
+      "recent5": "2-2-3-2-3",
       "recent10_2rate": 60.0,
       "official_2rate": 34.82,
       "gap": 25.2
-    },
-    {
-      "venue": "児島",
-      "venue_num": 16,
-      "motor_no": 15,
-      "motor_2rate": 28.77,
-      "races_today": [
-        6,
-        11
-      ],
-      "races_today_str": "6R・11R",
-      "score": 78,
-      "recent5": "4-1-2-2-1",
-      "recent10_2rate": 60.0,
-      "official_2rate": 28.77,
-      "gap": 31.2
-    },
-    {
-      "venue": "若松",
-      "venue_num": 20,
-      "motor_no": 51,
-      "motor_2rate": 43.02,
-      "races_today": [
-        1,
-        9
-      ],
-      "races_today_str": "1R・9R",
-      "score": 78,
-      "recent5": "2-1-1-2-4",
-      "recent10_2rate": 80.0,
-      "official_2rate": 43.02,
-      "gap": 37.0
     },
     {
       "venue": "若松",
@@ -5773,42 +5804,10 @@
       ],
       "races_today_str": "6R・11R",
       "score": 78,
-      "recent5": "1-2-2-3-1",
-      "recent10_2rate": 70.0,
+      "recent5": "2-3-1-3-1",
+      "recent10_2rate": 60.0,
       "official_2rate": 36.9,
-      "gap": 33.1
-    },
-    {
-      "venue": "大村",
-      "venue_num": 24,
-      "motor_no": 37,
-      "motor_2rate": 48.05,
-      "races_today": [
-        3,
-        10
-      ],
-      "races_today_str": "3R・10R",
-      "score": 78,
-      "recent5": "1-1-1-1-2",
-      "recent10_2rate": 70.0,
-      "official_2rate": 48.05,
-      "gap": 22.0
-    },
-    {
-      "venue": "多摩川",
-      "venue_num": 5,
-      "motor_no": 53,
-      "motor_2rate": 31.3,
-      "races_today": [
-        2,
-        11
-      ],
-      "races_today_str": "2R・11R",
-      "score": 77,
-      "recent5": "4-1-4-1-2",
-      "recent10_2rate": 80.0,
-      "official_2rate": 31.3,
-      "gap": 48.7
+      "gap": 23.1
     }
   ],
   "manshuu_alert": [
@@ -5895,6 +5894,38 @@
   ],
   "awakening_motor": [
     {
+      "venue": "常滑",
+      "venue_num": 8,
+      "motor_no": 6,
+      "motor_2rate": null,
+      "races_today": [
+        4,
+        9
+      ],
+      "races_today_str": "4R・9R",
+      "score": 100,
+      "recent10": "6-5-1-3-1-3-1-1-1-1",
+      "ex_avg": 6.75,
+      "old_2rate": 0.0,
+      "new_2rate": 60.0
+    },
+    {
+      "venue": "多摩川",
+      "venue_num": 5,
+      "motor_no": 70,
+      "motor_2rate": 31.37,
+      "races_today": [
+        7,
+        12
+      ],
+      "races_today_str": "7R・12R",
+      "score": 96,
+      "recent10": "2-1-1-1-1-1-1-1-1-1",
+      "ex_avg": 6.62,
+      "old_2rate": 20.0,
+      "new_2rate": 100.0
+    },
+    {
       "venue": "唐津",
       "venue_num": 23,
       "motor_no": 9,
@@ -5912,97 +5943,34 @@
     {
       "venue": "大村",
       "venue_num": 24,
-      "motor_no": 53,
-      "motor_2rate": 38.36,
-      "races_today": [
-        4,
-        12
-      ],
-      "races_today_str": "4R・12R",
-      "score": 95,
-      "recent10": "1-2-3-2-1-6-3-6-3-4",
-      "ex_avg": 6.9,
-      "old_2rate": 20.0,
-      "new_2rate": 40.0
-    },
-    {
-      "venue": "三国",
-      "venue_num": 10,
-      "motor_no": 55,
-      "motor_2rate": 34.07,
-      "races_today": [
-        11
-      ],
-      "races_today_str": "11R",
-      "score": 94,
-      "recent10": "4-2-2-3-2-3-2-1-1-3",
-      "ex_avg": 6.71,
-      "old_2rate": 30.0,
-      "new_2rate": 60.0
-    },
-    {
-      "venue": "若松",
-      "venue_num": 20,
-      "motor_no": 51,
-      "motor_2rate": 43.02,
-      "races_today": [
-        1,
-        9
-      ],
-      "races_today_str": "1R・9R",
-      "score": 94,
-      "recent10": "1-4-1-2-1-2-1-1-2-4",
-      "ex_avg": 6.8,
-      "old_2rate": 10.0,
-      "new_2rate": 80.0
-    },
-    {
-      "venue": "多摩川",
-      "venue_num": 5,
-      "motor_no": 70,
-      "motor_2rate": 31.37,
-      "races_today": [
-        7,
-        12
-      ],
-      "races_today_str": "7R・12R",
-      "score": 93,
-      "recent10": "2-1-2-1-1-1-1-1-1-1",
-      "ex_avg": 6.63,
-      "old_2rate": 0.0,
-      "new_2rate": 100.0
-    },
-    {
-      "venue": "児島",
-      "venue_num": 16,
-      "motor_no": 15,
-      "motor_2rate": 28.77,
+      "motor_no": 56,
+      "motor_2rate": 32.05,
       "races_today": [
         6,
         11
       ],
       "races_today_str": "6R・11R",
-      "score": 93,
-      "recent10": "3-1-3-4-1-4-1-2-2-1",
-      "ex_avg": 6.69,
-      "old_2rate": 30.0,
-      "new_2rate": 60.0
+      "score": 95,
+      "recent10": "5-4-1-1-1-1-2-1-2-1",
+      "ex_avg": 6.85,
+      "old_2rate": 40.0,
+      "new_2rate": 80.0
     },
     {
-      "venue": "びわこ",
-      "venue_num": 11,
-      "motor_no": 44,
-      "motor_2rate": 29.06,
+      "venue": "鳴門",
+      "venue_num": 14,
+      "motor_no": 12,
+      "motor_2rate": 34.02,
       "races_today": [
-        4,
-        10
+        3,
+        11
       ],
-      "races_today_str": "4R・10R",
-      "score": 92,
-      "recent10": "4-1-4-1-3-1-3-1-4-4",
-      "ex_avg": 6.75,
-      "old_2rate": 30.0,
-      "new_2rate": 40.0
+      "races_today_str": "3R・11R",
+      "score": 94,
+      "recent10": "5-2-1-5-1-5-1-1-1-1",
+      "ex_avg": 6.79,
+      "old_2rate": 10.0,
+      "new_2rate": 70.0
     },
     {
       "venue": "びわこ",
@@ -6013,27 +5981,58 @@
         12
       ],
       "races_today_str": "12R",
-      "score": 92,
-      "recent10": "3-3-2-1-2-1-2-2-3-2",
-      "ex_avg": 6.75,
+      "score": 93,
+      "recent10": "2-1-2-1-2-2-3-2-3-2",
+      "ex_avg": 6.73,
       "old_2rate": 40.0,
-      "new_2rate": 70.0
+      "new_2rate": 80.0
     },
     {
-      "venue": "桐生",
-      "venue_num": 1,
-      "motor_no": 21,
-      "motor_2rate": 34.47,
+      "venue": "大村",
+      "venue_num": 24,
+      "motor_no": 14,
+      "motor_2rate": 30.12,
       "races_today": [
         3,
-        9
+        11
       ],
-      "races_today_str": "3R・9R",
+      "races_today_str": "3R・11R",
+      "score": 91,
+      "recent10": "2-3-2-3-2-3-4-1-4-1",
+      "ex_avg": 6.87,
+      "old_2rate": 0.0,
+      "new_2rate": 50.0
+    },
+    {
+      "venue": "三国",
+      "venue_num": 10,
+      "motor_no": 55,
+      "motor_2rate": 34.07,
+      "races_today": [
+        11
+      ],
+      "races_today_str": "11R",
       "score": 90,
-      "recent10": "1-1-3-3-2-3-2-1-4-1",
-      "ex_avg": 6.74,
-      "old_2rate": 40.0,
+      "recent10": "2-2-3-2-3-2-1-1-3-3",
+      "ex_avg": 6.7,
+      "old_2rate": 30.0,
       "new_2rate": 60.0
+    },
+    {
+      "venue": "鳴門",
+      "venue_num": 14,
+      "motor_no": 65,
+      "motor_2rate": 33.7,
+      "races_today": [
+        7,
+        12
+      ],
+      "races_today_str": "7R・12R",
+      "score": 90,
+      "recent10": "4-6-2-1-2-1-1-1-1-1",
+      "ex_avg": 6.81,
+      "old_2rate": 40.0,
+      "new_2rate": 80.0
     },
     {
       "venue": "唐津",
