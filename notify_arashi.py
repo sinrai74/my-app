@@ -3219,7 +3219,11 @@ def run(race_date: Optional[str] = None) -> None:
 def _run_main(race_date: str | None = None) -> None:
     """メイン処理本体"""
     if race_date is None:
-        race_date = date.today().strftime("%Y%m%d")
+        # GitHub Actions のランナーは UTC のため date.today() だと
+        # JST 8:00〜8:59（UTC 23時台）の実行で「前日」の日付になっていた。
+        # 他の箇所と同じく JST で当日を決める。
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        race_date = _dt.now(_tz(_td(hours=9))).strftime("%Y%m%d")
 
     log.info("▶ 開始 date=%s  threshold=%.1f  送信先=%s",
              race_date, UPSET_SCORE_THRESHOLD, MAIL_TO)
