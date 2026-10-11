@@ -14,6 +14,8 @@ previews API由来のデータ（展示タイム・展示ST・風速・風向・
 本ドキュメント中で明示し、使用箇所がある場合は「教師データとしてのみ」と注記する。
 
 最終更新: 2026-07-03　対象コードバージョン: asahi-v1.0-phase1
+（2026-10-11 追記: 現行コード asahi-v4.0-unified-engine と照合し、確認できた事実に合わせて記述を訂正した。
+訂正箇所は各節の「【2026-10 訂正】」を参照。仕様・動作の変更ではない）
 
 ---
 
@@ -57,18 +59,22 @@ previews API由来のデータ（展示タイム・展示ST・風速・風向・
 ### 算出方法
 ────────────────────────
 実装: `x_asahi_scoring.calc_danger_score_v2()`
-設定: `asahi_config.json` の `danger_score.weights` / `danger_score.thresholds`
+設定: `asahi_config.json` の `danger_score.relative_weights` / `danger_score.solo_weights` /
+`danger_score.solo_thresholds`（`danger_score.thresholds` は現行の `x_asahi_scoring.py` から参照されていない）
 
-100点満点で以下6項目を加算する（Phase1初期重み、業界知見ベース）：
+【2026-10 訂正】旧記述（6項目: win_rate_low 28点・motor_bad 22点…）は Phase1 実装のもので、
+現行 Ver4 は「相対評価7項目＋単体評価7項目」の合計（上限100点）である。
 
 ```
-danger_score =
-    win_rate_low(最大28点)     # 1号艇の全国勝率が他艇平均の85%未満の場合、比率に応じて加点
-  + motor_bad(最大22点)        # 1号艇のモーター2連率が他艇平均の90%未満の場合、比率に応じて加点
-  + avg_st_slow(最大18点)      # 平均ST >= 0.18 で満額、>= 0.16 で55%
-  + class_gap(最大14点)        # 1号艇がB1/B2級の場合。他艇にA1級がいれば満額、いなければ60%
-  + course_st_slow(最大10点)   # 1コースST実績 >= 0.18 で満額、>= 0.16 で50%
-  + course_rank_bad(最大8点)   # 1コースST順位実績 >= 4.0位で満額、>= 3.0位で50%
+danger_score = min(100,
+    相対評価（1号艇より優れている他艇の数 × per_boat、max_weight で頭打ち）
+      win_rate(4.0/艇, 最大20) + local_win(2.0, 10) + avg_st(2.4, 12) + motor(3.2, 16)
+    + racer_class(2.0, 10) + ability_trend(1.6, 8) + course_rentai(2.4, 12)
+  + 単体評価（1号艇自身の値が絶対基準を下回る場合の固定加点）
+      win_rate_low(2: 勝率<5.0) + local_win_low(1: 当地<5.0) + motor_bad(2: <33.0)
+    + avg_st_slow(2: >=0.17) + course1_place_low(1: 1コース1着率<45%)
+    + f_risk(2: 1コースF率>=8%) + venue_unfavorable(2: 場補正係数<0.85)
+)
 ```
 
 各重みの採用理由は `asahi_config.json` 内の `reason` フィールドに記載。
@@ -76,7 +82,10 @@ danger_score =
 ────────────────────────
 ### 更新タイミング
 ────────────────────────
-毎朝1回（cron: UTC 19:15 = JST 04:15）。生成後は当日中固定・再計算しない（朝刊AIポリシー）。
+毎朝1回（`.github/workflows/x_ranking.yml` の cron: UTC 22:30 = JST 07:30。【2026-10 訂正】旧記述 JST 04:15 は実設定と不一致）。生成後は当日中固定・再計算しない（朝刊AIポリシー）。
+注: 15分ごとの `notify_arashi.py` も `calculate_upset_score_v2()` を呼び、`venue_num` を渡して算出する。
+危険艇速報側の `x_ranking._calc_danger_breakdown()` は `calc_danger_score_v2(boat1, all_boats)` を
+場の引数なしで呼ぶため、場補正（course_rentai の場係数・venue_unfavorable）の分だけ両者の値が一致しないことがある。
 
 ────────────────────────
 ### 使用可否・データ区分
@@ -181,13 +190,16 @@ upset_prob = 1 - (1号艇の相対確率)
 ```
 match_index = Σ(掲載ブランドの配点 × ランクボーナス)
 
-配点: danger=20, manshuu=20, korogashi=20, motor_hot=15, motor_awk=15
-ランクボーナス: rank_of(score)がSランク(80+)なら×1.15、Aランク(65+)なら×1.05
+配点: danger=25.7, manshuu=25.7, motor_hot=19.3, motor_awk=19.3, hot_high=10
+（【2026-10 訂正】`x_brand_config.MATCH_INDEX_POINTS` の現行値。korogashi は配点表に含まれない）
+ランクボーナス: スコア80以上なら×1.15、60以上なら×1.05
+（【2026-10 訂正】`_calc_match_index()` は `rank_of()` を使わず 80/60 の固定境界で判定しており、
+Aランク境界(65)とは一致していない。記述を実装に合わせたもので、実装は変更していない）
 （rank_ofの閾値は x_brand_config.RANK_THRESHOLDS を単一の基準とする）
 ```
 
 複数のAIブランドが同じレースを推すほど高スコアになる設計。100点上限でクランプ。
-「高配当期待」ブランドは2026年7月の仕様変更で廃止済み、配点対象から除外。
+【2026-10 訂正】「高配当期待」（hot_high）は `x_brand_config.MATCH_INDEX_POINTS` に10点として残っている。
 
 ────────────────────────
 ### 更新タイミング
@@ -300,10 +312,11 @@ upset_index =
 ────────────────────────
 ### 既知の制約
 ────────────────────────
-`motor_history.csv` のキーは `(venue_num, motor_no)`（会場・モーター番号単位）であり、
-レース番号を持たない。そのため「そのモーターがどのレースの何号艇として使われ、
-結果として何着だったか」を `hit_record.csv` と直接突合することができず、
-**AI実績ページでの的中率算出は現時点で未実装（データ整備中）**。
+`load_motor_history()` の集計キーは `(venue_num, motor_no)`（会場・モーター番号単位）。
+【2026-10 訂正】`motor_history.csv` 自体は `race_number` 列を持っている（commit `693e78d` 時点のファイルで全 98,939 行に値あり。行数は日々増える）。
+「どのレースで何着だったか」の突合はデータ上は可能だが、AI実績ページ側の集計は
+**現時点で未実装（データ整備中）**。
+注: `place` 列には完走着順(1〜6)以外のコード（7〜16）が含まれる（commit `693e78d` 時点で 1,249 行）。
 
 ---
 
@@ -360,30 +373,37 @@ upset_index =
 ────────────────────────
 ### 使用データ
 ────────────────────────
-`korogashi_cache.json`
+BoatraceOpenAPI programs v2 / previews v2（【2026-10 訂正】生成元は `x_korogashi.py`。
+`.github/workflows/x_korogashi.yml` から毎朝 JST 06:30 に実行され `korogashi_cache.json` を出力する）
 
 ────────────────────────
 ### 使用カラム
 ────────────────────────
-不明（生成元スクリプト未確認）
+`x_korogashi.WEIGHTS` の9指標の入力（展示タイム・平均ST・モーター2連率・直近成績・コース勝率・
+1号艇信頼度・相手関係・期待値・気象）
 
 ────────────────────────
 ### 算出方法
 ────────────────────────
-**未確認**。`korogashi_cache.json` を生成するスクリプトが本プロジェクトのコードベースに
-含まれておらず、算出ロジックの詳細を記載できない。`x_note_report._load_korogashi_cache()`
-が読み込む `top10` リストの各要素は `venue`, `race`, `verdict`（"購入"/"注意"等）,
-`fitness`（スコア）フィールドを持つことが読み込み側コードから確認できるのみ。
+実装: `x_korogashi.calc_korogashi_score()`。2〜4号艇（条件付きで5・6号艇）を対象に、
+9指標（展示18・平均ST14・モーター14・直近成績12・コース勝率10・イン信頼度逆数10・
+相手関係8・期待値8・気象6）を重み付き平均して「AI信頼度」とし、配当期待との調和平均を
+転がし適性（fitness）とする。85以上=購入、70以上=注意、未満=見送り。
+注: `scan_all_races()` では `odds_map` が常に空のまま `calc_korogashi_score()` に渡されるため、
+オッズに基づく期待値の計算は行われていない。
 
 ────────────────────────
 ### 更新タイミング
 ────────────────────────
-不明（生成元スクリプト未確認のため）
+毎朝1回（cron: UTC 21:30 = JST 06:30）。手動実行で `post_type=final` を選ぶと `--final`（確定版）で実行される。
 
 ────────────────────────
 ### 使用可否・データ区分
 ────────────────────────
-**未確認**。previews由来データを使用しているかどうか含め、生成元スクリプトの共有・確認が必要。
+【2026-10 訂正】`x_korogashi._apply_preview_to_boats()` で previews 由来の展示タイム・気象を
+boats/weather に反映し、採点に使用している（コードで確認した実装の事実）。
+この記載は実装の現状を記録したものであり、朝刊AIポリシー上の承認や仕様の変更を意味しない。
+本書冒頭の朝刊AIポリシーとの関係は未判断。
 
 ────────────────────────
 ### 出力先
@@ -393,7 +413,7 @@ upset_index =
 ────────────────────────
 ### TODO
 ────────────────────────
-生成元スクリプトの共有を受け次第、本セクションを完成させる。
+朝刊AIポリシーとの関係（上記「使用可否・データ区分」）は未判断。
 
 ---
 
@@ -417,7 +437,7 @@ upset_index =
 | `uncertainty` | モデル予測の不確実性（分散指標） |
 | `disagreement` | 複数モデル間の予測の割れ具合 |
 | `composite` | キャリブレーション後の信頼度 |
-| `race_type` | レースタイプ（本命戦/混戦/超混戦/荒れ戦） |
+| `race_type` | レースタイプ（設定上の想定値: 本命戦/混戦/超混戦/荒れ戦）【2026-10 訂正】`notify_arashi._evaluate_bets()` が BuyScore に渡す値は `_classify_race_type()` の「イン逃げ型/1残り荒れ型/大荒れ型/混戦型/4カド型/モンスター型」のいずれかで、`buyscore_config.json` の `race_type_points` や `_race_type_bonus()` のキーと一致しない。このため、この経路では race_type 補正（`_race_type_bonus()`）は0、`assign_rank_labels()` の最大点数は既定の4点となる（2026-10-11 にコードで確認） |
 | `odds` | 3連単オッズ（帯域別に補正） |
 
 ────────────────────────

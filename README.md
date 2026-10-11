@@ -44,6 +44,14 @@ git rm --cached hit_record.csv motor_history.csv
 git commit -m "chore: 運用データをGit管理対象外にする"
 ```
 
+> **【2026-10 訂正】commit `693e78d` 時点の追跡状態（事実。上のコマンドの実行を勧めるものではない）**
+> - `hit_record.csv` は Git で追跡されていない（`.gitignore` で除外済み）。上のコマンドの `hit_record.csv` は対象がない。
+> - `motor_history.csv`・`ranking_cache.json`・`daily_stats.json`・`buyscore_config.json`・`buyscore_analysis.json`・
+>   `manshuu_sent.json` は追跡済みで、`.github/workflows/x_ranking.yml` の「Commit motor history」ステップが
+>   `git add` して commit している（`.gitignore` に記載があっても、追跡済みのため更新される）。
+> - 追跡済みのファイルに `git rm --cached` を実行すると、`.gitignore` の記載により同ステップの `git add`
+>   （`2>/dev/null || true` 付き）が効かなくなり、Git による保存が止まる。
+
 ---
 
 ## 2. CSVスキーマ管理
@@ -54,7 +62,11 @@ git commit -m "chore: 運用データをGit管理対象外にする"
 | バージョン | 列数 | 内容 |
 |---|---|---|
 | v1 | 22列 | 予想・結果・回収の基本項目のみ |
-| **v2（現在）** | 34列 | v1 + 購入判定分離(`purchased`/`buyscore`/`match_index`/`skip_reason`) + Phase2学習用特徴量(`feat_*`) |
+| v2 | 34列 | v1 + 購入判定分離(`purchased`/`buyscore`/`match_index`/`skip_reason`) + Phase2学習用特徴量(`feat_*`) |
+| v3 | 37列 | v2 + `danger_score_v3`/`rank_index_json`/`featured_boats_json` |
+| **v4（現在）** | 44列 | v3 + `venue_water_type`/`venue_factor`/`ability_trend`/`course_f_rate_1c`/`course_l_rate_1c`/`course_rentai2_1c`/`course_sample_confidence` |
+
+【2026-10 訂正】`csv_schema.CURRENT_SCHEMA_VERSION` は 4（44列）。
 
 現在の期待バージョンは `csv_schema.CURRENT_SCHEMA_VERSION` で確認できます。
 
@@ -116,14 +128,17 @@ python migration.py
 ============================================================
 ```
 
-### 将来スキーマを追加する手順（例: v2 → v3）
+【2026-10 訂正】上は v1→v2 の出力例（例中のバックアップ名の日付は 2026-07-04）。現在の最新は v4（44列）で、
+v1 のファイルは v1→v2→v3→v4 と1段ずつ移行される。
+
+### 将来スキーマを追加する手順（例: v4 → v5。v5 は存在しない仮想の例）
 CSVを手作業で編集する運用は禁止です。必ず以下の3手順で対応してください。
 
-1. `csv_schema.py` に v3 の完全な列リストと、新規列の初期値を追加する。
-2. `migration.py` に `migrate_v2_to_v3(rows)` を実装する。
-3. `migration.py` の `MIGRATIONS` に `(2, 3): migrate_v2_to_v3` を1行追加する。
+1. `csv_schema.py` に v5 の完全な列リストと、新規列の初期値を追加する。
+2. `migration.py` に `migrate_v4_to_v5(rows)` を実装する。
+3. `migration.py` の `MIGRATIONS` に `(4, 5): migrate_v4_to_v5` を1行追加する。
 
-これだけで、v1のファイルも v1→v2→v3 と自動で最新まで移行されます
+これだけで、v1のファイルも v1→v2→v3→v4→v5 と自動で最新まで移行されます
 （1段ずつのチェーン方式のため、途中バージョンを飛ばした変換は書きません）。
 
 ---
@@ -177,3 +192,8 @@ python ops_check.py
  Data Integrity   OK
 ================================================================
 ```
+
+【2026-10 訂正】上は導入当時の出力例。commit `693e78d` 時点のコードでは、`motor_history.csv` が追跡済みのため
+`check_git_tracked_runtime_data()` により「Git管理対象」は NG となり、「CSV Version」には
+`v4（期待バージョン）` が表示される（`CURRENT_SCHEMA_VERSION` を表示する）。いずれもコードの読み取りによるもので、
+`ops_check.py` を実行した結果ではない。
