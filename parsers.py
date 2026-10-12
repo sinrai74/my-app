@@ -257,12 +257,32 @@ def merge_bangumi_fan(bangumi_df: pd.DataFrame, fan_df: pd.DataFrame) -> pd.Data
     return merged
 
 
-def attach_k_results(merged_df: pd.DataFrame, k_df: pd.DataFrame) -> pd.DataFrame:
-    """番組表DFにK結果を付与"""
+def attach_k_results(
+    merged_df: pd.DataFrame,
+    k_df: pd.DataFrame,
+    date_col: str | None = None,
+) -> pd.DataFrame:
+    """番組表DFにK結果を付与
+
+    date_col を指定すると、その列（番組表・K結果の両方に必要）もキーに含めて
+    結合する。複数日分をまとめて渡す場合は必ず指定すること（指定しないと、
+    同じ場・同じレース番号の別の日の結果が結合される）。
+    """
+    race_keys = ["場コード", "レースNo"] + ([date_col] if date_col else [])
+    if date_col:
+        for name, df in (("番組表", merged_df), ("K結果", k_df)):
+            if date_col not in df.columns:
+                raise ValueError(f"{name}に日付列 {date_col!r} がない")
+            if df[date_col].isna().any() or (df[date_col].astype(str) == "").any():
+                raise ValueError(f"{name}の日付列 {date_col!r} に空の値がある")
+        dup = k_df.duplicated(subset=race_keys, keep=False)
+        if dup.any():
+            raise ValueError(f"K結果に同じレースの結果が重複している: {int(dup.sum())}行")
+
     rows: list[dict] = []
     for _, r in k_df.iterrows():
         for rank, col in [(1,"1着"),(2,"2着"),(3,"3着")]:
-            rows.append({
+            row = {
                 "場コード":   str(r["場コード"]),
                 "レースNo":   r["レースNo"],
                 "艇番":       r[col],
@@ -270,13 +290,19 @@ def attach_k_results(merged_df: pd.DataFrame, k_df: pd.DataFrame) -> pd.DataFram
                 "払戻":       r["払戻"],
                 "人気":       np.nan,
                 "返還フラグ": r["返還フラグ"],
-            })
+            }
+            if date_col:
+                row[date_col] = r[date_col]
+            rows.append(row)
     result_long = pd.DataFrame(rows)
     merged = merged_df.copy()
     merged["場コード"] = merged["場コード"].astype(str)
-    merged = merged.merge(result_long, on=["場コード","レースNo","艇番"], how="left")
+    n_before = len(merged)
+    merged = merged.merge(result_long, on=race_keys + ["艇番"], how="left")
+    if date_col and len(merged) != n_before:
+        raise ValueError(f"結果の結合で行数が変わった: {n_before} → {len(merged)}")
 
-    for (vc, rno), idx in merged.groupby(["場コード","レースNo"]).groups.items():
+    for _key, idx in merged.groupby(race_keys).groups.items():
         sub = merged.loc[idx]
         for seq, i in enumerate(sub[sub["着順_k"].isna()].index, start=4):
             merged.loc[i, "着順_k"] = seq

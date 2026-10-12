@@ -48,9 +48,24 @@ jobs:
           if [ -z "$WEEKS" ]; then
             WEEKS="4"
           fi
-          python retrain.py
+          set -o pipefail
+          python retrain.py 2>&1 | tee retrain_log.txt
+
+      # 手動実行（検証用）では main へ commit せず、モデルとログを artifact に保存する
+      # （docs/上位判断記録_再学習ラベル混在_20261012.md D3-3）
+      - name: Upload model as artifact (manual run)
+        if: github.event_name != 'schedule'
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrain-model-${{ github.run_id }}
+          path: |
+            model_all.pkl
+            retrain_log.txt
+          retention-days: 14
+          if-no-files-found: error
 
       - name: Commit updated model
+        if: github.event_name == 'schedule'
         run: |
           git config user.email "action@github.com"
           git config user.name "GitHub Action"

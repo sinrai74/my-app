@@ -7,10 +7,13 @@ odds_fetch.py  ── ボートレース公式サイトから3連単オッズを
 """
 
 from __future__ import annotations
+import logging
 import time
 import re
 import requests
 from bs4 import BeautifulSoup
+
+log = logging.getLogger(__name__)
 
 BASE_URL = "https://www.boatrace.jp/owpc/pc/race/odds3t"
 HEADERS  = {
@@ -60,6 +63,8 @@ def fetch_odds(
                 time.sleep(2.0)
                 continue
             print(f"[odds_fetch] HTTP失敗: {e}")
+            log.warning("[odds_fetch] 取得失敗(HTTP): %s %sR %s: %s",
+                        venue_code, race_no, race_date, e)
             return {}
 
     soup = BeautifulSoup(res.content, "html.parser")
@@ -84,7 +89,33 @@ def fetch_odds(
 
 def _parse_v3(soup: BeautifulSoup) -> dict[str, float]:
     """
-    複数の解析手法を順番に試し、120点最も近い結果を採用する。
+    表のラベル（1着・2着・3着の艇番）から組番を読む。
+
+    ラベル方式で表の構造を認識できたときは、その結果だけを返す。
+    欠場・発売前など数値でないセルの組番はキーを入れない（既存の契約どおり）。
+    出現順に辞書順の組番を割り当てる手法Bは、ページの並びと一致しないため
+    採用しない（docs/incidents/2026-10-09_odds-parser-combo-mismatch.md）。
+    """
+    try:
+        labeled = _method_labels(soup)
+    except OddsTableError as e:
+        labeled = None
+        log.warning("[odds_fetch] 解析失敗(3連単表の構造を認識できない): %s", e)
+
+    if labeled is not None:
+        print(f"[odds_fetch] 採用手法: labels ({len(labeled)}点)")
+        if not labeled:
+            log.warning("[odds_fetch] 有効なオッズ0件(表は認識。欠場・発売前など)")
+        return labeled
+
+    return _parse_label_based_fallback(soup)
+
+
+def _parse_label_based_fallback(soup: BeautifulSoup) -> dict[str, float]:
+    """
+    ラベル方式で表を認識できなかった場合の旧来の手法。
+    組番をラベル（艇番のセル・テキスト）から読む手法A・Cだけを試す。
+    位置だけで組番を決める手法Bは使わない。
     """
     results = []
 
@@ -95,13 +126,6 @@ def _parse_v3(soup: BeautifulSoup) -> dict[str, float]:
     except Exception as e:
         print(f"[odds_fetch] 手法A失敗: {e}")
 
-    # 手法B: oddsPoint を順番に取り出して辞書順割り当て
-    try:
-        r = _method_b_sequential(soup)
-        results.append(("B_sequential", r))
-    except Exception as e:
-        print(f"[odds_fetch] 手法B失敗: {e}")
-
     # 手法C: 全テキストから数値パターンで抽出
     try:
         r = _method_c_text(soup)
@@ -110,12 +134,119 @@ def _parse_v3(soup: BeautifulSoup) -> dict[str, float]:
         print(f"[odds_fetch] 手法C失敗: {e}")
 
     if not results:
+        log.warning("[odds_fetch] 解析失敗(代替手法もすべて例外)")
         return {}
 
-    # 120点に最も近い結果を採用
     best_name, best = max(results, key=lambda x: len(x[1]))
     print(f"[odds_fetch] 採用手法: {best_name} ({len(best)}点)")
+    if best:
+        log.warning("[odds_fetch] ラベル方式で表を認識できず代替手法 %s を使用 (%d点)",
+                    best_name, len(best))
+    else:
+        log.warning("[odds_fetch] 解析失敗(オッズを1件も読めない)")
     return best
+
+
+# ════════════════════════════════════════════════════════════
+# ラベル方式: 1つの表の thead(1着) と各セル(2着・3着)から組番を読む
+# ════════════════════════════════════════════════════════════
+
+class OddsTableError(ValueError):
+    """3連単オッズ表の構造を認識できない"""
+
+
+def _odds_value(td) -> float | None:
+    """オッズのセルを数値にする。欠場・発売前など数値でなければ None"""
+    txt = td.get_text(strip=True).replace(",", "")
+    try:
+        v = float(txt)
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+def _boat_no(td) -> int:
+    txt = td.get_text(strip=True)
+    if not txt.isdigit() or not 1 <= int(txt) <= 6:
+        raise OddsTableError(f"艇番のセルが不正: {txt!r}")
+    return int(txt)
+
+
+def _method_labels(soup: BeautifulSoup) -> dict[str, float] | None:
+    """
+    3連単オッズ表（1つの table）から組番とオッズを読む。
+
+    表の形:
+      thead: 1着艇番が6列（th の数字）
+      tbody: 1行に1着艇ごとの [2着(rowspanあり)] 3着 オッズ が6組並ぶ。
+             2着のセルは rowspan で4行分にまたがる。
+
+    戻り値:
+      dict  … 表を認識できた。数値でないセル（欠場等）の組番は含めない
+      None  … oddsPoint を含む表がない（このページ形式ではない）
+    例外 OddsTableError … 表はあるが構造が想定と違う
+    """
+    tables = [t for t in soup.find_all("table") if t.find("td", class_="oddsPoint")]
+    if not tables:
+        return None
+    if len(tables) != 1:
+        raise OddsTableError(f"oddsPoint を含む表が {len(tables)} 個ある")
+    table = tables[0]
+
+    firsts = [int(th.get_text(strip=True))
+              for th in table.select("thead th")
+              if th.get_text(strip=True).isdigit()]
+    if sorted(firsts) != [1, 2, 3, 4, 5, 6]:
+        raise OddsTableError(f"thead の1着艇番が不正: {firsts}")
+
+    n_cols = len(firsts)
+    second: list[int | None] = [None] * n_cols
+    second_left = [0] * n_cols
+    seen: set[str] = set()
+    odds_map: dict[str, float] = {}
+
+    rows = table.select("tbody tr")
+    if not rows:
+        raise OddsTableError("tbody に行がない")
+
+    for tr in rows:
+        tds = tr.find_all("td")
+        i = 0
+        for col in range(n_cols):
+            if second_left[col] == 0:
+                if i >= len(tds):
+                    raise OddsTableError("2着のセルが足りない")
+                cell = tds[i]
+                try:
+                    span = int(cell.get("rowspan", "1"))
+                except ValueError:
+                    raise OddsTableError("rowspan が数値でない")
+                second[col] = _boat_no(cell)
+                second_left[col] = span
+                i += 1
+            if i + 1 >= len(tds):
+                raise OddsTableError("3着・オッズのセルが足りない")
+            third_td, odds_td = tds[i], tds[i + 1]
+            if "oddsPoint" not in (odds_td.get("class") or []):
+                raise OddsTableError("オッズのセルの位置が想定と違う")
+            a, b, c = firsts[col], second[col], _boat_no(third_td)
+            if len({a, b, c}) != 3:
+                raise OddsTableError(f"組番が不正: {a}-{b}-{c}")
+            combo = f"{a}-{b}-{c}"
+            if combo in seen:
+                raise OddsTableError(f"組番が重複: {combo}")
+            seen.add(combo)
+            v = _odds_value(odds_td)
+            if v is not None:
+                odds_map[combo] = v
+            i += 2
+            second_left[col] -= 1
+        if i != len(tds):
+            raise OddsTableError("行のセル数が想定と違う")
+
+    if len(seen) != 120:
+        raise OddsTableError(f"組番が120通りでない: {len(seen)}")
+    return odds_map
 
 
 # ════════════════════════════════════════════════════════════

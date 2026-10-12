@@ -104,6 +104,22 @@ def download_race_data(target_date: date) -> tuple[Path | None, Path | None]:
     return None, None
 
 
+def check_label_integrity(merged, n_entries: int) -> None:
+    """結果付与後の学習データを検証する。異常があれば例外で止める。"""
+    if len(merged) != n_entries:
+        raise ValueError(f"結果付与で行数が変わった: {n_entries} → {len(merged)}")
+    keys = ["_file_date", "場コード", "レースNo"]
+    dup = merged.duplicated(subset=keys + ["艇番"], keep=False)
+    if dup.any():
+        raise ValueError(f"同じ日・場・レース・艇番の行が重複: {int(dup.sum())}行")
+    winners = (merged["着順"] == 1).groupby([merged[k] for k in keys]).sum()
+    if (winners > 1).any():
+        raise ValueError(f"1着が2艇以上のレース: {int((winners > 1).sum())}件")
+    log.info("ラベル検証: %d日 / %dレース / %d行 / 結果なし %dレース",
+             merged["_file_date"].nunique(), len(winners), len(merged),
+             int((winners == 0).sum()))
+
+
 def retrain():
     DATA_DIR.mkdir(exist_ok=True)
 
@@ -114,12 +130,13 @@ def retrain():
     log.info("データ収集開始: %d日分", len(dates))
 
     # ファイルダウンロード
-    b_files, k_files = [], []
+    b_files, k_files, file_dates = [], [], []
     for d in dates:
         b, k = download_race_data(d)
         if b and k:
             b_files.append(b)
             k_files.append(k)
+            file_dates.append(d.strftime("%Y-%m-%d"))
 
     log.info("取得成功: B=%d K=%d", len(b_files), len(k_files))
 
@@ -137,11 +154,17 @@ def retrain():
     import pandas as pd
     import numpy as np
 
+    # 複数日分を連結するため、取得した日付を両方のDFに付けて結合のキーにする
+    # （docs/incidents/2026-10-12_retrain-label-cross-date-mix.md）
     all_b, all_k = [], []
-    for bf, kf in zip(b_files, k_files):
+    for bf, kf, fd in zip(b_files, k_files, file_dates):
         try:
-            all_b.append(parse_bangumi(bf))
-            all_k.append(parse_k_file(kf))
+            bdf = parse_bangumi(bf)
+            kdf = parse_k_file(kf)
+            bdf["_file_date"] = fd
+            kdf["_file_date"] = fd
+            all_b.append(bdf)
+            all_k.append(kdf)
         except Exception as e:
             log.warning("パースエラー: %s", e)
 
@@ -158,7 +181,9 @@ def retrain():
     else:
         merged = bangumi_df
 
-    merged = attach_k_results(merged, k_df)
+    n_entries = len(merged)
+    merged = attach_k_results(merged, k_df, date_col="_file_date")
+    check_label_integrity(merged, n_entries)
     merged["1着フラグ"]  = (merged["着順"] == 1).astype(int)
     merged["3着内フラグ"] = (merged["着順"] <= 3).astype(int)
     merged["log払戻"]    = np.log1p(merged["払戻"].fillna(0) / 100)
