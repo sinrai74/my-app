@@ -26,6 +26,11 @@ on:
         required: false
         default: "0"
 
+# ── 同時実行の防止 ──
+concurrency:
+  group: notify-arashi
+  cancel-in-progress: false
+
 jobs:
   notify:
     runs-on: ubuntu-latest
