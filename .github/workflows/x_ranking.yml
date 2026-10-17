@@ -179,19 +179,6 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python x_post.py --type hot $IMG $DRY
 
-      # ── 万舟警報を送信 ───────────────────────────────────
-      - name: Send - Manshuu Alert
-        if: steps.post_type.outputs.type == 'danger' || steps.post_type.outputs.type == 'all'
-        env:
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
-        run: |
-          IMG=""
-          [ "${{ github.event.inputs.with_image }}" != "false" ] && [ -f manshuu_1.png ] && IMG="--with-image"
-          DRY=""
-          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
-          python x_post.py --type manshuu $IMG $DRY
-
       # ── 覚醒モーターを送信（覚醒度90以上のみ）───────────
       - name: Send - Awakening Motor
         if: steps.post_type.outputs.type == 'awakening' || steps.post_type.outputs.type == 'all'
