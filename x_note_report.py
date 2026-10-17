@@ -1274,6 +1274,18 @@ def generate_html(data: dict, output_path: str) -> None:
 
     # 新セクション用データ（INDEX/イチオシ/TOP5で共有・全件ベース）
     race_index_data    = _build_race_index(data)   # (sorted_index, brand_counts, race_scores)
+
+    # 【P①】AIランキング（一致指数トップ10）に載ったレースは、危険艇データが
+    # あれば危険艇カードを必ず掲載する（上位20件の枠外なら末尾に追加）。
+    # ランキングの順位・件数・リンク先の決め方は変えない。
+    _rank_keys = {k for k, _ in sorted(race_index_data[2].items(),
+                                       key=lambda kv: -kv[1]["match_index"])[:10]}
+    _shown = {(d.get("venue", ""), d.get("race", "")) for d in danger_display}
+    danger_display = danger_display + [
+        d for d in sorted(all_danger, key=lambda x: -x.get("score", 0))
+        if (d.get("venue", ""), d.get("race", "")) in _rank_keys
+        and (d.get("venue", ""), d.get("race", "")) not in _shown
+    ]
     venue_conditions    = calc_venue_conditions(data)
     dashboard_data      = build_dashboard(data, venue_conditions)
     dashboard_section   = _render_dashboard_section(data, dashboard_data)
