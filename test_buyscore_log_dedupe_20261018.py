@@ -77,8 +77,9 @@ def test_crashed_run_record_is_absent_not_partial(gh):
     xrs.download_file(LOG, LOG)
     with open(LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec("4", None, 2)) + "\n")
-    gh.fault("POST", r"name=buyscore_log\.jsonl\.new", "crash")
+    gh.fault("POST", r"name=buyscore_log\.jsonl$", "crash")   # 本体を消した後、上げ直す前に停止
     with pytest.raises(Crash):
         xrs.upload_file(LOG, LOG)
-    recs, bad = canon.read_jsonl(gh.get_data(LOG).decode().splitlines())
+    assert xrs.download_file(LOG, "fresh.jsonl")                # 本体が無いので .bak を読む
+    recs, bad = canon.read_jsonl(open("fresh.jsonl", encoding="utf-8").read().splitlines())
     assert bad == 0 and [r["n"] for r in recs] == [1]

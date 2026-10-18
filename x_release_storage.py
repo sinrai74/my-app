@@ -34,7 +34,6 @@ import logging
 import os
 import re
 import shutil
-import time
 from typing import Optional
 
 import requests
@@ -147,10 +146,21 @@ def _get_or_create_release() -> Optional[dict]:
     return None
 
 
-def _find_asset(release: dict, name: str) -> Optional[dict]:
+def _find_raw(release: dict, name: str) -> Optional[dict]:
+    """state を問わず name の asset を返す（片付け用）。"""
     for asset in release.get("assets", []):
         if asset.get("name") == name:
             return asset
+    return None
+
+
+def _find_asset(release: dict, name: str) -> Optional[dict]:
+    """読み込み・統合に使ってよい asset を返す。
+    state が uploaded 以外（アップロード失敗で残る空の starter など）は「無いもの」として扱う。
+    state が無い応答は uploaded とみなす。"""
+    asset = _find_raw(release, name)
+    if asset and asset.get("state", "uploaded") == "uploaded":
+        return asset
     return None
 
 
@@ -229,24 +239,6 @@ def _upload_asset(release: dict, name: str, local_path: str) -> Optional[dict]:
     log.warning("[release_storage] アセットアップロード失敗: status=%s body=%s", resp.status_code, resp.text[:200])
     return None
 
-
-
-def _rename_asset(asset_id: int, new_name: str) -> Optional[dict]:
-    """アセット名を変更する（Releases API: PATCH /releases/assets/{id}）。"""
-    headers = _headers()
-    repo = _get_repo()
-    if not headers or not repo:
-        return None
-    url = f"{API_BASE}/repos/{repo}/releases/assets/{asset_id}"
-    try:
-        resp = requests.patch(url, headers=headers, json={"name": new_name}, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as e:
-        log.warning("[release_storage] アセット名変更失敗（通信エラー）: %s", e)
-        return None
-    if resp.status_code == 200:
-        return resp.json()
-    log.warning("[release_storage] アセット名変更失敗: status=%s body=%s", resp.status_code, resp.text[:200])
-    return None
 
 
 # ════════════════════════════════════════════════════════════
@@ -417,11 +409,11 @@ def download_file(filename: str, local_path: str) -> bool:
     （呼び出し側は「ファイルなし＝空から開始」として扱うこと）。
     is_available() が False の場合も False を返す（処理は継続させる）。
 
-    本体が無い場合の扱い：
-      ・filename.new がある → 前回の保存が「本体の切替」の直前で止まった状態。
-        .new が最新の内容なので、それを読む。
-      ・追記型ファイルで .bak だけがある → 旧方式の保存の途中（本体削除〜再アップロード
-        の間）か、その失敗後の状態。空から始めると履歴を失うため .bak を読む。
+    ・state が uploaded 以外の asset（失敗したアップロードの残骸）は読まない。
+    ・追記型ファイルで本体が無く .bak だけがある場合は .bak を読む。
+      保存の途中（本体の削除〜再アップロードの間）で止まった状態で、
+      .bak はその直前の本体と同じ内容（upload_file の手順2で検証済み）。
+    ・ダウンロードに失敗した場合、local_path は変更しない。
     """
     if not is_available():
         log.info("[release_storage] GITHUB_TOKEN/GITHUB_REPOSITORY未設定のためスキップ: %s", filename)
@@ -433,12 +425,8 @@ def download_file(filename: str, local_path: str) -> bool:
 
     asset = _find_asset(release, filename)
     if not asset:
-        staged = _find_asset(release, filename + ".new")
         backup = _find_asset(release, filename + ".bak")
-        if staged:
-            log.warning("[release_storage] %s の本体が無く .new があるため .new を読みます", filename)
-            asset = staged
-        elif backup and merge_kind(filename):
+        if backup and merge_kind(filename):
             log.warning("[release_storage] %s の本体が無いため .bak を読みます（追記型）", filename)
             asset = backup
         else:
@@ -451,19 +439,63 @@ def download_file(filename: str, local_path: str) -> bool:
     return ok
 
 
+def _upload_verified(release: dict, name: str, local_path: str) -> bool:
+    """name をアップロードし、size（と取得できれば sha256）が local_path と一致することを確かめる。
+
+    応答が失敗・タイムアウトでも、サーバー側では完了していることがあるため、
+    Release を読み直して判定する。一致しない・state が uploaded でない asset が残っていれば
+    削除して False を返す（読み込み側が未検証の内容を使わないようにする）。
+    """
+    local_size = os.path.getsize(local_path)
+    local_sha = _sha256(local_path)
+
+    def _matches(asset: Optional[dict]) -> bool:
+        if not asset or asset.get("state", "uploaded") != "uploaded":
+            return False
+        if asset.get("size") != local_size:
+            return False
+        digest = asset.get("digest") or ""
+        if digest.startswith("sha256:") and digest.split(":", 1)[1] != local_sha:
+            return False
+        return True
+
+    up = _upload_asset(release, name, local_path)
+    if _matches(up):
+        return True
+
+    # 応答が無い・失敗・不一致 → 実際の状態を読み直す
+    fresh = _get_or_create_release()
+    if not fresh:
+        log.error("[release_storage] %s: アップロード後の状態を確認できません", name)
+        return False
+    found = _find_raw(fresh, name)
+    if _matches(found):
+        log.warning("[release_storage] %s: 応答は失敗だったが、保存は完了していました", name)
+        return True
+    if found:
+        log.error("[release_storage] %s: 検証できない asset を削除します (state=%s size=%s local=%d)",
+                  name, found.get("state"), found.get("size"), local_size)
+        _delete_asset(found["id"])
+    else:
+        log.error("[release_storage] %s: アップロード失敗", name)
+    return False
+
+
 def upload_file(local_path: str, filename: str, merge: Optional[bool] = None) -> bool:
     """
     local_path の内容を Release へ filename として保存する。
 
-    保存の手順（Release 上に「本体が無い時間」と「部分的な内容」を作らない）：
-      1. 追記型ファイル（merge_kind）は、Release 上の最新版をダウンロードしてローカルと統合する。
-         Release 上に版があるのにダウンロードできない場合は保存しない（False）。
-      2. 新しい内容を filename.new としてアップロードし、サイズ（と取得できれば sha256）を検証する。
-      3. 旧 .bak を削除し、現在の本体の名前を filename.bak に変える。
-      4. filename.new の名前を filename に変える。
-    1〜3 のどこで失敗しても、Release 上の本体は元のまま残る（.new は片付ける）。
-    4 で失敗した場合は、本体の代わりに .new が最新として残り、download_file と次回の
-    upload_file がそれを本体として扱う。
+    保存の手順（名前の付け替えは使わない）：
+      0. 本体・.bak の名前で state が uploaded 以外の asset（失敗したアップロードの残骸）があれば消す。
+      1. 追記型ファイル（merge_kind）は、Release 上の最新版（本体、無ければ .bak）を
+         ダウンロードしてローカルと統合する。Release 上に版があるのに読めない場合は保存しない。
+      2. 本体があれば、その内容を .bak として上げ直し、検証する（旧 .bak は先に削除）。
+         ここで失敗したら本体には触れずに中止する。
+      3. 本体を削除する。
+      4. 新しい内容を本体としてアップロードし、検証する。
+    手順3〜4の間に止まった場合、Release には .bak（＝直前の本体と同じ内容）だけが残り、
+    追記型ファイルは download_file・次回の upload_file が .bak を読む。
+    確定済みの内容が Release 上から無くなる時点は無い（.bak の検証が通った後にだけ本体を消すため）。
 
     merge: None（既定）＝ファイル名から自動判定、False＝統合しない（全置換。手動の整理用）。
     """
@@ -478,38 +510,38 @@ def upload_file(local_path: str, filename: str, merge: Optional[bool] = None) ->
     if not release:
         return False
 
-    stage_name = filename + ".new"
     backup_name = filename + ".bak"
     kind = merge_kind(filename) if merge is None or merge else None
 
-    main = _find_asset(release, filename)
-    staged = _find_asset(release, stage_name)
-
-    # ── 0. 前回の切替が途中で止まっていたら、先に .new を本体へ切り替える ──
-    if not main and staged:
-        log.warning("[release_storage] %s: 前回の切替の途中状態を回復します（.new → 本体）", filename)
-        if not _rename_asset(staged["id"], filename):
-            log.error("[release_storage] %s: 途中状態の回復に失敗。保存を中止します", filename)
-            return False
+    # ── 0. 失敗したアップロードの残骸を片付ける ─────────────────
+    cleaned = False
+    for name in (filename, backup_name):
+        raw = _find_raw(release, name)
+        if raw and not _find_asset(release, name):
+            log.warning("[release_storage] %s: state=%s の asset を削除します", name, raw.get("state"))
+            if not _delete_asset(raw["id"]):
+                log.error("[release_storage] %s: 残骸を削除できないため保存しません", name)
+                return False
+            cleaned = True
+    if cleaned:
         release = _get_or_create_release()
         if not release:
             return False
-        main = _find_asset(release, filename)
-        staged = None
 
-    # ── 1. 追記型ファイルは Release 上の最新版と統合する ──────────
-    if kind:
-        base = main or _find_asset(release, backup_name)
+    main = _find_asset(release, filename)
+    remote_copy = local_path + ".remote.tmp"
+    try:
+        # ── 1. Release 上の最新版を取得（追記型は統合、本体があれば .bak 用） ──
+        base = main or (_find_asset(release, backup_name) if kind else None)
+        have_remote = False
         if base:
-            tmp_remote = local_path + ".remote.tmp"
-            try:
-                if not _download_asset(base, tmp_remote):
-                    log.error("[release_storage] %s: Release 上の版を取得できないため保存しません", filename)
-                    return False
-                remote_text = _read_text(tmp_remote)
-            finally:
-                if os.path.exists(tmp_remote):
-                    os.remove(tmp_remote)
+            if not _download_asset(base, remote_copy):
+                log.error("[release_storage] %s: Release 上の版を取得できないため保存しません", filename)
+                return False
+            have_remote = True
+
+        if kind and have_remote:
+            remote_text = _read_text(remote_copy)
             local_text = _read_text(local_path)
             try:
                 merged = merge_text(kind, remote_text, local_text)
@@ -521,58 +553,40 @@ def upload_file(local_path: str, filename: str, merge: Optional[bool] = None) ->
             if main and merged == remote_text:
                 log.info("[release_storage] %s: 追加分なし（保存不要）", filename)
                 return True
+        elif kind == "csv_rows":
+            try:
+                _check_csv_widths(_read_text(local_path), None)
+            except MergeConflict as e:
+                log.error("[release_storage] %s: 保存しません: %s", filename, e)
+                return False
 
-    # ── 2. 新しい内容を .new としてアップロードし、検証する ──────────
-    if staged and not _delete_asset(staged["id"]):
-        log.error("[release_storage] %s: 古い .new を削除できないため保存しません", filename)
-        return False
-    if staged:
-        release = _get_or_create_release()
-        if not release:
-            return False
+        # ── 2. 現在の本体を .bak に写す（検証が通るまで本体には触れない） ──
+        if main:
+            old_bak = _find_raw(release, backup_name)
+            if old_bak and not _delete_asset(old_bak["id"]):
+                log.error("[release_storage] %s: 旧 .bak を削除できないため保存しません", filename)
+                return False
+            if not _upload_verified(release, backup_name, remote_copy):
+                log.error("[release_storage] %s: .bak を作れないため保存しません（本体は元のまま）", filename)
+                return False
 
-    up = _upload_asset(release, stage_name, local_path)
-    if not up:
-        log.error("[release_storage] 本体アップロード失敗: %s", filename)
-        return False
+            # ── 3. 本体を削除する ──────────────────────────────
+            if not _delete_asset(main["id"]):
+                log.error("[release_storage] %s: 本体を削除できないため保存しません（本体は元のまま）", filename)
+                return False
 
-    local_size = os.path.getsize(local_path)
-    remote_size = up.get("size")
-    digest = up.get("digest") or ""
-    bad = remote_size != local_size
-    if not bad and digest.startswith("sha256:"):
-        bad = digest.split(":", 1)[1] != _sha256(local_path)
-    if bad:
-        log.error(
-            "[release_storage] アップロード後の検証失敗: %s (local=%d, remote=%s)",
-            filename, local_size, remote_size,
-        )
-        _delete_asset(up["id"])
-        return False
-
-    # ── 3. 現在の本体を .bak にする ─────────────────────────────
-    if main:
-        old_bak = _find_asset(release, backup_name)
-        if old_bak and not _delete_asset(old_bak["id"]):
-            log.error("[release_storage] %s: 旧 .bak を削除できないため保存を中止します", filename)
-            _delete_asset(up["id"])
-            return False
-        if not _rename_asset(main["id"], backup_name):
-            log.error("[release_storage] %s: 本体を .bak にできないため保存を中止します", filename)
-            _delete_asset(up["id"])
-            return False
-
-    # ── 4. .new を本体にする ──────────────────────────────────
-    if not _rename_asset(up["id"], filename):
-        time.sleep(1)
-        if not _rename_asset(up["id"], filename):
+        # ── 4. 新しい内容を本体として上げる ─────────────────────────
+        if not _upload_verified(release, filename, local_path):
             log.error(
-                "[release_storage] %s: 本体への切替に失敗。最新の内容は %s に残っています"
-                "（次回の読込・保存で回復）", filename, stage_name,
+                "[release_storage] %s: 本体の保存に失敗。直前の内容は %s に残っています（次回の読込・保存で回復）",
+                filename, backup_name,
             )
             return False
+    finally:
+        if os.path.exists(remote_copy):
+            os.remove(remote_copy)
 
-    log.info("[release_storage] %s をアップロードしました（%dバイト）", filename, local_size)
+    log.info("[release_storage] %s をアップロードしました（%dバイト）", filename, os.path.getsize(local_path))
     return True
 
 

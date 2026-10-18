@@ -46,34 +46,49 @@ class FakeGH:
         self.calls = []
 
     # ── テスト用の操作 ──
-    def put(self, name, data: bytes):
+    def put(self, name, data: bytes, state="uploaded"):
         self.next_id += 1
-        self.assets[self.next_id] = {"name": name, "data": data}
+        self.assets[self.next_id] = {"name": name, "data": data, "state": state}
 
     def names(self):
         return sorted(a["name"] for a in self.assets.values())
 
     def get_data(self, name):
         for a in self.assets.values():
-            if a["name"] == name:
+            if a["name"] == name and a.get("state", "uploaded") == "uploaded":
                 return a["data"]
         return None
 
-    def fault(self, method, pattern, action="error", times=1):
-        self.faults.append([method, re.compile(pattern), action, times])
+    def fault(self, method, pattern, action="error", times=1, nth=1):
+        """pattern に合う method の呼び出しのうち nth 回目から times 回、action を起こす。
+        action: error（500）/ neterr（送信前の通信エラー）/ crash（送信前に異常終了）/
+                badsize（途中までしか届かない）/ after_timeout・after_crash（サーバー側で処理した後に
+                タイムアウト・異常終了）/ starter502（空の starter を残して 502）"""
+        self.faults.append([method, re.compile(pattern), action, times, nth])
 
     def _check_fault(self, method, url):
         for f in self.faults:
             if f[0] == method and f[3] > 0 and f[1].search(url):
+                if f[4] > 1:
+                    f[4] -= 1
+                    continue
                 f[3] -= 1
                 if f[2] == "crash":
                     raise Crash(f"{method} {url}")
                 if f[2] == "neterr":
                     raise requests.ConnectionError("injected")
-                if f[2] == "badsize":
-                    return "badsize"
+                if f[2] in ("badsize", "after_timeout", "after_crash", "starter502"):
+                    return f[2]
                 return Resp(500, {"message": "injected"})
         return None
+
+    @staticmethod
+    def _after(f, resp):
+        if f == "after_timeout":
+            raise requests.ReadTimeout("injected after server-side effect")
+        if f == "after_crash":
+            raise Crash("after server-side effect")
+        return resp
 
     def _asset_json(self, i):
         a = self.assets[i]
@@ -81,6 +96,7 @@ class FakeGH:
             "id": i, "name": a["name"], "size": len(a["data"]),
             "url": f"{API}/repos/o/r/releases/assets/{i}",
             "digest": "sha256:" + hashlib.sha256(a["data"]).hexdigest(),
+            "state": a.get("state", "uploaded"),
         }
 
     # ── requests の代わり ──
@@ -93,7 +109,10 @@ class FakeGH:
             return Resp(200, {"id": 1, "assets": [self._asset_json(i) for i in sorted(self.assets)]})
         m = re.search(r"/releases/assets/(\d+)$", url)
         if m and int(m.group(1)) in self.assets:
-            return Resp(200, content=self.assets[int(m.group(1))]["data"])
+            a = self.assets[int(m.group(1))]
+            if a.get("state", "uploaded") != "uploaded":
+                return Resp(404, {})
+            return Resp(200, content=a["data"])
         return Resp(404, {})
 
     def post(self, url, headers=None, data=None, json=None, timeout=None, **kw):
@@ -106,11 +125,14 @@ class FakeGH:
             name = m.group(1)
             if name in [a["name"] for a in self.assets.values()]:
                 return Resp(422, {"message": "already_exists"})
-            self.put(name, data)
-            body = self._asset_json(self.next_id)
+            if f == "starter502":
+                self.put(name, b"", state="starter")
+                return Resp(502, {"message": "Bad Gateway"})
             if f == "badsize":
-                body["size"] = body["size"] + 1
-            return Resp(201, body)
+                self.put(name, data[:-1] if data else b"")   # 途中までしか届かなかった内容
+                return Resp(201, self._asset_json(self.next_id))
+            self.put(name, data)
+            return self._after(f, Resp(201, self._asset_json(self.next_id)))
         return Resp(404, {})
 
     def delete(self, url, headers=None, timeout=None, **kw):
@@ -121,7 +143,7 @@ class FakeGH:
         m = re.search(r"/releases/assets/(\d+)$", url)
         if m and int(m.group(1)) in self.assets:
             del self.assets[int(m.group(1))]
-            return Resp(204)
+            return self._after(f, Resp(204))
         return Resp(404, {})
 
     def patch(self, url, headers=None, json=None, timeout=None, **kw):
@@ -146,7 +168,6 @@ def gh(monkeypatch, tmp_path):
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
     for m in ("get", "post", "delete", "patch"):
         monkeypatch.setattr(xrs.requests, m, getattr(fake, m))
-    monkeypatch.setattr(xrs.time, "sleep", lambda s: None)
     monkeypatch.chdir(tmp_path)
     return fake
 
@@ -244,109 +265,140 @@ def test_interleaved_runs_both_kept(gh):
 
 
 # ════════════════════════════════════════════════════════════
-# 各手順での失敗：本体は元のまま（または回復可能）、履歴は失われない
+# 各手順での失敗・異常終了・応答のタイムアウト
+# 本体と .bak がある状態の保存は「旧.bak削除 → .bak POST → 本体削除 → 本体 POST」の4つの書込み
 # ════════════════════════════════════════════════════════════
 
-FAIL_POINTS = [
-    ("POST", r"name=buyscore_log\.jsonl\.new", "error"),     # .new のアップロード
-    ("POST", r"name=buyscore_log\.jsonl\.new", "badsize"),   # 検証の不一致
-    ("POST", r"name=buyscore_log\.jsonl\.new", "neterr"),
-    ("DELETE", r"/releases/assets/\d+$", "error"),           # 旧 .bak の削除
-    ("PATCH", r"/releases/assets/\d+$", "error"),            # 本体 → .bak
+STEPS = [
+    ("DELETE", r"/releases/assets/\d+$", 1),           # 旧 .bak の削除
+    ("POST", r"name=buyscore_log\.jsonl\.bak$", 1),     # .bak の作成
+    ("DELETE", r"/releases/assets/\d+$", 2),           # 本体の削除
+    ("POST", r"name=buyscore_log\.jsonl$", 1),          # 本体の作成
 ]
+ACTIONS = ["error", "neterr", "crash", "after_timeout", "after_crash"]
 
 
-@pytest.mark.parametrize("method,pat,action", FAIL_POINTS)
-def test_failure_keeps_main_intact(gh, method, pat, action):
+def _assets_ok(gh):
+    """Release に本体と .bak 以外が残っておらず、starter も無い"""
+    assert set(gh.names()) <= {LOG, LOG + ".bak"}
+    assert all(a.get("state", "uploaded") == "uploaded" for a in gh.assets.values())
+
+
+@pytest.mark.parametrize("method,pat,nth", STEPS)
+@pytest.mark.parametrize("action", ACTIONS)
+def test_any_step_failure_loses_no_committed_data(gh, method, pat, nth, action):
     gh.put(LOG, (A + B).encode())
     gh.put(LOG + ".bak", A.encode())
     _w(LOG, A + B + C)
-    gh.fault(method, pat, action)
-    assert not xrs.upload_file(LOG, LOG)
-    assert gh.get_data(LOG) == (A + B).encode()
-    assert LOG + ".new" not in gh.names()
-    # 次の実行は通常どおり保存できる
-    assert xrs.upload_file(LOG, LOG)
-    assert _lines(gh.get_data(LOG)) == [A.strip(), B.strip(), C.strip()]
-
-
-def test_promote_failure_leaves_new_and_recovers(gh):
-    gh.put(LOG, (A + B).encode())
-    _w(LOG, A + B + C)
-    # 本体→.bak は成功、.new→本体 は2回とも失敗
-    gh.fault("PATCH", r"/releases/assets/\d+$", "error", times=0)
-    calls = {"n": 0}
-    orig = gh.patch
-
-    def patch(url, **kw):
-        calls["n"] += 1
-        if calls["n"] >= 2:
-            return Resp(500, {})
-        return orig(url, **kw)
-
-    gh.patch = patch
-    xrs.requests.patch = patch
-    assert not xrs.upload_file(LOG, LOG)
-    assert LOG not in gh.names()
-    assert sorted(gh.names()) == [LOG + ".bak", LOG + ".new"]
-    # 読み込みは .new（最新）を読む
-    assert xrs.download_file(LOG, "read.jsonl")
-    assert _r("read.jsonl") == A + B + C
-    # 次の保存で回復する
-    xrs.requests.patch = orig
-    with open("read.jsonl", "a", encoding="utf-8") as f:
-        f.write('{"n":4}\n')
-    assert xrs.upload_file("read.jsonl", LOG)
-    assert LOG + ".new" not in gh.names()
-    assert _lines(gh.get_data(LOG))[-1] == '{"n":4}'
-
-
-@pytest.mark.parametrize("method,pat", [
-    ("POST", r"name=buyscore_log\.jsonl\.new"),
-    ("DELETE", r"/releases/assets/\d+$"),
-    ("PATCH", r"/releases/assets/\d+$"),
-])
-def test_crash_at_any_step_loses_no_committed_data(gh, method, pat):
-    gh.put(LOG, (A + B).encode())
-    gh.put(LOG + ".bak", A.encode())
-    _w(LOG, A + B + C)
-    gh.fault(method, pat, "crash")
-    with pytest.raises(Crash):
+    gh.fault(method, pat, action, nth=nth)
+    try:
         xrs.upload_file(LOG, LOG)
-    # 新しい実行環境で読む
+    except Crash:
+        pass
+    # 新しい実行環境で読むと、確定済みの A・B は必ず読める
     assert xrs.download_file(LOG, "fresh.jsonl")
     got = _lines(open("fresh.jsonl", "rb").read())
     assert A.strip() in got and B.strip() in got
-    # そこへ追記して保存すれば、C を含めて回復する（C は異常終了した実行の分）
+    assert len(got) == len(set(got))
+    # その実行が追記して保存すれば、C を含めて重複なく回復する
     with open("fresh.jsonl", "a", encoding="utf-8") as f:
-        f.write(C)
+        if C.strip() not in got:
+            f.write(C)
     assert xrs.upload_file("fresh.jsonl", LOG)
     final = _lines(gh.get_data(LOG))
-    assert final.count(C.strip()) == 1
-    assert {A.strip(), B.strip(), C.strip()} <= set(final)
-    assert LOG + ".new" not in gh.names()
+    assert sorted(final) == sorted([A.strip(), B.strip(), C.strip()])
+    _assets_ok(gh)
 
 
-def test_crash_between_bak_and_promote(gh):
-    """本体を .bak にした直後に停止（本体が無い唯一の状態）"""
+def test_main_upload_timeout_after_success_is_success(gh):
+    """本体の POST がサーバー側では完了したのに応答がタイムアウト → 読み直して成功と判定"""
     gh.put(LOG, (A + B).encode())
     _w(LOG, A + B + C)
-    n = {"i": 0}
-    orig = gh.patch
+    gh.fault("POST", r"name=buyscore_log\.jsonl$", "after_timeout")
+    assert xrs.upload_file(LOG, LOG)
+    assert gh.get_data(LOG) == (A + B + C).encode()
+    assert gh.get_data(LOG + ".bak") == (A + B).encode()
 
-    def patch(url, **kw):
-        n["i"] += 1
-        if n["i"] == 2:
-            raise Crash("after main->bak")
-        return orig(url, **kw)
 
-    xrs.requests.patch = patch
-    with pytest.raises(Crash):
-        xrs.upload_file(LOG, LOG)
-    xrs.requests.patch = orig
-    assert LOG not in gh.names()
+def test_bak_is_verified_before_main_is_deleted(gh):
+    """.bak が途中までしか届かなかったら、本体を消さずに中止する"""
+    gh.put(LOG, (A + B).encode())
+    _w(LOG, A + B + C)
+    gh.fault("POST", r"name=buyscore_log\.jsonl\.bak$", "badsize")
+    assert not xrs.upload_file(LOG, LOG)
+    assert gh.get_data(LOG) == (A + B).encode()
+    assert LOG + ".bak" not in gh.names()            # 検証できない .bak は消す
+
+
+def test_truncated_main_is_removed_and_bak_is_read(gh):
+    """本体が途中までしか届かなかった → その本体を消し、読み込みは .bak（直前の本体）"""
+    gh.put(LOG, (A + B).encode())
+    _w(LOG, A + B + C)
+    gh.fault("POST", r"name=buyscore_log\.jsonl$", "badsize")
+    assert not xrs.upload_file(LOG, LOG)
+    assert gh.names() == [LOG + ".bak"]
     assert xrs.download_file(LOG, "fresh.jsonl")
-    assert _r("fresh.jsonl") == A + B + C
+    assert _r("fresh.jsonl") == A + B
+
+
+# ════════════════════════════════════════════════════════════
+# 初回保存・starter・読めない本体
+# ════════════════════════════════════════════════════════════
+
+def test_first_save_starter_is_never_adopted(gh):
+    """初回保存で 502 → 空の starter が残る。読み込みにも統合にも使わず、次の保存で片付ける"""
+    _w(LOG, A)
+    gh.fault("POST", r"name=buyscore_log\.jsonl$", "starter502")
+    assert not xrs.upload_file(LOG, LOG)
+    assert gh.get_data(LOG) is None                  # starter は正規データではない
+    os.remove(LOG)
+    assert not xrs.download_file(LOG, "fresh.jsonl")  # 初回扱い（starter を読まない）
+    assert not os.path.exists("fresh.jsonl")
+    _w(LOG, A + B)
+    assert xrs.upload_file(LOG, LOG)
+    assert gh.get_data(LOG) == (A + B).encode()
+    _assets_ok(gh)
+
+
+def test_starter_main_with_bak_reads_bak(gh):
+    gh.put(LOG + ".bak", (A + B).encode())
+    gh.put(LOG, b"", state="starter")
+    assert xrs.download_file(LOG, "fresh.jsonl")
+    assert _r("fresh.jsonl") == A + B
+    _w("fresh.jsonl", A + B + C)
+    assert xrs.upload_file("fresh.jsonl", LOG)
+    assert gh.get_data(LOG) == (A + B + C).encode()
+    _assets_ok(gh)
+
+
+def test_unreadable_main_never_overwritten_with_less(gh):
+    """本体が読めないとき：download はローカルを変えず、upload は保存しない"""
+    gh.put(LOG, (A + B).encode())
+    _w(LOG, C)                                         # ローカルに別の内容
+    gh.fault("GET", r"/releases/assets/\d+$", times=10)
+    assert not xrs.download_file(LOG, LOG)
+    assert _r(LOG) == C                                # 空で上書きしない
+    assert not xrs.upload_file(LOG, LOG)
+    assert gh.names() == [LOG]
+    assert gh.get_data(LOG) == (A + B).encode()
+
+
+def test_release_list_failure_changes_nothing(gh):
+    gh.put(LOG, (A + B).encode())
+    _w(LOG, A + B + C)
+    gh.fault("GET", r"/releases/tags/data-store", times=10)
+    assert not xrs.upload_file(LOG, LOG)
+    assert not xrs.download_file(LOG, "fresh.jsonl")
+    gh.faults.clear()
+    assert gh.names() == [LOG]
+    assert gh.get_data(LOG) == (A + B).encode()
+
+
+def test_no_rename_api_is_used(gh):
+    gh.put(LOG, (A + B).encode())
+    _w(LOG, A + B + C)
+    assert xrs.upload_file(LOG, LOG)
+    assert not any(c[0] == "PATCH" for c in gh.calls)
 
 
 def test_legacy_gap_state_reads_bak(gh):

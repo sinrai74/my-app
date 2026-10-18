@@ -116,7 +116,7 @@ def test_existing_release_hit_record_is_not_overwritten(env):
 
 def test_save_failure_is_retried_next_run(env):
     gh, run, calls = env
-    gh.fault("POST", r"name=sent_\d+\.txt\.new", "error")
+    gh.fault("POST", r"name=sent_\d+\.txt$", "error")
     run(D1, [entry(1, 1, "1-2-3")])
     assert gh.get_data(f"sent_{D1}.txt") is None
     run(D1, [entry(1, 2, "1-2-3")])                      # 次の実行は保存できる
@@ -127,7 +127,7 @@ def test_save_failure_is_retried_next_run(env):
 def test_crash_during_sent_save_then_recovers(env):
     gh, run, calls = env
     run(D1, [entry(1, 1, "1-2-3")])
-    gh.fault("PATCH", r"/releases/assets/\d+$", "crash")
+    gh.fault("DELETE", r"/releases/assets/\d+$", "after_crash")   # 本体を消した直後に停止
     with pytest.raises(Crash):
         run(D1, [entry(1, 2, "1-2-3")])
     run(D2)
