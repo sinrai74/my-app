@@ -123,7 +123,31 @@ def newspaper_post(
     top_race: str = "",
     top_match: int = 0,
 ) -> str:
-    """AI競艇新聞のX投稿候補3種を返す"""
+    """AI競艇新聞のX投稿候補3種を返す
+
+    manshuu_count=None のときは「万舟」に触れない文面を使う（新聞の万舟警報の一覧を撤去した場合。E1b）。
+    """
+    if manshuu_count is None:
+        normals = [
+            f"📰本日のAI競艇新聞を公開しました。\n危険艇{danger_count}件・モーター情報を掲載。\nnoteで全文読めます。\n{TAGS_NOTE}",
+            f"📰AI競艇新聞 {datetime.now(JST).strftime('%m/%d')}号を配信しました。\n全開催場・全レースをAIが解析。\n今日の全体像はこちらから。\n{TAGS_NOTE}",
+            f"📰今日のAI競艇新聞を公開しました。\n危険艇・モーター情報を1本にまとめています。\nnoteで無料公開中です。\n{TAGS_NOTE}",
+        ]
+        buzzes = [
+            f"今日AIが最も注目しているのは{top_venue}{top_race}R📰\nAI一致指数{top_match}で4ブランドが一致。\n詳細は新聞へ。\n{TAGS_NOTE}",
+            f"AI{danger_count}件の危険艇を特定しました📰\n今日どこに資金を集中させるか、新聞で確認してください。\n{TAGS_NOTE}",
+            f"毎朝AIが全レースを解析しています📰\n今日のトップレースは{top_venue}{top_race}R。\n読むだけで今日の全体像がわかります。\n{TAGS_NOTE}",
+        ]
+        reps = [
+            f"読むだけで今日の全体像がわかります👇\nnoteで無料公開中です。\n{TAGS_NOTE}",
+            f"危険艇からモーター情報まで全掲載しています👇\nnoteへどうぞ。\n{TAGS_NOTE}",
+            f"全レース解析レポートはnoteで公開しています👇\n{TAGS_NOTE}",
+        ]
+        return _format_posts(
+            _wrap(_pick(normals, 6)),
+            _wrap(_pick(buzzes, 7)),
+            _wrap(_pick(reps, 8)),
+        )
 
     normals = [
         f"📰本日のAI競艇新聞を公開しました。\n危険艇{danger_count}件・万舟{manshuu_count}件・モーター情報を掲載。\nnoteで全文読めます。\n{TAGS_NOTE}",

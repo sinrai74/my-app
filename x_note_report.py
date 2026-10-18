@@ -24,6 +24,7 @@ import json
 import logging
 import math
 import os
+import re
 import smtplib
 import sys
 from datetime import datetime, timedelta, timezone
@@ -49,6 +50,17 @@ log = logging.getLogger("x_note")
 JST           = timezone(timedelta(hours=9))
 MAIL_TO       = "bigkirinuki@gmail.com"
 RANKING_CACHE = "ranking_cache.json"
+
+# 【E1b】新聞の「AI万舟警報」の一覧（セクション・件数・目次・manshuu.csv・メールの案内・
+# X投稿候補の「万舟」）を出すか。False で撤去する。ランキング・INDEX・カードの 💰（一致指数の
+# 根拠となる属性）とヒートマップは残し、ツールチップは「AI万舟警報」ではなく「万舟」にする（B2）。
+# スコア・一致指数・ランキングの順位と件数・daily_stats は変えない。
+NEWSPAPER_SHOW_MANSHUU_LIST = False
+
+# 【J4】ページ内に行き先（危険艇のカード・各セクション）が無い内部リンクは、リンクにしない。
+# 行・順位・件数・表示する文字は変えず、href だけを外す。
+# 万舟のカード宛（"-manshuu"）のリンクは E1b の側で扱う（一覧を撤去したときに外す）。
+NEWSPAPER_LINK_ONLY_EXISTING = True
 
 
 # ════════════════════════════════════════════════════════════
@@ -174,7 +186,7 @@ def _generate_editor_note(data: dict, conditions: list) -> str:
 
     if s_danger:
         lines.append(f"危険艇Sランク{len(s_danger)}件")
-    if s_manshuu:
+    if s_manshuu and NEWSPAPER_SHOW_MANSHUU_LIST:
         lines.append(f"万舟Sランク{len(s_manshuu)}件")
 
     if not lines:
@@ -413,20 +425,22 @@ def generate_csvs(data: dict, prefix: str = "") -> list[str]:
     paths.append(path)
 
     # ── manshuu.csv ─────────────────────────────────────────
-    path = f"{prefix}manshuu.csv"
-    all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
-    with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["日付","会場","レース","荒れ指数","ランク","注目選手","荒れる理由","AIコメント"])
-        for u in all_manshuu:
-            score = u.get("score", 0)
-            rank  = "S" if score >= 80 else "A" if score >= 60 else "B"
-            w.writerow([
-                date_str, u.get("venue",""), u.get("race",""),
-                score, rank, u.get("key_racer",""),
-                u.get("key_reason",""), _manshuu_comment(u),
-            ])
-    paths.append(path)
+    # 【E1b】一覧を撤去した場合は作らない
+    if NEWSPAPER_SHOW_MANSHUU_LIST:
+        path = f"{prefix}manshuu.csv"
+        all_manshuu = data.get("all_manshuu", data.get("manshuu_alert", []))
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["日付","会場","レース","荒れ指数","ランク","注目選手","荒れる理由","AIコメント"])
+            for u in all_manshuu:
+                score = u.get("score", 0)
+                rank  = "S" if score >= 80 else "A" if score >= 60 else "B"
+                w.writerow([
+                    date_str, u.get("venue",""), u.get("race",""),
+                    score, rank, u.get("key_racer",""),
+                    u.get("key_reason",""), _manshuu_comment(u),
+                ])
+        paths.append(path)
 
     # ── motor.csv ────────────────────────────────────────────
     path = f"{prefix}motor.csv"
@@ -664,6 +678,10 @@ def _render_dashboard_section(data: dict, dashboard: dict) -> str:
     if d["calm_venue"]:
         venue_html += f'<div class="dash-venue-row"><span class="dv-label">🛡️ 最も堅そう</span><span class="dv-venue">{d["calm_venue"]}</span></div>'
 
+    _manshuu_cell = ""
+    if NEWSPAPER_SHOW_MANSHUU_LIST:
+        _manshuu_cell = ('<div class="dash-cell s"><div class="dc-num">' + str(d["manshuu_s_count"]) +
+                         '</div><div class="dc-label">💰万舟S</div></div>')
     return f"""
 <section id="dashboard">
   <h2>📋 今日のダッシュボード</h2>
@@ -671,7 +689,7 @@ def _render_dashboard_section(data: dict, dashboard: dict) -> str:
     <div class="dash-cell"><div class="dc-num">{d['venues_analyzed']}</div><div class="dc-label">解析開催場数</div></div>
     <div class="dash-cell"><div class="dc-num">{d['races_analyzed']}</div><div class="dc-label">解析レース数</div></div>
     <div class="dash-cell s"><div class="dc-num">{d['danger_s_count']}</div><div class="dc-label">🚨危険艇S</div></div>
-    <div class="dash-cell s"><div class="dc-num">{d['manshuu_s_count']}</div><div class="dc-label">💰万舟S</div></div>
+    {_manshuu_cell}
     <div class="dash-cell"><div class="dc-num">{d['motor_hot_count']}</div><div class="dc-label">⚡激走モーター</div></div>
     <div class="dash-cell"><div class="dc-num">{d['motor_awk_count']}</div><div class="dc-label">📈覚醒モーター</div></div>
     <div class="dash-cell hi"><div class="dc-num">{d['high_match_count']}</div><div class="dc-label">一致指数95+</div></div>
@@ -931,10 +949,17 @@ def _stars(score: float) -> str:
     return stars(score, max_score=100)
 
 
+def _brand_title(b: str) -> str:
+    """バッジ・INDEX のアイコンのツールチップ。一覧を撤去した万舟は短い名前（B2）。"""
+    if b == "manshuu" and not NEWSPAPER_SHOW_MANSHUU_LIST:
+        return BRAND_SHORT.get(b, b)
+    return BRAND_NAMES.get(b, b)
+
+
 def _brand_badge_html(brands: list[str]) -> str:
     """レース詳細カードのタイトル右上に表示するブランドバッジ"""
     icons = "".join(
-        f'<span class="brand-badge" title="{BRAND_NAMES.get(b,b)}">{BRAND_ICONS.get(b,"")}</span>'
+        f'<span class="brand-badge" title="{_brand_title(b)}">{BRAND_ICONS.get(b,"")}</span>'
         for b in brands
     )
     return f'<span class="brand-badges">{icons}</span>' if icons else ""
@@ -980,6 +1005,10 @@ def _render_index_section(data: dict) -> str:
             race_num = 0
         return (venue, race_num)
 
+    if not NEWSPAPER_SHOW_MANSHUU_LIST:
+        # 一覧を撤去したため、万舟だけのレースの行と注記は出さない
+        manshuu_only_top20 = []
+        excluded_count = 0
     display_index = sorted(others + manshuu_only_top20, key=_sort_key)
 
     rows_html = ""
@@ -988,9 +1017,11 @@ def _render_index_section(data: dict) -> str:
         # （危険艇＋万舟の両方が付いているレースは、どちらのアイコンを押しても
         #   対応するセクションへ別々にジャンプできる）
         icon_links = "".join(
-            f'<a href="#{_anchor_for_brand(venue, race, b)}" '
-            f'class="idx-icon-link" title="{BRAND_NAMES.get(b,b)}">'
-            f'{BRAND_ICONS.get(b,"")}</a>'
+            (f'<span class="idx-icon-link" title="{_brand_title(b)}">{BRAND_ICONS.get(b,"")}</span>'
+             if b == "manshuu" and not NEWSPAPER_SHOW_MANSHUU_LIST else
+             f'<a href="#{_anchor_for_brand(venue, race, b)}" '
+             f'class="idx-icon-link" title="{BRAND_NAMES.get(b,b)}">'
+             f'{BRAND_ICONS.get(b,"")}</a>')
             for b in brands
         )
         rows_html += f"""
@@ -1003,6 +1034,8 @@ def _render_index_section(data: dict) -> str:
     for key in ["danger", "manshuu", "motor_hot", "motor_awk"]:
         cnt = brand_counts.get(key, 0)
         if cnt == 0:
+            continue
+        if key == "manshuu" and not NEWSPAPER_SHOW_MANSHUU_LIST:
             continue
         icon = BRAND_ICONS.get(key, "")
         name = BRAND_NAMES.get(key, key)
@@ -1254,6 +1287,35 @@ def _featured_boats_html(d: dict) -> str:
     return fr_html + table_html
 
 
+_HREF_RE = re.compile(r'<a href="#([^"]*)"')
+_ID_RE = re.compile(r'\bid="([^"]+)"')
+
+
+def _unlink_missing_anchors(html: str, other: bool = True, manshuu: bool = True) -> str:
+    """
+    ページ内に id が存在しない "#..." へのリンクから href を外す
+    （<a> 要素・class・表示する文字はそのまま残す）。実在する行き先へのリンクは変えない。
+      other   : 万舟のカード宛以外（危険艇のカード・セクション）。J4
+      manshuu : 万舟のカード宛（"...-manshuu"）。E1b
+    """
+    ids = set(_ID_RE.findall(html))
+    n = [0]
+
+    def _sub(m):
+        target = m.group(1)
+        if target in ids:
+            return m.group(0)
+        if not (manshuu if target.endswith("-manshuu") else other):
+            return m.group(0)
+        n[0] += 1
+        return '<a data-nolink="1"'
+
+    out = _HREF_RE.sub(_sub, html)
+    if n[0]:
+        log.info("[HTML] 行き先の無いリンク %d 件をリンクにしない", n[0])
+    return out
+
+
 def generate_html(data: dict, output_path: str) -> None:
     date_str  = data.get("date", "")
     date_disp = f"{date_str[4:6]}/{date_str[6:8]}" if len(date_str) >= 8 else ""
@@ -1304,6 +1366,7 @@ def generate_html(data: dict, output_path: str) -> None:
 
     def rank_label(score):
         return rank_label_with_emoji(score) + "ランク"
+
 
     def danger_rows():
         rows = ""
@@ -1408,6 +1471,19 @@ def generate_html(data: dict, output_path: str) -> None:
 </section>"""
     except Exception:
         pass
+
+    _show_m = NEWSPAPER_SHOW_MANSHUU_LIST
+    _kpi_m = _toc_m = _sec_m = _dl_m = ""
+    if _show_m:
+        _kpi_m = '<div class="kpi"><div class="kn s">' + str(s_m) + '</div><div class="kl">万舟Sランク</div></div>'
+        _toc_m = '<li><a href="#manshuu">💰 AI万舟警報</a></li>'
+        _sec_m = (
+            '<!-- ⑦ 万舟警報 -->\n<section id="manshuu">\n  '
+            + _render_brand_header("manshuu", f"掲載{len(manshuu_display)}件（全{len(all_manshuu)}件中）",
+                                   _section_comment_manshuu(all_manshuu))
+            + "\n  " + manshuu_rows() + "\n</section>"
+        )
+        _dl_m = f'<li>📊 manshuu.csv　── 万舟警報 全{len(all_manshuu)}レースの詳細データ</li>'
 
     html = f"""<!DOCTYPE html>
 <html lang="ja">
@@ -1679,7 +1755,7 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
   <div class="morning-notice">この新聞は朝時点のデータを基に生成されています。掲載内容は当日中変更されません。</div>
   <div class="kpi-grid">
     <div class="kpi"><div class="kn s">{s_d}</div><div class="kl">危険Sランク</div></div>
-    <div class="kpi"><div class="kn s">{s_m}</div><div class="kl">万舟Sランク</div></div>
+    {_kpi_m}
     <div class="kpi"><div class="kn hot">{len(hot_motor)}</div><div class="kl">激走モーター</div></div>
     <div class="kpi"><div class="kn awake">{len(awake_motor)}</div><div class="kl">覚醒モーター</div></div>
   </div>
@@ -1704,7 +1780,7 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
     <li><a href="#dashboard">📋 今日のダッシュボード</a></li>
     <li><a href="#condition">📈 開催場ヒートマップ</a></li>
     <li><a href="#danger">🚨 AI危険艇速報</a></li>
-    <li><a href="#manshuu">💰 AI万舟警報</a></li>
+    {_toc_m}
     <li><a href="#motor">⚡ AI激走モーター</a></li>
     <li><a href="#awake">📈 AI覚醒モーター</a></li>
     <li><a href="#racer">👤 今日の注目レーサー</a></li>
@@ -1742,11 +1818,7 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
   {danger_rows()}
 </section>
 
-<!-- ⑦ 万舟警報 -->
-<section id="manshuu">
-  {_render_brand_header("manshuu", f"掲載{len(manshuu_display)}件（全{len(all_manshuu)}件中）", _section_comment_manshuu(all_manshuu))}
-  {manshuu_rows()}
-</section>
+{_sec_m}
 
 <!-- ⑨ 激走モーター -->
 <section id="motor">
@@ -1782,7 +1854,7 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
   <ul class="dl-list">
     <li>📄 newspaper.pdf　── 印刷・保存用PDF版（全データ収録）</li>
     <li>📊 danger.csv　── 危険な1号艇 全{len(all_danger)}レースの詳細データ</li>
-    <li>📊 manshuu.csv　── 万舟警報 全{len(all_manshuu)}レースの詳細データ</li>
+    {_dl_m}
     <li>📊 motor.csv　── 激走モーター データ一覧</li>
     <li>📊 awake.csv　── 覚醒モーター データ一覧</li>
     <li style="color:#666;font-size:.82em">※ 本記事購入後、メッセージよりデータをリクエストしてください</li>
@@ -1793,7 +1865,7 @@ section h2{{font-size:1.2em;color:var(--accent);padding:10px 0;
   <div class="footer-line">AI競艇新聞 | 全レース機械学習分析 | 毎日更新</div>
   <div class="footer-meta">
     生成日時: {date_disp} {now_str}　|　AI Engine v3.0　|
-    総データ件数: {len(all_danger)+len(all_manshuu)+len(hot_motor)+len(awake_motor)}件　|
+    総データ件数: {len(all_danger)+(len(all_manshuu) if _show_m else 0)+len(hot_motor)+len(awake_motor)}件　|
     対象開催場数: {len(venue_conditions)}場
   </div>
   <div class="footer-page">1 / 1 ページ</div>
@@ -1838,6 +1910,10 @@ window.addEventListener('scroll', function() {{
 
 </body>
 </html>"""
+
+    if NEWSPAPER_LINK_ONLY_EXISTING or not NEWSPAPER_SHOW_MANSHUU_LIST:
+        html = _unlink_missing_anchors(html, other=NEWSPAPER_LINK_ONLY_EXISTING,
+                                       manshuu=not NEWSPAPER_SHOW_MANSHUU_LIST)
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -2039,11 +2115,12 @@ def generate_pdf(html_path: str, pdf_path: str) -> bool:
 
         _danger_count_disp  = min(len(all_danger), 20)
         _manshuu_count_disp = min(len(all_manshuu), 10)
+        _pil_show_m = NEWSPAPER_SHOW_MANSHUU_LIST
 
         total_h = (
             100 + 20 +
             58 + _danger_count_disp  * 64 + 20 +
-            58 + _manshuu_count_disp * 64 + 20 +
+            ((58 + _manshuu_count_disp * 64 + 20) if _pil_show_m else 0) +
             58 + len(hot_motor)   * 48 + 20 +
             58 + len(awake_motor) * 48 + 60
         )
@@ -2065,10 +2142,11 @@ def generate_pdf(html_path: str, pdf_path: str) -> bool:
             draw_danger_row(draw, d)
         add_gap(20)
 
-        draw_section_title(draw, f"¥ 万舟警報  掲載{len(_manshuu_disp)}件（全{len(all_manshuu)}件中）", C_A)
-        for u in _manshuu_disp:
-            draw_manshuu_row(draw, u)
-        add_gap(20)
+        if _pil_show_m:
+            draw_section_title(draw, f"¥ 万舟警報  掲載{len(_manshuu_disp)}件（全{len(all_manshuu)}件中）", C_A)
+            for u in _manshuu_disp:
+                draw_manshuu_row(draw, u)
+            add_gap(20)
 
         draw_section_title(draw, f"激走モーター  全{len(hot_motor)}件", (255,112,67))
         for m in hot_motor:
@@ -2132,7 +2210,7 @@ def generate_markdown(data: dict, output_path: str) -> None:
         "- [AI編集部コメント](#comment)",
         "- [開催場ヒートマップ](#heatmap)",
         "- [危険な1号艇](#danger)",
-        "- [万舟警報](#manshuu)",
+        *(["- [万舟警報](#manshuu)"] if NEWSPAPER_SHOW_MANSHUU_LIST else []),
         "- [激走モーター](#motor-hot)",
         "- [覚醒モーター](#motor-awk)",
         "",
@@ -2143,7 +2221,7 @@ def generate_markdown(data: dict, output_path: str) -> None:
         f"- 解析開催場数: **{dashboard['venues_analyzed']}場**",
         f"- 解析レース数: **{dashboard['races_analyzed']}レース**",
         f"- 危険艇Sランク: **{dashboard['danger_s_count']}件**",
-        f"- 万舟Sランク: **{dashboard['manshuu_s_count']}件**",
+        *([f"- 万舟Sランク: **{dashboard['manshuu_s_count']}件**"] if NEWSPAPER_SHOW_MANSHUU_LIST else []),
     ]
     if dashboard["best_venue"]:
         lines.append(f"- ⭐ 最も期待: **{dashboard['best_venue']}**")
@@ -2192,14 +2270,17 @@ def generate_markdown(data: dict, output_path: str) -> None:
         lines.append(f"- 理由: {d.get('reason','')}")
         lines.append("")
 
-    lines += [
-        "---",
-        "",
-        f"## <a id=\"manshuu\"></a>💰 AI万舟警報　掲載{len(manshuu_display)}件（全{len(all_manshuu)}件中）",
-        "",
-        _section_comment_manshuu(all_manshuu),
-        "",
-    ]
+    if not NEWSPAPER_SHOW_MANSHUU_LIST:
+        manshuu_display = []
+    else:
+        lines += [
+            "---",
+            "",
+            f"## <a id=\"manshuu\"></a>💰 AI万舟警報　掲載{len(manshuu_display)}件（全{len(all_manshuu)}件中）",
+            "",
+            _section_comment_manshuu(all_manshuu),
+            "",
+        ]
     for u in manshuu_display:
         rank = rank_of(u.get("score", 0))
         lines.append(f"### {rank}ランク {u.get('venue','')}{u.get('race','')}R")
@@ -2265,6 +2346,8 @@ def send_note_report(
         from x_post_text import newspaper_post
         danger_count  = len(data.get("all_danger",  [])) if data else 0
         manshuu_count = len(data.get("all_manshuu", [])) if data else 0
+        if not NEWSPAPER_SHOW_MANSHUU_LIST:
+            manshuu_count = None  # X投稿候補から「万舟」を外す（E1b）
         top_venue = top_race = ""
         top_match = 0
         if data:
@@ -2296,7 +2379,7 @@ def send_note_report(
         f"  newspaper.pdf ← 印刷・保存用PDF\n"
         f"  note.md       ← Markdown版（目次付き）\n"
         f"  danger.csv    ← 危険な1号艇 全データ\n"
-        f"  manshuu.csv   ← 万舟警報 全データ\n"
+        + (f"  manshuu.csv   ← 万舟警報 全データ\n" if NEWSPAPER_SHOW_MANSHUU_LIST else "") +
         f"  motor.csv     ← 激走モーター データ\n"
         f"  awake.csv     ← 覚醒モーター データ\n\n"
         "【noteへの貼り付け手順】\n"
