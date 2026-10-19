@@ -55,6 +55,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 pandas numpy "scikit-learn==1.5.2" "lightgbm==4.5.0"
 
+      # ── 前日の sent ファイルを Release から取り戻す（hit_record の結果照合用）──
+      # 実行環境は毎回使い捨てのため、これが無いと前日分の照合が常に行われない。
+      # 失敗しても notify の実行は止めない（x_state_sync.py は常に終了コード0）。
+      - name: Restore sent file (state sync)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_RACE_DATE: ${{ github.event.inputs.race_date }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$INPUT_RACE_DATE" ]; then
+            python x_state_sync.py restore --date "$INPUT_RACE_DATE"
+          else
+            python x_state_sync.py restore
+          fi
+
       # ── 荒れ検知スクリプト実行 ──────────────────────────────
       - name: Run upset detector
         env:
@@ -77,6 +91,14 @@ jobs:
           fi
 
           python notify_arashi.py $DATE_ARG $THRESHOLD_ARG
+
+      # ── 当日の sent ファイルを Release へ保存する（翌日の結果照合用）──
+      # notify が途中で失敗した場合も、それまでに書いた分を保存する。
+      - name: Save sent file (state sync)
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python x_state_sync.py save
 
       # ── 失敗時のログ保存（デバッグ用）──────────────────────
       - name: Upload logs on failure

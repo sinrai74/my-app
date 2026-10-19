@@ -204,6 +204,9 @@ jobs:
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+          # 保存済みデータ（hit_record.csv・buyscore_log.jsonl）を Release から読むため。
+          # このステップのスクリプトは読み込みだけを行う（x_release_storage.download_file）。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE_ARG=""
           [ -n "${{ github.event.inputs.date }}" ] && DATE_ARG="--date ${{ github.event.inputs.date }}"
@@ -218,6 +221,9 @@ jobs:
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+          # 保存済みデータ（hit_record.csv・buyscore_log.jsonl）を Release から読むため。
+          # このステップのスクリプトは読み込みだけを行う（x_release_storage.download_file）。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE_ARG=""
           [ -n "${{ github.event.inputs.date }}" ] && DATE_ARG="--date ${{ github.event.inputs.date }}"
@@ -231,6 +237,9 @@ jobs:
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+          # 保存済みデータ（hit_record.csv・buyscore_log.jsonl）を Release から読むため。
+          # このステップのスクリプトは読み込みだけを行う（x_release_storage.download_file）。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           pip install weasyprint -q 2>/dev/null || true
           DRY=""
