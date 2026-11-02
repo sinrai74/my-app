@@ -1,0 +1,107 @@
+# 正式G2：評価（G2 独立経路。P11・判断C・M7）
+#
+# - 起動は workflow_dispatch だけ（schedule・push などは持たない）。
+# - 評価の job には GITHUB_TOKEN を環境変数として渡さない（C-4）。
+# - 書き込み権限は持たない。出力は artifact だけ（Release・Cache・commit をしない）。
+# - 加算・連続数は判定しない（集約は formal_g2_aggregate.yml で行う）。
+# - G2 のスクリプトが無いブランチ（例：スクリプトを含まない main）で起動された場合は、
+#   何もせずに終わる。
+
+name: formal-g2-evaluate
+
+on:
+  workflow_dispatch:
+    inputs:
+      race_date:
+        description: "対象の race_date（YYYYMMDD）"
+        required: true
+      mode:
+        description: "investigation（調査用）または formal（正式。個別の開始許可が必要）"
+        required: true
+        type: choice
+        options:
+          - investigation
+          - formal
+      permission_id:
+        description: "個別の開始許可の識別子（formal のとき必須）"
+        required: false
+        default: ""
+      baseline_path:
+        description: "登録済みの基準 JSON のリポジトリ内パス（formal のとき必須）"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formal-g2-evaluate
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check G2 script presence
+        id: presence
+        shell: bash
+        run: |
+          if [ -f rebuild/formal_g2/evaluate_main.py ] && [ -f requirements-g2.lock ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "G2 scripts are not on this ref; nothing to do."
+          fi
+
+      - name: Set up Python
+        if: steps.presence.outputs.present == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.9"
+
+      - name: Install locked dependencies
+        if: steps.presence.outputs.present == 'true'
+        shell: bash
+        run: |
+          python -m pip install --no-deps "pip==24.2" "setuptools==75.1.0" "wheel==0.44.0"
+          python -m pip install --no-deps -r requirements-g2.lock
+
+      - name: Evaluate
+        if: steps.presence.outputs.present == 'true'
+        shell: bash
+        env:
+          RACE_DATE: ${{ inputs.race_date }}
+          MODE: ${{ inputs.mode }}
+          PERMISSION_ID: ${{ inputs.permission_id }}
+          BASELINE_PATH: ${{ inputs.baseline_path }}
+        run: |
+          args=(--race-date "$RACE_DATE" --mode "$MODE" --out g2_out)
+          if [ -n "$PERMISSION_ID" ]; then args+=(--permission-id "$PERMISSION_ID"); fi
+          if [ -n "$BASELINE_PATH" ]; then args+=(--baseline "$BASELINE_PATH"); fi
+          PYTHONPATH="${GITHUB_WORKSPACE}/rebuild:${GITHUB_WORKSPACE}" \
+            python -P -B -m formal_g2.evaluate_main "${args[@]}"
+
+      - name: Upload evidence
+        id: upload
+        if: always() && steps.presence.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: g2-${{ inputs.race_date }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: g2_out/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Record artifact digest
+        if: always() && steps.presence.outputs.present == 'true'
+        shell: bash
+        env:
+          DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          echo "artifact_id=${ARTIFACT_ID}"
+          echo "artifact_digest=${DIGEST}"
