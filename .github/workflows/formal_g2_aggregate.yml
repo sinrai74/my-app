@@ -98,18 +98,26 @@ jobs:
               fetched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
               if [ "$job_count" -eq 1 ]; then
                 job_id="$1"
-                if gh api "repos/${REPO}/actions/jobs/${job_id}/logs" > "$d/job.log" 2> "$d/joblog.err"; then
+                # 2段階で取得する（API は 302 まで。署名付き URL には Authorization を付けない）。
+                # 原本のバイト列をそのまま保存する。署名付き URL・トークンは記録しない。
+                PYTHONPATH="${GITHUB_WORKSPACE}/rebuild" python -P -B -m formal_g2.aggregate.fetch_log \
+                  --repo "$REPO" --job-id "$job_id" --out "$d/job.log" --result "$d/fetch.json"
+                if [ "$(jq -r '.ok' "$d/fetch.json")" = "true" ]; then
                   log_ok=true
                   log_sha=$(sha256sum "$d/job.log" | cut -d' ' -f1)
                   log_bytes=$(stat -c %s "$d/job.log")
+                  if [ "$log_sha" != "$(jq -r '.sha256' "$d/fetch.json")" ]; then
+                    log_ok=false; log_err="log sha256 changed after fetch"
+                  fi
                 else
-                  log_err=$(head -n 1 "$d/joblog.err" | sed -E 's/\?[^" ]*/?<omitted>/g' | cut -c1-300)
+                  log_err=$(jq -r '"\(.error) (api_status=\(.api_status), download_status=\(.download_status), host=\(.download_host))"' "$d/fetch.json" | cut -c1-300)
                   rm -f "$d/job.log"
                 fi
+                rm -f "$d/fetch.json"
               else
                 log_err="evaluate job count = ${job_count} (expected 1)"
               fi
-              rm -f "$d/jobs.err" "$d/joblog.err"
+              rm -f "$d/jobs.err"
               jq -n --arg run_id "$rid" --arg run_attempt "$att" --arg name "$aname" \
                     --arg digest "$adigest" --arg started "$started" --arg latest_attempt "$attempt" \
                     --arg job_id "$job_id" --argjson job_count "$job_count" --argjson log_ok "$log_ok" \

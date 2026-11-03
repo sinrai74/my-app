@@ -64,7 +64,7 @@ def self_version() -> dict[str, Optional[str]]:
     repo_root = os.path.abspath(os.path.join(here, "..", "..", ".."))
     out: dict[str, Optional[str]] = {}
     for rel in ("rebuild/formal_g2/aggregate/main.py", "rebuild/formal_g2/aggregate/__init__.py",
-                ".github/workflows/formal_g2_aggregate.yml"):
+                "rebuild/formal_g2/aggregate/fetch_log.py", ".github/workflows/formal_g2_aggregate.yml"):
         p = os.path.join(repo_root, rel)
         try:
             with open(p, "rb") as f:
