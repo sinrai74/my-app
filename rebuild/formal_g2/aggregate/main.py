@@ -4,11 +4,25 @@
 
 入力（--artifacts-dir の下に、実行ごとのディレクトリ）：
   <run_id>-<run_attempt>/artifact.zip   … 評価の artifact（zip のまま）
+  <run_id>-<run_attempt>/job.log        … 評価ジョブのログ原本（GitHub Actions API から取得）
   <run_id>-<run_attempt>/meta.json      … {"run_id", "run_attempt", "artifact_name",
-                                            "expected_digest", "run_started_at"}
+                                            "expected_digest", "run_started_at",
+                                            "job_id", "job_count", "log_fetch_ok", "log_fetch_error",
+                                            "log_file", "log_sha256", "log_bytes", "log_fetched_at"}
 --permissions：個別の開始許可の一覧（形式は未決。下の load_permissions を参照）
+--baseline：登録済みの基準 JSON（M7-3：runner_image をジョブログの値と照合する）
 
-出力：aggregate_result.json（判定に使った集約コード・workflow の SHA-256 を含む）
+出力：
+  aggregate_result.json（判定に使った集約コード・workflow の SHA-256 を含む）
+  logs/<run_id>-<run_attempt>.log（ジョブログ原本の写し）
+  manifest.json（上の各ファイルの存在・サイズ・SHA-256。"complete": true）
+終了コード：照合の失敗（artifact・ジョブログの検証、基準の読み込み、正式な実行の基準の
+同一性・Runner Image の照合）が1件でもあれば 3、無ければ 0。評価側の設計どおりの安全停止
+（CONFIG・PRELOAD など）は、記録と除外が正しければ 0。
+
+M7-3（2026-11-03 の判断）：Runner Image の識別値は、ジョブログの「Set up job →
+Runner Image」グループの Image・Version を基準とする。artifact 内の環境変数
+ImageOS・ImageVersion は観測値として別に記録し、ログの値の代わりには使わない。
 - 状態は「未判定」「100件到達・達成未確定」まで。「正式G2の判定で100件達成」は、
   証拠一式の commit が済んだあとに人が記録する（判断B B3）。
 - 開催実績を確かめる方法が未決のため、失敗日は判定しない（確認待ちとして扱う）。
@@ -21,6 +35,8 @@ import hashlib
 import io
 import json
 import os
+import re
+import shutil
 import sys
 import zipfile
 from datetime import datetime, timedelta
@@ -29,6 +45,14 @@ from typing import Any, Optional
 REQUIRED_RACE_KEYS = ("eval_id", "result_category", "d9_states", "counts", "d5")
 REQUIRED_COMPARED_KEYS = ("values", "comparable_hash", "hashes", "d13_2", "diffs")
 TARGET = 100
+EXIT_VERIFICATION_FAILED = 3
+
+# ジョブログの各行は "<ISO8601 の時刻>Z <本文>" の形（先頭に BOM が付くことがある）。
+_LOG_TS_RE = re.compile(r"^﻿?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?")
+_RUNNER_IMAGE_VERSION_RE = re.compile(r"\d{8}\.\d+\.\d+")
+_RUNNER_IMAGE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+RUNNER_IMAGE_GROUP = "##[group]Runner Image"
+GROUP_END = "##[endgroup]"
 
 
 def _sha256(b: bytes) -> str:
@@ -88,9 +112,22 @@ def verify_run(run_dir: str) -> dict[str, Any]:
     if unlisted:
         res["problems"].append(f"unlisted files: {unlisted}")
     res["manifest"] = manifest
+    artifact_ok = not res["problems"]
+    run_json = None
+    if artifact_ok:
+        run_json = json.loads(zf.read("run.json"))
+    # M7-3：ジョブログ（Runner Image）の照合。環境変数の値は観測値として別に記録する。
+    log_check = verify_job_log(run_dir, meta)
+    res["job_log"] = log_check
+    res["runner_image"] = {
+        "log": log_check.get("runner_image"),
+        "env_observed": ((run_json or {}).get("env_snapshot") or {}).get("image"),
+    }
+    res["runner_image"]["env_version_differs_from_log"] = _env_differs(res["runner_image"])
+    res["problems"].extend(f"job log: {p}" for p in log_check["problems"])
     if not res["problems"]:
         res["verified"] = True
-        res["run"] = json.loads(zf.read("run.json"))
+        res["run"] = run_json
         races = []
         if "races.jsonl" in names:
             for line in zf.read("races.jsonl").decode("utf-8").splitlines():
@@ -98,6 +135,128 @@ def verify_run(run_dir: str) -> dict[str, Any]:
                     races.append(json.loads(line))
         res["races"] = races
     return res
+
+
+def _env_differs(ri: dict[str, Any]) -> Optional[bool]:
+    log, env = ri.get("log"), ri.get("env_observed")
+    if not log or not isinstance(env, dict) or env.get("ImageVersion") is None:
+        return None  # 比べられない（どちらかが無い）
+    return env.get("ImageVersion") != log.get("version")
+
+
+# ---- M7-3：ジョブログの Runner Image ----
+def parse_runner_image(text: str) -> dict[str, Any]:
+    """ジョブログから「Runner Image」グループの Image・Version を取り出す。
+
+    グループがちょうど1つあり、その中に Image と Version がそれぞれちょうど1行ずつ、
+    決まった形の値で入っている場合だけ ok。それ以外は ok=False（推測で補わない）。
+    """
+    out: dict[str, Any] = {"ok": False, "image": None, "version": None, "lines": {}, "problems": []}
+    lines = [_LOG_TS_RE.sub("", ln, count=1) for ln in text.splitlines()]
+    starts = [i for i, ln in enumerate(lines) if ln.strip() == RUNNER_IMAGE_GROUP]
+    if len(starts) != 1:
+        out["problems"].append(f"Runner Image group count = {len(starts)} (expected 1)")
+        return out
+    start = starts[0]
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip() == GROUP_END), None)
+    if end is None:
+        out["problems"].append("Runner Image group is not closed")
+        return out
+    found: dict[str, list[tuple[int, str]]] = {"Image": [], "Version": []}
+    for i in range(start + 1, end):
+        m = re.fullmatch(r"(Image|Version):\s*(.*?)\s*", lines[i])
+        if m:
+            found[m.group(1)].append((i + 1, m.group(2)))
+    for key, pattern in (("Image", _RUNNER_IMAGE_NAME_RE), ("Version", _RUNNER_IMAGE_VERSION_RE)):
+        vals = found[key]
+        if len(vals) != 1:
+            out["problems"].append(f"Runner Image '{key}' line count = {len(vals)} (expected 1)")
+            continue
+        line_no, value = vals[0]
+        if not value or pattern.fullmatch(value) is None:
+            out["problems"].append(f"Runner Image '{key}' value not parseable")
+            continue
+        out[key.lower()] = value
+        out["lines"][key] = line_no
+    out["group_lines"] = [start + 1, end + 1]
+    out["ok"] = not out["problems"]
+    return out
+
+
+def verify_job_log(run_dir: str, meta: dict[str, Any]) -> dict[str, Any]:
+    """ジョブログ原本の取得状況・SHA-256・サイズ・Runner Image の値を確かめる。
+
+    取得失敗・HTTP エラー・ファイル欠落・ハッシュ不一致・グループ欠落・解析失敗は、
+    すべて problems に入る（＝不合格）。環境変数の値で代わりにすることはしない。
+    """
+    res: dict[str, Any] = {"ok": False, "problems": [], "runner_image": None,
+                           "job_id": meta.get("job_id"), "fetched_at": meta.get("log_fetched_at")}
+    if meta.get("log_fetch_ok") is not True:
+        res["problems"].append(f"log fetch failed: {meta.get('log_fetch_error') or 'no fetch record'}")
+        return res
+    name = meta.get("log_file") or ""
+    if not name or os.path.basename(name) != name:
+        res["problems"].append("log file name invalid")
+        return res
+    path = os.path.join(run_dir, name)
+    try:
+        with open(path, "rb") as f:
+            blob = f.read()
+    except OSError as exc:
+        res["problems"].append(f"log file missing: {type(exc).__name__}")
+        return res
+    res["file"] = name
+    res["sha256"] = _sha256(blob)
+    res["bytes"] = len(blob)
+    if not meta.get("log_sha256"):
+        res["problems"].append("expected log sha256 unavailable")
+    elif meta["log_sha256"] != res["sha256"]:
+        res["problems"].append("log sha256 mismatch")
+    if meta.get("log_bytes") is not None and str(meta["log_bytes"]) != str(len(blob)):
+        res["problems"].append("log size mismatch")
+    if not blob:
+        res["problems"].append("log is empty")
+    try:
+        text = blob.decode("utf-8")
+    except UnicodeDecodeError:
+        res["problems"].append("log not decodable as UTF-8")
+        return res
+    parsed = parse_runner_image(text)
+    res["parse"] = {k: parsed[k] for k in ("lines", "problems") if k in parsed}
+    res["parse"]["group_lines"] = parsed.get("group_lines")
+    res["problems"].extend(parsed["problems"])
+    if parsed["ok"]:
+        res["runner_image"] = {"image": parsed["image"], "version": parsed["version"]}
+    res["ok"] = not res["problems"]
+    return res
+
+
+def baseline_identity_check(run: dict[str, Any], baseline_sha256: Optional[str]) -> str:
+    """評価側と集約側で同じ内容の基準を使ったか（内容の SHA-256 で照合。パスは問わない）。
+
+    "ok" / "no_baseline" / "identity_unrecorded" / "identity_changed_during_run" / "identity_mismatch"
+    """
+    if baseline_sha256 is None:
+        return "no_baseline"
+    ident = (run.get("checks") or {}).get("baseline_identity")
+    if not isinstance(ident, dict) or not ident.get("sha256"):
+        return "identity_unrecorded"
+    if ident.get("unchanged_during_run") is not True or ident.get("sha256_at_end") != ident["sha256"]:
+        return "identity_changed_during_run"
+    return "ok" if ident["sha256"] == baseline_sha256 else "identity_mismatch"
+
+
+def runner_image_check(vr: dict[str, Any], baseline: Optional[dict[str, Any]]) -> str:
+    """M7-3 の照合結果："ok" / "no_baseline" / "baseline_invalid" / "log_unverified" / "mismatch"。"""
+    log = (vr.get("runner_image") or {}).get("log")
+    if not log:
+        return "log_unverified"
+    if baseline is None:
+        return "no_baseline"
+    ri = baseline.get("runner_image")
+    if not isinstance(ri, dict) or set(ri) != {"image", "version"}:
+        return "baseline_invalid"
+    return "ok" if (ri.get("image"), ri.get("version")) == (log["image"], log["version"]) else "mismatch"
 
 
 # ---- 正式な実行かどうか（§6.3〜§6.5 の 6） ----
@@ -172,7 +331,13 @@ def run_level_ok(run: dict[str, Any]) -> bool:
 
 
 def aggregate(verified: list[dict[str, Any]], permissions: list[dict[str, Any]],
-              first_date: str, last_date: str) -> dict[str, Any]:
+              first_date: str, last_date: str,
+              baseline: Optional[dict[str, Any]] = None,
+              baseline_sha256: Optional[str] = None) -> dict[str, Any]:
+    """基準が無い・評価側と同じ基準だと確かめられない・形が正しくない・ジョブログの
+    Runner Image と一致しない実行は、その日の全レースを正式カウントから除外し、区間を
+    終える（M7-3・基準の同一性。評価側の A-1 に相当）。これらは baseline_failures に入る。"""
+    baseline_failures: list[dict[str, Any]] = []
     by_date: dict[str, list[dict[str, Any]]] = {}
     for vr in verified:
         if is_formal(vr, permissions):
@@ -197,7 +362,25 @@ def aggregate(verified: list[dict[str, Any]], permissions: list[dict[str, Any]],
             else:
                 run = sel["run"]
                 targets = [t["eval_id"] for t in (run.get("programs") or {}).get("targets", [])]
-                if (run.get("config_detection") or {}).get("detected", True):
+                if run.get("status") == "completed":
+                    id_check = baseline_identity_check(run, baseline_sha256 if baseline is not None else None)
+                    ri_check = runner_image_check(sel, baseline)
+                else:
+                    # 設計どおりの安全停止：実行単位で不適格（run_level_ok）になり、加算されない。
+                    # 基準の照合は行わない（停止が照合の失敗として数えられないようにする）。
+                    id_check = ri_check = "not_applicable_stopped_run"
+                day["baseline_identity_check"] = id_check
+                day["runner_image_check"] = ri_check
+                passing = ("ok", "not_applicable_stopped_run")
+                failed_check = (f"baseline_{id_check}" if id_check not in passing
+                                else (f"runner_image_{ri_check}" if ri_check not in passing else None))
+                if failed_check is not None:
+                    # 基準の同一性・M7-3 の Runner Image を照合できない、または一致しない
+                    day["class"] = "normal" if targets else day["class"]
+                    day["excluded"] = failed_check
+                    seq.append({"break": failed_check, "race_date": ds})
+                    baseline_failures.append({"race_date": ds, "run": sel["meta"], "check": failed_check})
+                elif (run.get("config_detection") or {}).get("detected", True):
                     # config を検出した実行は、全レースを正式カウントから除外し、区間を終える
                     day["class"] = "normal" if targets else day["class"]
                     day["excluded"] = "config_detected"
@@ -239,7 +422,8 @@ def aggregate(verified: list[dict[str, Any]], permissions: list[dict[str, Any]],
 
     best = max((s["count"] for s in segments), default=0)
     status = "reached_100_unconfirmed" if best >= TARGET else "undetermined"
-    return {"days": days, "sequence": seq, "segments": segments, "best_segment": best, "g2_status": status}
+    return {"days": days, "sequence": seq, "segments": segments, "best_segment": best, "g2_status": status,
+            "baseline_failures": baseline_failures}
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -249,29 +433,98 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--first-date", required=True)
     p.add_argument("--last-date", required=True)
     p.add_argument("--out", default="g2_aggregate_out")
+    p.add_argument("--baseline", default="", help="登録済みの基準 JSON（M7-3 の runner_image を照合する）")
     args = p.parse_args(argv)
 
     loaded_repo_modules = sorted(
         n for n, m in sys.modules.items()
         if n.split(".")[0] in ("notify_arashi", "x_asahi_scoring", "x_venue_stats", "core", "adapters", "models")
     )
+    baseline = None
+    baseline_sha256 = None
+    baseline_error = None
+    if args.baseline:
+        try:
+            with open(args.baseline, "rb") as f:
+                raw = f.read()
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("baseline is not a JSON object")
+            baseline, baseline_sha256 = parsed, _sha256(raw)
+        except (OSError, ValueError) as exc:
+            baseline_error = f"{type(exc).__name__}: {exc}"  # 取得不能：照合できない（終了コード 3）
     verified = [
         verify_run(os.path.join(args.artifacts_dir, d))
         for d in sorted(os.listdir(args.artifacts_dir))
         if os.path.isdir(os.path.join(args.artifacts_dir, d))
     ]
-    result = aggregate(verified, load_permissions(args.permissions), args.first_date, args.last_date)
+    result = aggregate(verified, load_permissions(args.permissions), args.first_date, args.last_date,
+                       baseline, baseline_sha256)
     result["runs"] = [
-        {k: v for k, v in vr.items() if k in ("dir", "verified", "problems", "meta", "artifact_sha256")}
+        {k: v for k, v in vr.items()
+         if k in ("dir", "verified", "problems", "meta", "artifact_sha256", "job_log", "runner_image")}
         for vr in verified
     ]
+    result["baseline"] = {"path": args.baseline or None, "sha256": baseline_sha256,
+                          "read_error": baseline_error,
+                          "runner_image": (baseline or {}).get("runner_image")}
     result["aggregator_version"] = self_version()
     result["evaluation_code_loaded"] = loaded_repo_modules
     result["generated_at"] = datetime.now().astimezone().isoformat()
+    failed = [vr["dir"] for vr in verified if not vr["verified"]]
+    result["verification_failed_runs"] = failed
+
     os.makedirs(args.out, exist_ok=True)
+    # ジョブログ原本の写し（C-6：証跡として残す）
+    log_dir = os.path.join(args.out, "logs")
+    for vr in verified:
+        name = (vr.get("job_log") or {}).get("file")
+        if name:
+            os.makedirs(log_dir, exist_ok=True)
+            shutil.copyfile(os.path.join(args.artifacts_dir, vr["dir"], name),
+                            os.path.join(log_dir, f"{vr['dir']}.log"))
     with open(os.path.join(args.out, "aggregate_result.json"), "w", encoding="utf-8") as f:
         f.write(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=1))
+    write_output_manifest(args.out)
+
+    # 照合の結果をログに出す（値はハッシュと識別値だけ。トークン等は扱わない）
+    print(f"aggregate: runs={len(verified)} verified={len(verified) - len(failed)} failed={len(failed)} "
+          f"baseline_sha256={baseline_sha256} baseline_read_error={baseline_error} "
+          f"baseline_failures={len(result['baseline_failures'])} "
+          f"best_segment={result['best_segment']} g2_status={result['g2_status']}")
+    for vr in verified:
+        ri = vr.get("runner_image") or {}
+        print(f"run {vr['dir']}: verified={vr['verified']} runner_image_log={ri.get('log')} "
+              f"env_observed_version={(ri.get('env_observed') or {}).get('ImageVersion')} "
+              f"problems={vr['problems']}")
+    for bf in result["baseline_failures"]:
+        print(f"baseline check failed: race_date={bf['race_date']} run={bf['run'].get('run_id')}-"
+              f"{bf['run'].get('run_attempt')} check={bf['check']}")
+    # 終了コード 3：集約の照合の失敗（artifact・ジョブログ・基準の読み込み・基準の照合）。
+    # 評価側の設計どおりの安全停止（CONFIG・PRELOAD など）は、記録と除外が正しければ 0。
+    if failed or baseline_error is not None or result["baseline_failures"]:
+        return EXIT_VERIFICATION_FAILED
     return 0
+
+
+def write_output_manifest(out_dir: str) -> str:
+    """集約の出力の目録（存在・サイズ・SHA-256）。最後に書き、"complete": true を含める。"""
+    files: dict[str, Any] = {}
+    for dirpath, _dirs, filenames in os.walk(out_dir):
+        for fn in filenames:
+            path = os.path.join(dirpath, fn)
+            rel = os.path.relpath(path, out_dir).replace(os.sep, "/")
+            if rel == "manifest.json":
+                continue
+            with open(path, "rb") as f:
+                blob = f.read()
+            files[rel] = {"sha256": _sha256(blob), "bytes": len(blob)}
+    path = os.path.join(out_dir, "manifest.json")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"files": dict(sorted(files.items())), "complete": True},
+                           ensure_ascii=False, sort_keys=True))
+        f.write("\n")
+    return path
 
 
 if __name__ == "__main__":

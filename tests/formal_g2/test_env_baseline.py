@@ -74,12 +74,17 @@ class SnapshotTests(unittest.TestCase):
             "installed": {"pip": "24.2"},
         }
 
-    def test_image_unidentified_is_not_eligible(self):
-        self.assertTrue(eb.self_check(self._snap(image_version=None)))
+    def test_env_image_missing_alone_is_not_a_problem(self):
+        # M7-3（2026-11-03）：環境変数は観測値。Runner Image（ジョブログ由来）は集約で必須
+        snap = self._snap(image_version=None)
+        snap["os"] = {"available": True}
+        self.assertEqual(eb.self_check(snap), [])
 
     def test_baseline_diff_detected(self):
         snap = self._snap()
         base = eb.baseline_view(snap)
+        # M7-3：runner_image（ジョブログ由来）は登録時に加える
+        base["runner_image"] = {"image": "ubuntu-24.04", "version": "20261025.353.1"}
         self.assertEqual(eb.compare_to_baseline(snap, base), [])
         base["code"] = {"a.py": "y"}
         self.assertEqual(eb.compare_to_baseline(snap, base), ["code:a.py"])

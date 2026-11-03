@@ -213,10 +213,13 @@ def collect_snapshot(repo_root: str, cfg: Optional[dict]) -> dict[str, Any]:
         },
         "platform": platform_string(osinfo),
         "os": osinfo,
+        # 観測値（M7-3）：照合には使わない。取れなかったものは None のまま記録する。
         "image": {
             "ImageOS": image_os,
             "ImageVersion": image_version,
             "identified": bool(image_os) and bool(image_version),
+            "source": "process environment (observation only)",
+            "unavailable": [k for k, v in (("ImageOS", image_os), ("ImageVersion", image_version)) if not v],
         },
         "lock": {
             "path": LOCK_FILE,
@@ -236,11 +239,36 @@ def collect_snapshot(repo_root: str, cfg: Optional[dict]) -> dict[str, Any]:
     }
 
 
+# M7-3（2026-11-03 の判断）：Runner Image の識別値は、ジョブログの
+# 「Set up job → Runner Image」に記録された値（Image・Version）を照合の基準とする。
+# 評価プロセスはジョブログを読めない（C-4：トークンを持たない）ため、この値の照合は
+# 集約（aggregate）で行う。評価プロセスでは、登録済みの基準に runner_image が
+# 正しい形で入っていることだけを確かめる。
+# プロセス内の環境変数 ImageOS・ImageVersion は観測値として記録し、照合には使わない。
+RUNNER_IMAGE_KEYS = ("image", "version")
+RUNNER_IMAGE_VERSION_RE = re.compile(r"\d{8}\.\d+\.\d+")
+
+
+def runner_image_baseline_ok(baseline: dict[str, Any]) -> bool:
+    """登録済みの基準の runner_image が {"image": str, "version": "YYYYMMDD.N.N"} の形か。"""
+    ri = baseline.get("runner_image")
+    if not isinstance(ri, dict) or set(ri) != set(RUNNER_IMAGE_KEYS):
+        return False
+    image, version = ri.get("image"), ri.get("version")
+    return (isinstance(image, str) and bool(image.strip()) and isinstance(version, str)
+            and RUNNER_IMAGE_VERSION_RE.fullmatch(version) is not None)
+
+
 def baseline_view(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """基準として照合する項目だけを取り出す（登録時もこの形で保存する）。"""
+    """基準として照合する項目だけを取り出す（登録時もこの形で保存する）。
+
+    runner_image（ジョブログ由来）は評価プロセスでは得られないため、ここには含めない。
+    登録時に集約の結果から加える。image_env_observed は観測値で、照合しない。
+    """
     return {
         "python_version_info": snapshot["python"]["version_info"],
-        "image": {"ImageOS": snapshot["image"]["ImageOS"], "ImageVersion": snapshot["image"]["ImageVersion"]},
+        "image_env_observed": {"ImageOS": snapshot["image"]["ImageOS"],
+                               "ImageVersion": snapshot["image"]["ImageVersion"]},
         "lock_sha256": snapshot["lock"]["sha256"],
         "installed": snapshot["installed"],
         "code": snapshot["code"],
@@ -252,8 +280,8 @@ def baseline_view(snapshot: dict[str, Any]) -> dict[str, Any]:
 def self_check(snapshot: dict[str, Any]) -> list[str]:
     """基準と比べる前に、それ自体で不適格になる条件（§1 3(c)、§2 4）。"""
     problems = []
-    if not snapshot["image"]["identified"]:
-        problems.append("OS image could not be identified (ImageOS/ImageVersion)")
+    # M7-3：環境変数 ImageOS・ImageVersion は観測値で、欠落だけでは不適格にしない。
+    # Runner Image（ジョブログ由来）は集約で必須とし、取得・解析できない実行は不適格にする。
     if not (snapshot.get("os") or {}).get("available"):
         problems.append("OS information unavailable (os.uname)")
     if not snapshot["lock"]["check"].get("ok"):
@@ -269,13 +297,20 @@ def self_check(snapshot: dict[str, Any]) -> list[str]:
 
 
 def compare_to_baseline(snapshot: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
-    """登録済みの基準との差（空なら一致）。"""
+    """登録済みの基準との差（空なら一致）。
+
+    Runner Image（M7-3）の値そのものはジョブログ由来で、集約で照合する。ここでは
+    基準に runner_image が正しい形で無い場合を差として扱う（合格させない）。
+    環境変数の ImageOS・ImageVersion は照合しない（観測値として記録だけする）。
+    """
     view = baseline_view(snapshot)
     diffs = []
-    for key in ("python_version_info", "image", "lock_sha256", "installed", "settings",
+    for key in ("python_version_info", "lock_sha256", "installed", "settings",
                 "motor_history_header_sha256"):
         if view[key] != baseline.get(key):
             diffs.append(key)
+    if not runner_image_baseline_ok(baseline):
+        diffs.append("runner_image")
     base_code = baseline.get("code") or {}
     for path in sorted(set(view["code"]) | set(base_code)):
         if view["code"].get(path) != base_code.get(path):

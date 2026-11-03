@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -90,6 +91,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             "executed_module_code": instrument.config_executed,
             "loaded_at_end": run["checks"]["config_at_end"]["loaded"],
         }
+        ident = run["checks"].get("baseline_identity")
+        if ident is not None and ident.get("sha256") is not None:
+            end = _baseline_identity(args.baseline)
+            ident["sha256_at_end"] = end["sha256"]
+            ident["unchanged_during_run"] = end["sha256"] == ident["sha256"]
+            if stop is None and not ident["unchanged_during_run"]:
+                stop = _stop_record("A-1", "baseline changed during run", "end", state, writer,
+                                    {"baseline_identity": ident})
+                status = run["status"] = "stopped"
         if stop is None and run["config_detection"]["detected"]:
             stop = _stop_record("CONFIG", "config detected at end of run", "end", state, writer,
                                 {"mechanism": "end_check", **run["checks"]["config_at_end"],
@@ -163,10 +173,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     run["env_snapshot"] = snapshot
     problems = self_check(snapshot)
     run["checks"]["env_self_check"] = problems
+    # 基準の同一性：内容の SHA-256 を記録し、集約で同じ内容の基準を使ったことを照合する。
+    # 実行の終わりにも計り直し、途中で変わっていないことを記録する（finish）。
     baseline = None
-    if args.baseline:
-        with open(args.baseline, encoding="utf-8") as f:
-            baseline = json.load(f)
+    run["checks"]["baseline_identity"] = _baseline_identity(args.baseline)
+    if args.baseline and run["checks"]["baseline_identity"]["read_error"] is None:
+        try:
+            baseline = json.loads(run["checks"]["baseline_identity"].pop("_raw"))
+            if not isinstance(baseline, dict):
+                raise ValueError("baseline is not a JSON object")
+        except ValueError as exc:
+            baseline = None
+            run["checks"]["baseline_identity"]["read_error"] = f"{type(exc).__name__}: {exc}"
+    run["checks"]["baseline_identity"].pop("_raw", None)
+    if args.mode == "formal" and run["checks"]["baseline_identity"]["read_error"] is not None:
+        return stop("A-1", "baseline unreadable", {"baseline_identity": run["checks"]["baseline_identity"]})
     run["checks"]["baseline_diffs"] = None if baseline is None else compare_to_baseline(snapshot, baseline)
     allowlist = (baseline or {}).get("module_allowlist")
     if allowlist is None:
@@ -234,6 +255,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 10. 終了時の検査（config の再検査は finish の中で行う）
     run["checks"]["modules_post_eval"] = check_modules(repo_modules(repo_root), allowlist)
     return finish("completed")
+
+
+def _baseline_identity(path: str) -> dict[str, Any]:
+    """基準 JSON の内容の SHA-256（パスではなく内容で同一性を見る）。読めなければ read_error。"""
+    out: dict[str, Any] = {"path": path or None, "sha256": None, "bytes": None, "read_error": None}
+    if not path:
+        return out
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError as exc:
+        out["read_error"] = f"{type(exc).__name__}: {exc}"
+        return out
+    out["sha256"] = hashlib.sha256(raw).hexdigest()
+    out["bytes"] = len(raw)
+    out["_raw"] = raw
+    return out
 
 
 def _stop_record(code: str, reason: str, phase: str, state: dict, writer: Any,
