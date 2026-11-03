@@ -402,6 +402,11 @@ def _finish_counts(ctx: RunContext, rec: dict, counts_before: dict, fetch_calls_
     counts = {k: now[k] - counts_before.get(k, 0) for k in now}
     counts["fetcher_calls"] = len(ctx.fetcher.calls) - fetch_calls_before
     rec["counts"] = counts
+    # 禁止対象の呼び出し（W7・C-5・通知・Release 書き込み）。1回でもあればこのレースは加算しない。
+    from formal_g2.instrument import FORBIDDEN_LABELS
+    called = {k: v for k, v in counts.items() if k in FORBIDDEN_LABELS and v}
+    rec["w7"] = {"forbidden_calls": called, "forbidden_total": sum(called.values()),
+                 "labels_checked": len(FORBIDDEN_LABELS), "ok": not called}
 
 
 def _d5(rec: dict) -> dict[str, Any]:

@@ -76,7 +76,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     writer = RecordWriter(args.out)
     run: dict[str, Any] = {"info": _run_info(args), "status": "running", "stop_ref": None, "checks": {}}
-    state: dict[str, Any] = {"targets": [], "last_started": None, "list_fixed": False}
+    state: dict[str, Any] = {"targets": [], "last_started": None, "list_fixed": False,
+                             "summary": {"races": 0, "d13_2_all_true": 0, "diff_zero": 0, "w7_ok": 0}}
 
     def finish(status: str, stop: Optional[dict] = None) -> int:
         instrument.stop()
@@ -109,12 +110,30 @@ def main(argv: Optional[list[str]] = None) -> int:
         if stop is not None:
             writer.write_json("stop.json", stop)
             run["stop_ref"] = "stop.json"
+        run["w7"] = _w7_summary(run["instrument"])
         writer.write_json("run.json", run)
         write_manifest(args.out, run["info"], writer.written_eval_ids, state["targets"], complete=True)
+        _print_summary(run, writer, state["summary"])
         return 0 if status == "completed" else EXIT_STOPPED
 
     def stop(code: str, reason: str, detail: Optional[dict] = None) -> int:
         return finish("stopped", _stop_record(code, reason, instrument.phase, state, writer, detail))
+
+    def w7_boundary(where: str) -> Optional[int]:
+        """レースの区切りでの監視の確認。禁止対象の呼び出し・監視の異常があれば止める（両モード）。"""
+        instrument.check_hooks(where)
+        dynamic = [p for p in instrument.monitoring_problems()
+                   if not p.startswith(("unresolved targets", "profiler already present", "threads at start"))]
+        if dynamic:
+            return stop("W7", f"monitoring problem at {where}", {"problems": dynamic})
+        return None
+
+    # 1b. 監視の前提（fail-closed）。正式な実行では、監視を保証できなければ始めない。
+    static = [p for p in instrument.monitoring_problems()
+              if p.startswith(("unresolved targets", "profiler already present", "threads at start"))]
+    run["checks"]["monitoring_at_start"] = {"problems": static}
+    if args.mode == "formal" and static:
+        return stop("W7", "monitoring cannot be guaranteed", {"problems": static})
 
     # 2. 実行前の検査
     try:
@@ -241,12 +260,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             return stop("CONFIG", "config detected before starting a race",
                         {"mechanism": "between_races", "next_eval_id": target["eval_id"],
                          "detections": list(instrument.detections), **guard.config_loaded(repo_root)})
+        halted = w7_boundary(f"before {target['eval_id']}")
+        if halted is not None:
+            return halted
         state["last_started"] = target["eval_id"]
         try:
             rec = race_eval.evaluate_race(ctx, target)
         except Exception as exc:  # noqa: BLE001  レースの外の異常は実行全体の停止
             return stop("RUN", f"{type(exc).__name__}: {exc}")
         writer.append_race(rec)
+        sm = state["summary"]
+        sm["races"] += 1
+        sm["d13_2_all_true"] += bool(rec.get("d13_2")) and all(v is True for v in rec["d13_2"].values())
+        sm["diff_zero"] += rec.get("result_category") == "diff_zero"
+        sm["w7_ok"] += (rec.get("w7") or {}).get("ok") is True
+        halted = w7_boundary(f"after {target['eval_id']}")
+        if halted is not None:
+            return halted
         if rec.get("config_detected"):
             return stop("CONFIG", "config detected during a race",
                         {"mechanism": "race_boundary", "eval_id": target["eval_id"],
@@ -255,6 +285,45 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 10. 終了時の検査（config の再検査は finish の中で行う）
     run["checks"]["modules_post_eval"] = check_modules(repo_modules(repo_root), allowlist)
     return finish("completed")
+
+
+def _w7_summary(inst: dict[str, Any]) -> dict[str, Any]:
+    """禁止対象の呼び出しと監視の状態の要約（集約は、この要約ではなく元の記録を独立に検査する）。"""
+    forb = inst.get("forbidden") or {}
+    return {
+        "ok": not inst.get("monitoring_problems"),
+        "problems": list(inst.get("monitoring_problems") or []),
+        "forbidden_total": forb.get("total"),
+        "forbidden_by_category": {c: sum(v.values()) for c, v in (forb.get("counts_by_category") or {}).items()},
+        "forbidden_import_phase": forb.get("import_phase_counts"),
+        "unresolved_count": len(inst.get("unresolved_targets") or []),
+        "monitor_state": {k: v for k, v in (inst.get("monitor_state") or {}).items()
+                          if k in ("started", "stopped", "hook_checks")},
+        "hook_violations": len((inst.get("monitor_state") or {}).get("hook_violations") or []),
+        "thread_starts": len((inst.get("monitor_state") or {}).get("thread_starts") or []),
+    }
+
+
+def _print_summary(run: dict[str, Any], writer: Any, d13: dict[str, int]) -> None:
+    """ジョブログ用の短い要約（補助の証拠）。トークン・URL・認証情報は出さない。"""
+    w7 = run.get("w7") or {}
+    races = getattr(writer, "written_eval_ids", [])
+    ident = (run.get("checks") or {}).get("baseline_identity") or {}
+    image = (run.get("env_snapshot") or {}).get("image") or {}
+    lines = [
+        f"G2 summary: status={run.get('status')} stop_ref={run.get('stop_ref')} races_written={len(races)}",
+        f"G2 W7: ok={w7.get('ok')} forbidden_total={w7.get('forbidden_total')} "
+        f"by_category={w7.get('forbidden_by_category')} import_phase={w7.get('forbidden_import_phase')} "
+        f"unresolved={w7.get('unresolved_count')} hook_violations={w7.get('hook_violations')} "
+        f"thread_starts={w7.get('thread_starts')} problems={w7.get('problems')}",
+        f"G2 13-2: {d13}",
+        f"G2 baseline_identity: sha256={ident.get('sha256')} at_end={ident.get('sha256_at_end')} "
+        f"unchanged={ident.get('unchanged_during_run')} read_error={'yes' if ident.get('read_error') else 'no'} "
+        f"baseline_diffs={(run.get('checks') or {}).get('baseline_diffs')}",
+        f"G2 env image (observation only): ImageOS={image.get('ImageOS')} ImageVersion={image.get('ImageVersion')}",
+    ]
+    for ln in lines:
+        print(ln, flush=True)
 
 
 def _baseline_identity(path: str) -> dict[str, Any]:

@@ -16,8 +16,8 @@
   aggregate_result.json（判定に使った集約コード・workflow の SHA-256 を含む）
   logs/<run_id>-<run_attempt>.log（ジョブログ原本の写し）
   manifest.json（上の各ファイルの存在・サイズ・SHA-256。"complete": true）
-終了コード：照合の失敗（artifact・ジョブログの検証、基準の読み込み、正式な実行の基準の
-同一性・Runner Image の照合）が1件でもあれば 3、無ければ 0。評価側の設計どおりの安全停止
+終了コード：照合の失敗（artifact・ジョブログの検証、基準の読み込み、正式な実行の ref・基準の
+同一性・Runner Image・W7 の監視の照合）が1件でもあれば 3、無ければ 0。評価側の設計どおりの安全停止
 （CONFIG・PRELOAD など）は、記録と除外が正しければ 0。
 
 M7-3（2026-11-03 の判断）：Runner Image の識別値は、ジョブログの「Set up job →
@@ -52,6 +52,116 @@ _LOG_TS_RE = re.compile(r"^﻿?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?"
 _RUNNER_IMAGE_VERSION_RE = re.compile(r"\d{8}\.\d+\.\d+")
 _RUNNER_IMAGE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 RUNNER_IMAGE_GROUP = "##[group]Runner Image"
+
+# 禁止対象の監視ラベル（評価側の instrument.FORBIDDEN_CATEGORIES と同じ内容を、ここで独立に持つ。
+# 評価コードを読み込まないため。両者の一致はテストで確かめる）。
+EXPECTED_FORBIDDEN: dict[str, tuple[str, ...]] = {
+    "A_buyscore": tuple(
+        [f"x_buyscore.{q}" for q in (
+            "_ensure_config_file", "load_config", "_odds_band_bonus", "_race_type_bonus", "calc_buyscore",
+            "check_passthrough", "stars", "investment_type", "risk_level", "kelly_fraction",
+            "get_bet_multiplier_extended", "check_korogashi", "check_ippatsu", "assign_rank_labels",
+            "format_buy_reason", "format_exclude_reason", "format_passthrough_message", "format_buy_message",
+            "save_buyscore_log", "apply_buyscore")]
+        + [f"core.buyscore.{q}" for q in (
+            "_odds_band_bonus", "_race_type_bonus", "calc_buyscore", "check_passthrough", "investment_type",
+            "kelly_fraction", "DefaultKellyStrategy.__call__", "DefaultBuyEngine.__init__",
+            "DefaultBuyEngine.assess")]
+        + ["notify_arashi._evaluate_bets"]),
+    "B_ml_and_legacy_fetch": ("score_by_model", "_load_ml_model", "_predict_win_prob", "fetch_programs",
+                              "_safe_get"),
+    "C_notify": tuple(f"notify_arashi.{q}" for q in (
+        "_run_main", "send_line", "send_notification", "send_email", "send_summary_if_none",
+        "send_preview_notification", "_check_odds_drop")),
+    "D_release_write": tuple(f"x_release_storage.{q}" for q in (
+        "upload_file", "_upload_asset", "_delete_asset", "_get_or_create_release", "restore_from_backup")),
+}
+EXPECTED_FORBIDDEN_LABELS = frozenset(lab for v in EXPECTED_FORBIDDEN.values() for lab in v)
+FORMAL_REF = "refs/heads/main"
+
+
+def _is_count(v: Any) -> bool:
+    """0 以上の整数（bool は整数として受け入れない）。"""
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+
+def w7_run_problems(run: dict[str, Any], races_count: Optional[int] = None) -> list[str]:
+    """評価側の合格の印を信用せず、記録された回数・対象一覧・解決状態を独立に検査する。
+
+    races_count：races.jsonl に書かれたレースの数（N）。生きているスレッドの観測の検査は、
+    監視の開始時・各レースの前後・停止時に行われるため、thread_checks >= 2*N+2 を求める。
+    指定が無い場合、完了した実行では対象一覧の件数を N とする。途中で止まった実行は、
+    検査の回数にかかわらず、ここで不適格の理由を加える（適格扱いにしない）。
+    """
+    inst = run.get("instrument")
+    if not isinstance(inst, dict):
+        return ["monitoring record missing"]
+    problems = []
+    res = inst.get("target_resolution") or {}
+    counts = inst.get("call_counts") or {}
+    missing = sorted(lab for lab in EXPECTED_FORBIDDEN_LABELS if lab not in res or lab not in counts)
+    if missing:
+        problems.append(f"forbidden labels not monitored: {missing[:5]} ({len(missing)})")
+    unresolved = sorted(lab for lab, v in res.items() if not (isinstance(v, dict) and v.get("resolved") is True))
+    if unresolved or inst.get("unresolved_targets"):
+        problems.append(f"unresolved targets: {(unresolved or inst.get('unresolved_targets'))[:5]}")
+    called = {lab: counts.get(lab) for lab in EXPECTED_FORBIDDEN_LABELS
+              if lab in counts and counts.get(lab) != 0}
+    if called:
+        problems.append(f"forbidden calls: {called}")
+    if inst.get("prior_profiler_present") is not False:
+        problems.append("profiler present before monitoring (or unrecorded)")
+    if inst.get("threads_at_start") != 1:
+        problems.append(f"threads at start = {inst.get('threads_at_start')}")
+    ms = inst.get("monitor_state")
+    if not isinstance(ms, dict):
+        problems.append("monitor state missing")
+    else:
+        if ms.get("started") is not True or ms.get("stopped") is not True:
+            problems.append("monitor not started/stopped properly")
+        if ms.get("hook_violations"):
+            problems.append("monitor hook removed or replaced")
+        if ms.get("monitor_errors"):
+            problems.append("monitor errors")
+        if not isinstance(ms.get("thread_starts"), list):
+            problems.append("thread start record missing")
+        elif any(t.get("via_threading") is not True for t in ms["thread_starts"]):
+            problems.append("thread started outside threading (not monitored)")
+        # 生きているスレッドが、すべてプロファイラで観測済みだったか（instrument.check_threads）
+        if "unobserved_thread_violations" not in ms:
+            problems.append("unobserved thread record missing")
+        elif not isinstance(ms["unobserved_thread_violations"], list):
+            problems.append("unobserved thread record has wrong type")
+        elif ms["unobserved_thread_violations"]:
+            problems.append(f"unobserved live threads: {len(ms['unobserved_thread_violations'])}")
+        checks = ms.get("thread_checks")
+        if "thread_checks" not in ms:
+            problems.append("thread_checks missing")
+        elif not _is_count(checks):
+            problems.append(f"thread_checks has wrong type or value: {checks!r}")
+        else:
+            n = races_count
+            if n is None and run.get("status") == "completed":
+                n = len((run.get("programs") or {}).get("targets") or [])
+            if not _is_count(n):
+                problems.append("processed race count unknown (thread_checks cannot be verified)")
+            elif checks < 2 * n + 2:
+                problems.append(f"thread_checks {checks} < 2*{n}+2 (thread observation incomplete)")
+    if run.get("status") != "completed":
+        problems.append(f"run not completed (status={run.get('status')!r})")
+    if any((e or {}).get("kind") == "process" for e in inst.get("side_effect_events") or []):
+        problems.append("process started (not monitored)")
+    return problems
+
+
+def ref_problems(run: dict[str, Any]) -> list[str]:
+    info = run.get("info") or {}
+    problems = []
+    if info.get("github_ref") != FORMAL_REF:
+        problems.append(f"github_ref is not {FORMAL_REF}: {info.get('github_ref')}")
+    if not str(info.get("github_workflow_ref") or "").endswith("@" + FORMAL_REF):
+        problems.append("github_workflow_ref does not end with @" + FORMAL_REF)
+    return problems
 GROUP_END = "##[endgroup]"
 
 
@@ -296,6 +406,11 @@ def select_formal(runs: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
 def race_state(rec: dict[str, Any], run_ok: bool) -> str:
     if any(k not in rec for k in REQUIRED_RACE_KEYS):
         return "evidence_incomplete"
+    counts = rec.get("counts") or {}
+    if any(lab not in counts for lab in EXPECTED_FORBIDDEN_LABELS):
+        return "evidence_incomplete"  # 禁止対象の回数が記録されていない
+    if any(counts.get(lab) != 0 for lab in EXPECTED_FORBIDDEN_LABELS):
+        return "forbidden_call"  # このレースは加算しない
     cat = rec.get("result_category")
     if cat in ("not_established", "compare_exception"):
         return "compare_not_established"
@@ -315,7 +430,7 @@ def race_state(rec: dict[str, Any], run_ok: bool) -> str:
     return "unclassified_event"
 
 
-def run_level_ok(run: dict[str, Any]) -> bool:
+def run_level_ok(run: dict[str, Any], races_count: Optional[int] = None) -> bool:
     checks = run.get("checks") or {}
     return (
         run.get("status") == "completed"
@@ -327,6 +442,7 @@ def run_level_ok(run: dict[str, Any]) -> bool:
         and (checks.get("modules_post_eval") or {}).get("ok") is True
         and (checks.get("tests_not_loaded") or {}).get("T3_ok") is True
         and not checks.get("shadow_package_loaded")
+        and not w7_run_problems(run, races_count)
     )
 
 
@@ -371,11 +487,22 @@ def aggregate(verified: list[dict[str, Any]], permissions: list[dict[str, Any]],
                     id_check = ri_check = "not_applicable_stopped_run"
                 day["baseline_identity_check"] = id_check
                 day["runner_image_check"] = ri_check
+                day["ref_check"] = ref_problems(run) or "ok"
+                w7p = w7_run_problems(run, len(sel.get("races") or []))
+                day["w7_check"] = (w7p or "ok") if run.get("status") == "completed" else "not_applicable_stopped_run"
                 passing = ("ok", "not_applicable_stopped_run")
-                failed_check = (f"baseline_{id_check}" if id_check not in passing
-                                else (f"runner_image_{ri_check}" if ri_check not in passing else None))
+                if day["ref_check"] != "ok":
+                    failed_check = "ref_not_main"  # 正式な実行は main で行う（調査用の実行には適用しない）
+                elif id_check not in passing:
+                    failed_check = f"baseline_{id_check}"
+                elif ri_check not in passing:
+                    failed_check = f"runner_image_{ri_check}"
+                elif day["w7_check"] not in passing:
+                    failed_check = "w7_monitoring"
+                else:
+                    failed_check = None
                 if failed_check is not None:
-                    # 基準の同一性・M7-3 の Runner Image を照合できない、または一致しない
+                    # ref・基準の同一性・M7-3 の Runner Image・W7 の監視のいずれかを満たさない
                     day["class"] = "normal" if targets else day["class"]
                     day["excluded"] = failed_check
                     seq.append({"break": failed_check, "race_date": ds})
@@ -387,7 +514,7 @@ def aggregate(verified: list[dict[str, Any]], permissions: list[dict[str, Any]],
                     seq.append({"break": "config_detected", "race_date": ds})
                 elif targets:
                     day["class"] = "normal"
-                    ok = run_level_ok(run)
+                    ok = run_level_ok(run, len(sel.get("races") or []))
                     recs: dict[str, list] = {}
                     for r in sel.get("races", []):
                         recs.setdefault(r.get("eval_id"), []).append(r)
@@ -465,6 +592,11 @@ def main(argv: Optional[list[str]] = None) -> int:
          if k in ("dir", "verified", "problems", "meta", "artifact_sha256", "job_log", "runner_image")}
         for vr in verified
     ]
+    for out_run, vr in zip(result["runs"], verified):
+        run_json = vr.get("run") or {}
+        out_run["w7_check"] = (w7_run_problems(run_json, len(vr.get("races") or []))
+                               if vr.get("verified") else None)
+        out_run["ref"] = {k: (run_json.get("info") or {}).get(k) for k in ("github_ref", "github_workflow_ref", "mode")}
     result["baseline"] = {"path": args.baseline or None, "sha256": baseline_sha256,
                           "read_error": baseline_error,
                           "runner_image": (baseline or {}).get("runner_image")}
@@ -497,6 +629,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"run {vr['dir']}: verified={vr['verified']} runner_image_log={ri.get('log')} "
               f"env_observed_version={(ri.get('env_observed') or {}).get('ImageVersion')} "
               f"problems={vr['problems']}")
+    for rr in result["runs"]:
+        print(f"run {rr['dir']}: mode={rr['ref'].get('mode')} ref={rr['ref'].get('github_ref')} "
+              f"w7_problems={rr['w7_check']}")
     for bf in result["baseline_failures"]:
         print(f"baseline check failed: race_date={bf['race_date']} run={bf['run'].get('run_id')}-"
               f"{bf['run'].get('run_attempt')} check={bf['check']}")

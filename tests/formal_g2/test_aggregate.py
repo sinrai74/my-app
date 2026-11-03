@@ -34,10 +34,21 @@ BASELINE_RAW = json.dumps(BASELINE, sort_keys=True).encode("utf-8")
 BASELINE_SHA = hashlib.sha256(BASELINE_RAW).hexdigest()
 
 
-def _race(eid, cat="diff_zero", ok=True):
+FORBIDDEN_ZERO = {lab: 0 for lab in agg.EXPECTED_FORBIDDEN_LABELS}
+
+
+def _instrument_ok():
+    return {"target_resolution": {lab: {"resolved": True} for lab in agg.EXPECTED_FORBIDDEN_LABELS},
+            "call_counts": dict(FORBIDDEN_ZERO), "unresolved_targets": [], "prior_profiler_present": False,
+            "threads_at_start": 1, "side_effect_events": [],
+            "monitor_state": {"started": True, "stopped": True, "hook_violations": [], "monitor_errors": [],
+                              "thread_starts": [], "thread_checks": 100, "unobserved_thread_violations": []}}
+
+
+def _race(eid, cat="diff_zero", ok=True, counts=None):
     return {"eval_id": eid, "result_category": cat, "d9_states": [] if ok else ["compare_not_established"],
-            "counts": {}, "d5": {}, "values": {}, "comparable_hash": {}, "hashes": {}, "d13_2": {},
-            "diffs": [], "input_identity_ok": ok}
+            "counts": dict(FORBIDDEN_ZERO, **(counts or {})), "d5": {}, "values": {}, "comparable_hash": {},
+            "hashes": {}, "d13_2": {}, "diffs": [], "input_identity_ok": ok}
 
 
 def _run_json(date, targets, config_detected=False, preload_ok=True):
@@ -48,7 +59,9 @@ def _run_json(date, targets, config_detected=False, preload_ok=True):
                        "shadow_package_loaded": [],
                        "baseline_identity": {"path": "baseline.json", "sha256": BASELINE_SHA,
                                              "sha256_at_end": BASELINE_SHA, "unchanged_during_run": True}},
-            "info": {"race_date": date}}
+            "info": {"race_date": date, "github_ref": "refs/heads/main",
+                     "github_workflow_ref": "o/r/.github/workflows/formal_g2_evaluate.yml@refs/heads/main"},
+            "instrument": _instrument_ok()}
 
 
 def _make_zip(files, manifest_extra=None, complete=True):
@@ -191,6 +204,94 @@ class CountingTests(unittest.TestCase):
                            capture_output=True, text=True, timeout=120)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.strip(), "[]")
+
+
+class ThreadObservationCheckTests(unittest.TestCase):
+    """集約側の独立検査：monitor_state.unobserved_thread_violations と thread_checks（2*N+2 以上）。"""
+
+    def _run(self, n_targets=3, status="completed", **ms_overrides):
+        inst = _instrument_ok()
+        inst["monitor_state"]["thread_checks"] = 2 * n_targets + 2
+        for k, v in ms_overrides.items():
+            if v is _DROP:
+                inst["monitor_state"].pop(k, None)
+            else:
+                inst["monitor_state"][k] = v
+        return {"status": status, "instrument": inst,
+                "programs": {"targets": [{"eval_id": f"e{i}"} for i in range(n_targets)]}}
+
+    def _problems(self, run, n=None):
+        return agg.w7_run_problems(run, n)
+
+    def test_clean_completed_run(self):
+        self.assertEqual(self._problems(self._run(), 3), [])
+        self.assertEqual(self._problems(self._run()), [])  # N を省略すると対象一覧の件数を使う
+
+    def test_unobserved_violation(self):
+        run = self._run(unobserved_thread_violations=[{"where": "after e1", "count": 1, "alive": 2}])
+        self.assertIn("unobserved live threads: 1", self._problems(run, 3))
+
+    def test_monitor_state_missing(self):
+        run = self._run()
+        run["instrument"].pop("monitor_state")
+        self.assertIn("monitor state missing", self._problems(run, 3))
+        run["instrument"]["monitor_state"] = "broken"
+        self.assertIn("monitor state missing", self._problems(run, 3))
+
+    def test_fields_missing_or_wrong_type(self):
+        cases = {
+            "violations missing": (dict(unobserved_thread_violations=_DROP), "unobserved thread record missing"),
+            "violations not list": (dict(unobserved_thread_violations={"x": 1}), "unobserved thread record has wrong type"),
+            "checks missing": (dict(thread_checks=_DROP), "thread_checks missing"),
+        }
+        for name, (ov, expected) in cases.items():
+            with self.subTest(name=name):
+                self.assertIn(expected, self._problems(self._run(**ov), 3))
+        for bad in (True, False, "8", -1, 8.0, None):
+            with self.subTest(thread_checks=bad):
+                probs = self._problems(self._run(thread_checks=bad), 3)
+                self.assertTrue(any(p.startswith("thread_checks has wrong type or value") for p in probs), probs)
+
+    def test_threshold(self):
+        n = 3
+        self.assertTrue(any("thread_checks 7 < 2*3+2" in p for p in self._problems(self._run(thread_checks=7), n)))
+        self.assertEqual(self._problems(self._run(thread_checks=8), n), [])
+        self.assertEqual(self._problems(self._run(thread_checks=50), n), [])
+        # races.jsonl の実際の件数が多ければ、それに合わせて求める
+        self.assertTrue(self._problems(self._run(thread_checks=8), 4))
+
+    def test_incomplete_or_stopped_runs_are_not_eligible(self):
+        for status in ("stopped", "running", None):
+            with self.subTest(status=status):
+                run = self._run(status=status)
+                probs = self._problems(run, 1)
+                self.assertIn(f"run not completed (status={status!r})", probs)
+                self.assertFalse(agg.run_level_ok(run, 1))
+        # 途中停止で N が分からない場合も、適格扱いにしない
+        run = self._run(status="stopped")
+        self.assertIn("processed race count unknown (thread_checks cannot be verified)", self._problems(run))
+
+    def test_aggregate_rejects_completed_formal_run_with_unobserved_thread(self):
+        with tempfile.TemporaryDirectory() as base:
+            inst = _instrument_ok()
+            inst["monitor_state"]["unobserved_thread_violations"] = [{"where": "after a", "count": 1, "alive": 2}]
+            _write_run(base, 1, 1, "20990101", [_race("a")], ["a"], run_overrides={"instrument": inst})
+            v = [agg.verify_run(os.path.join(base, x)) for x in os.listdir(base)]
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA)
+            self.assertEqual(res["days"][0]["excluded"], "w7_monitoring")
+            self.assertEqual(res["best_segment"], 0)
+
+    def test_aggregate_rejects_completed_formal_run_with_too_few_checks(self):
+        with tempfile.TemporaryDirectory() as base:
+            inst = _instrument_ok()
+            inst["monitor_state"]["thread_checks"] = 3  # 1レースなら 4 以上が必要
+            _write_run(base, 1, 1, "20990101", [_race("a")], ["a"], run_overrides={"instrument": inst})
+            v = [agg.verify_run(os.path.join(base, x)) for x in os.listdir(base)]
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA)
+            self.assertEqual(res["days"][0]["excluded"], "w7_monitoring")
+
+
+_DROP = object()
 
 
 if __name__ == "__main__":
