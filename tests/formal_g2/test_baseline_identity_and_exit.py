@@ -15,7 +15,7 @@ from io import StringIO
 
 from formal_g2 import env_baseline as eb
 from formal_g2.aggregate import main as agg
-from test_aggregate import BASELINE, BASELINE_RAW, BASELINE_SHA, PERMS, _race, _write_run
+from test_aggregate import BASELINE, BASELINE_RAW, BASELINE_SHA, FORMAL_OK, PERMS, _race, _write_run
 
 ROOT = os.path.realpath(os.getcwd())
 
@@ -34,7 +34,7 @@ class AggregateIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as base:
             _write_run(base, 1, 1, "20990101", [_race("a")], ["a"], check_overrides=check_overrides,
                        run_overrides=run_overrides)
-            return agg.aggregate(_verify_all(base), PERMS, "20990101", "20990101", baseline, sha)
+            return agg.aggregate(_verify_all(base), PERMS, "20990101", "20990101", baseline, sha, FORMAL_OK)
 
     def test_match(self):
         res = self._day()
@@ -95,12 +95,16 @@ class ExitCodeTests(unittest.TestCase):
         with open(os.path.join(out, "aggregate_result.json"), encoding="utf-8") as f:
             return rc, json.load(f), buf.getvalue()
 
-    def test_ok_is_0_and_path_does_not_matter(self):
+    def test_identity_ok_but_formal_pass_is_never_given_by_main(self):
+        # 2026-11-06 の GPT 判断：登録の確認ができなければ正式な合格を出さない（候補の基準と一致しても）。
+        # 旧テスト test_ok_is_0_and_path_does_not_matter（終了コード 0・1件加算）を置き換えた。
         with tempfile.TemporaryDirectory() as tmp:
             rc, res, _ = self._main(tmp, baseline_name="registered_copy_elsewhere.json")
-            self.assertEqual(rc, 0)
-            self.assertEqual(res["best_segment"], 1)
+            self.assertEqual(res["days"][0]["baseline_identity_check"], "ok")  # パスは問わず内容で照合（従来どおり）
             self.assertEqual(res["baseline"]["sha256"], BASELINE_SHA)
+            self.assertEqual(rc, agg.EXIT_VERIFICATION_FAILED)
+            self.assertEqual(res["best_segment"], 0)
+            self.assertIs(res["formal_judgment"]["registration_verified"], False)
 
     def test_identity_mismatch_is_3(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -109,7 +113,8 @@ class ExitCodeTests(unittest.TestCase):
             self.assertIn("check=baseline_identity_mismatch", log)
 
     def test_runner_image_mismatch_is_3(self):
-        other = dict(BASELINE, runner_image={"image": "ubuntu-24.04", "version": "20261026.354.1"})
+        # 2026-11-06 の GPT 判断：基準の固定条件は Image だけ（Version は照合しない）。Image が違う場合に除外する
+        other = dict(BASELINE, runner_image={"image": "ubuntu-22.04"})
         raw = json.dumps(other, sort_keys=True).encode("utf-8")
         import hashlib
         with tempfile.TemporaryDirectory() as tmp:

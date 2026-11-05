@@ -8,17 +8,38 @@
   <run_id>-<run_attempt>/meta.json      … {"run_id", "run_attempt", "artifact_name",
                                             "expected_digest", "run_started_at",
                                             "job_id", "job_count", "log_fetch_ok", "log_fetch_error",
-                                            "log_file", "log_sha256", "log_bytes", "log_fetched_at"}
+                                            "log_file", "log_sha256", "log_bytes", "log_fetched_at",
+                                            "api_run_id", "api_run_attempt", "api_head_sha", "api_head_branch",
+                                            "api_workflow_path", "api_repository", "api_event"}
+                                          （api_* は attempts の API の応答。2026-11-06 に追加）
 --permissions：個別の開始許可の一覧（形式は未決。下の load_permissions を参照）
---baseline：登録済みの基準 JSON（M7-3：runner_image をジョブログの値と照合する）
+--baseline：評価側の基準 JSON（M7-3：runner_image の Image をジョブログの値と照合する。Version は観測値）
+--aggregate-baseline：集約側の基準 JSON（集約の4ファイルの SHA-256 と Python の版。2026-11-06 に追加）
+--tools-json：gh・jq の版（観測値。照合しない）
 
 出力：
   aggregate_result.json（判定に使った集約コード・workflow の SHA-256 を含む）
   logs/<run_id>-<run_attempt>.log（ジョブログ原本の写し）
   manifest.json（上の各ファイルの存在・サイズ・SHA-256。"complete": true）
 終了コード：照合の失敗（artifact・ジョブログの検証、基準の読み込み、正式な実行の ref・基準の
-同一性・Runner Image・W7 の監視の照合）が1件でもあれば 3、無ければ 0。評価側の設計どおりの安全停止
-（CONFIG・PRELOAD など）は、記録と除外が正しければ 0。
+同一性・Runner Image・W7 の監視・実行メタデータ・条件5 の照合）が1件でもあれば 3、無ければ 0。
+評価側の設計どおりの安全停止（CONFIG・PRELOAD など）は、記録と除外が正しければ 0。
+
+2026-11-05 の追加（07g、GPT 判断 2-1〜2-3・1-2）：
+- 実行メタデータの照合（run_metadata_check）：run.json の run_id・run_attempt と meta.json（API）、
+  head_sha・ref・workflow_ref と API の値（meta.json の api_* が必要。今の集約 workflow は取得しないので
+  欠落として不合格）、started_at・finished_at（必須）、manifest と run.json の実行識別情報。
+- 条件5（condition5_check）：programs_raw.json から対象一覧・targets_sha256・program_sha256 を計算し直す。
+- comparable_hash の対象（comparable_scope_ok）：values の両側がちょうど5項目であること（構造だけ）。
+- 条件7（release_and_network_record）：利用可能性・通信の監視結果・監視の限界を別々に記録する。
+
+2026-11-06 の追加（§6.8 B の条件1・3・5・6、GPT 判断。M7-3・baseline の登録は本人の判断待ち）：
+- run_id・run_attempt は API の値（api_run_id・api_run_attempt）と照合し、event が workflow_dispatch であること。
+- 評価ジョブのログの検査：E2（アクションの入力のトークン）、E3（GITHUB_TOKEN Permissions の表示。想定は未決定の
+  ため不合格）、E5（g2_fetch_head と API の head_sha、g2_credentials_check）。E4（評価プロセスの環境）は run.json。
+- 集約側の基準の照合（aggregate_baseline_check）。
+- Runner Image は Image だけを照合し、Version は観測値として記録する。
+- baseline の登録方式は未決定なので、main() は登録を確認できない。正式な実行に合格を出すことはない。
 
 M7-3（2026-11-03 の判断）：Runner Image の識別値は、ジョブログの「Set up job →
 Runner Image」グループの Image・Version を基準とする。artifact 内の環境変数
@@ -162,6 +183,375 @@ def ref_problems(run: dict[str, Any]) -> list[str]:
     if not str(info.get("github_workflow_ref") or "").endswith("@" + FORMAL_REF):
         problems.append("github_workflow_ref does not end with @" + FORMAL_REF)
     return problems
+
+
+# ---- 実行メタデータの照合（07g §3.5、2026-11-05 の GPT 判断 2-1） ----
+# 比較値の差分とは別の「証跡の不備」として扱う。欠落・形式不正・不一致は、その実行を正式判定に通さない。
+# API 由来の値（api_*）は、集約の workflow が attempts の応答から meta.json に入れる（2026-11-06 の変更）。
+# 入力の run_id・artifact 名の attempt（meta.run_id・meta.run_attempt）は API の値の代わりにしない。
+# api_* が1つでも欠けていれば不合格（fail-closed）。
+META_API_FIELDS = ("api_run_id", "api_run_attempt", "api_head_sha", "api_head_branch", "api_workflow_path",
+                   "api_repository", "api_event")
+EXPECTED_API_EVENT = "workflow_dispatch"
+
+
+def _parse_ts(value: Any) -> Optional[datetime]:
+    """ISO8601 の日時（時差つき）を読む。読めない・時差が無い場合は None。"""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo is not None else None
+
+
+def run_metadata_check(vr: dict[str, Any]) -> dict[str, Any]:
+    """run.json・manifest・meta.json（集約の workflow が API から取った値）の実行識別情報を照合する。
+
+    返り値 {"ok": bool, "problems": [...], "api_fields_present": bool, "recorded": {...}}。
+    """
+    out: dict[str, Any] = {"ok": False, "problems": [], "api_fields_present": False}
+    run = vr.get("run") or {}
+    meta = vr.get("meta") or {}
+    info = run.get("info")
+    if not isinstance(info, dict):
+        out["problems"].append("run.json info missing")
+        return out
+    man_run = (vr.get("manifest") or {}).get("run")
+    p = out["problems"]
+    # 1. API の値がそろっているか
+    present = all(str(meta.get(k) or "") for k in META_API_FIELDS)
+    out["api_fields_present"] = present
+    if not present:
+        missing = [k for k in META_API_FIELDS if not str(meta.get(k) or "")]
+        p.append(f"API run fields unavailable: {missing}")
+    else:
+        # 2. run_id・run_attempt は API の値と照合する（入力の値・artifact 名の値は、API の値との一致だけを見る）
+        if str(info.get("github_run_id") or "") != str(meta["api_run_id"]):
+            p.append(f"run_id mismatch: run.json={info.get('github_run_id')!r} api={meta['api_run_id']!r}")
+        if str(meta.get("run_id") or "") != str(meta["api_run_id"]):
+            p.append("requested run_id does not match API run id")
+        if str(info.get("github_run_attempt") or "") != str(meta["api_run_attempt"]):
+            p.append(f"run_attempt mismatch: run.json={info.get('github_run_attempt')!r} api={meta['api_run_attempt']!r}")
+        if str(meta.get("run_attempt") or "") != str(meta["api_run_attempt"]):
+            p.append("artifact attempt does not match API run attempt")
+        latest = meta.get("latest_attempt")
+        try:
+            if latest is None or int(meta["api_run_attempt"]) > int(latest):
+                p.append("run_attempt greater than latest attempt reported by API (or latest unknown)")
+        except (TypeError, ValueError):
+            p.append("run_attempt or latest_attempt not an integer")
+        if meta["api_event"] != EXPECTED_API_EVENT:
+            p.append(f"API event is not {EXPECTED_API_EVENT}: {meta['api_event']!r}")
+        # head_sha・ref・workflow_ref を API の値と照合する
+        if info.get("github_sha") != meta["api_head_sha"]:
+            p.append("github_sha does not match API head_sha")
+        if info.get("github_ref") != "refs/heads/" + str(meta["api_head_branch"]):
+            p.append("github_ref does not match API head_branch")
+        expected_wf = f"{meta['api_repository']}/{meta['api_workflow_path']}@{info.get('github_ref')}"
+        if info.get("github_workflow_ref") != expected_wf:
+            p.append("github_workflow_ref does not match API repository/path/ref")
+    # 3. started_at・finished_at は必須（形式・順序）
+    started = _parse_ts(info.get("started_at"))
+    finished = _parse_ts(run.get("finished_at"))
+    if started is None:
+        p.append("started_at missing or not ISO8601 with offset")
+    if finished is None:
+        p.append("finished_at missing or not ISO8601 with offset")
+    if started is not None and finished is not None and finished < started:
+        p.append("finished_at earlier than started_at")
+    # 4. manifest と run.json の実行識別情報
+    if not isinstance(man_run, dict):
+        p.append("manifest run info missing")
+    elif man_run != info:
+        diff = sorted(k for k in set(man_run) | set(info) if man_run.get(k) != info.get(k))
+        p.append(f"manifest run info differs from run.json info: {diff}")
+    # 5. API 由来の値の記録（照合とは別に残す）
+    out["recorded"] = {
+        "run_json": {k: info.get(k) for k in ("github_run_id", "github_run_attempt", "github_sha", "github_ref",
+                                             "github_workflow_ref", "started_at")} | {"finished_at": run.get("finished_at")},
+        "api": {k: meta.get(k) for k in ("run_id", "run_attempt", "latest_attempt", "run_started_at", "job_id",
+                                         "job_count", "log_sha256", "log_bytes", "log_fetched_at", *META_API_FIELDS)},
+    }
+    out["ok"] = not p
+    return out
+
+
+# ---- 条件5（07f §6.4・§6.5 の4、07g・2026-11-05 の GPT 判断 1-3） ----
+def _extract_programs_by_key(data: Any) -> Any:
+    """凍結版 _extract_programs と同じ規則を、集約の中で書き直したもの。
+
+    `programs` キーがあればその値をそのまま使う（None・空でも today に切り替えない）。
+    キーが無い場合に限り today.programs を使う。値の妥当性は呼び出し側で確かめる。
+    """
+    if not data:
+        return []
+    if not isinstance(data, dict):
+        return None
+    if "programs" in data:
+        return data.get("programs", [])
+    return (data.get("today") or {}).get("programs", [])
+
+
+def _race_sort_key(p: dict) -> tuple:
+    return (str(p.get("race_closed_at", "") or ""), int(p.get("race_stadium_number", 0) or 0),
+            int(p.get("race_number", 0) or 0))
+
+
+def _stable_hash(obj: Any) -> str:
+    """判断D 2 の方法（評価側 race_eval.stable_hash と同じ文字列化）。"""
+    s = json.dumps(obj, sort_keys=True, ensure_ascii=False, allow_nan=True, separators=(",", ":"))
+    return _sha256(s.encode("utf-8"))
+
+
+def condition5_check(raw: Optional[bytes], run: dict[str, Any], races: list[dict[str, Any]]) -> dict[str, Any]:
+    """programs_raw.json から対象一覧と program_sha256 を計算し直し、評価側の記録と照合する。
+
+    返り値 {"status": "ok"|"failed"|"not_applicable_stopped_run", "problems": [...], "checks": {...}}。
+    """
+    out: dict[str, Any] = {"status": "failed", "problems": [], "checks": {}}
+    rec = run.get("programs")
+    if not isinstance(rec, dict) or "raw_sha256" not in rec:
+        if run.get("status") != "completed":
+            out["status"] = "not_applicable_stopped_run"
+        else:
+            out["problems"].append("programs record missing in run.json")
+        return out
+    p, c = out["problems"], out["checks"]
+    race_date = (run.get("info") or {}).get("race_date")
+    if not isinstance(race_date, str) or not re.fullmatch(r"\d{8}", race_date):
+        p.append("race_date (run argument) missing or invalid")
+        return out
+    if raw is None:
+        p.append("programs_raw.json missing in artifact")
+        return out
+    c["raw_sha256"] = _sha256(raw) == rec.get("raw_sha256")                      # (i)
+    try:
+        data = json.loads(raw)                                                    # (ii)
+    except ValueError:
+        p.append("programs_raw.json is not JSON")
+        return out
+    programs = _extract_programs_by_key(data)
+    if not isinstance(programs, list) or not programs or not all(isinstance(x, dict) for x in programs):
+        p.append("programs list invalid (None, empty, or not a list of objects)")
+        return out
+    try:
+        ordered = sorted(programs, key=_race_sort_key)                           # (iii)
+        targets = [{"eval_id": f"{race_date}_{int(x['race_stadium_number']):02d}_{int(x['race_number']):02d}",
+                    "venue_num": int(x["race_stadium_number"]), "race_number": int(x["race_number"]),
+                    "race_closed_at": x.get("race_closed_at"), "race_date_in_program": x.get("race_date")}
+                   for x in ordered]                                              # (iv)
+    except (KeyError, TypeError, ValueError) as exc:
+        p.append(f"programs element invalid: {type(exc).__name__}")
+        return out
+    targets_sha = _sha256(json.dumps(targets, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode("utf-8"))      # (v)
+    c["targets"] = targets == rec.get("targets")
+    c["targets_sha256"] = targets_sha == rec.get("targets_sha256")
+    by_id: dict[str, dict] = {}
+    dup = set()
+    for t, x in zip(targets, ordered):
+        if t["eval_id"] in by_id:
+            dup.add(t["eval_id"])
+        by_id[t["eval_id"]] = x
+    if dup:
+        p.append(f"duplicate eval_id in programs: {sorted(dup)[:5]}")
+    matched, mismatched, absent, unknown = 0, [], [], []                         # (vi)
+    for r in races:
+        eid = r.get("eval_id")
+        if "program_sha256" not in r:
+            absent.append(eid)
+            continue
+        x = by_id.get(eid)
+        if x is None:
+            unknown.append(eid)
+        elif _stable_hash(x) == r["program_sha256"]:
+            matched += 1
+        else:
+            mismatched.append(eid)
+    c["program_sha256"] = {"matched": matched, "mismatched": mismatched[:20], "mismatched_count": len(mismatched),
+                           "absent": absent[:20], "absent_count": len(absent), "not_in_programs": unknown[:20]}
+    for k in ("raw_sha256", "targets", "targets_sha256"):
+        if c[k] is not True:
+            p.append(f"{k} mismatch")
+    if mismatched:
+        p.append(f"program_sha256 mismatch: {len(mismatched)}")
+    if unknown:
+        p.append(f"race records not in programs: {len(unknown)}")
+    out["status"] = "ok" if not p else "failed"
+    return out
+
+
+# ---- comparable_hash の対象（07g §3.5） ----
+FIVE_ITEMS = ("danger_score", "danger_breakdown", "upset_score", "rank_index", "featured_boats")
+
+
+def comparable_scope_ok(rec: dict[str, Any]) -> bool:
+    """comparable_hash が既決の5項目の値から作られた記録の形になっているか（構造だけを見る）。
+
+    values の Legacy 側・Rebuild 側のキーがちょうど5項目で、comparable_hash が両側の SHA-256 を持つこと。
+    run_id・時刻などのメタデータのキーが values に入っていれば不合格。値の中身（時刻に左右される値を
+    含むか）は見ない（除外しない）。ハッシュの値そのものは、比較器の正規化を使わないので計算し直さない。
+    """
+    values, ch = rec.get("values"), rec.get("comparable_hash")
+    if not isinstance(values, dict) or not isinstance(ch, dict):
+        return False
+    for side in ("legacy", "rebuild"):
+        v = values.get(side)
+        h = ch.get(side)
+        if not isinstance(v, dict) or set(v) != set(FIVE_ITEMS):
+            return False
+        if not (isinstance(h, str) and re.fullmatch(r"[0-9a-f]{64}", h)):
+            return False
+    return True
+
+
+# ---- 条件7 の表記（07g §3.8 の7、2026-11-05 の GPT 判断 1-2） ----
+RELEASE_AVAILABILITY_NOTE = (
+    "release_storage_available=false は x_release_storage.is_available() が False だった"
+    "（GITHUB_TOKEN・GITHUB_REPOSITORY が無い）ことを示すだけで、外部との通信が無かったことの証明ではない。"
+    "通信は評価側の監査フック（Python の範囲）で別に記録したもので、C 拡張から直接の通信は観測していない。"
+    "評価側の artifact にはこの注記が無い（評価側は変更していない）。"
+)
+
+
+def release_and_network_record(run: dict[str, Any]) -> dict[str, Any]:
+    """利用可能性と、通信の監視結果と、監視の限界を、別々の項目として記録する。"""
+    inst = run.get("instrument") or {}
+    events = inst.get("side_effect_events") or []
+    net = [e.get("detail") for e in events if isinstance(e, dict) and e.get("kind") == "network"]
+    return {
+        "release_storage_available": ((run.get("checks") or {}).get("release") or {}).get("release_storage_available"),
+        "network_events_observed": {"count": len(net), "details": net[:20]},
+        "monitoring_limitations": inst.get("limitations"),
+        "note": RELEASE_AVAILABILITY_NOTE,
+    }
+
+
+# ---- 評価ジョブのログの検査（§6.8 B の条件1・3・5・6。2026-11-06 の GPT 判断） ----
+# E2：アクションの入力にトークンの値（GitHub が *** で伏せたもの）が渡っていないこと。
+# E3：ジョブの「GITHUB_TOKEN Permissions」の表示。想定の表示は Actions で確かめるまで未決定のため、
+#     想定が与えられない限り不合格にする（fail-closed）。
+# E5：取得のステップが出す g2_fetch_head=<40桁> と g2_credentials_check=none が、それぞれちょうど1行あること。
+#     g2_fetch_head は API の head_sha と一致すること。
+# いずれも、ログに *** が無いことだけを合格の根拠にはしない（E1 の静的な検査・E4 のプロセスの環境と組み合わせる）。
+_TOKEN_INPUT_RE = re.compile(r"^\s+[A-Za-z0-9_-]*token[A-Za-z0-9_-]*:\s*\*\*\*\s*$", re.IGNORECASE)
+_FETCH_HEAD_RE = re.compile(r"g2_fetch_head=([0-9a-f]{40})")
+CREDENTIALS_CHECK_LINE = "g2_credentials_check=none"
+TOKEN_PERMISSIONS_GROUP = "##[group]GITHUB_TOKEN Permissions"
+
+
+def eval_log_check(text: str) -> dict[str, Any]:
+    """評価ジョブのログ原本から E2・E3・E5 の材料を取り出す（判定は aggregate で行う）。"""
+    lines = [_LOG_TS_RE.sub("", ln, count=1) for ln in text.splitlines()]
+    token_lines = [i + 1 for i, ln in enumerate(lines) if _TOKEN_INPUT_RE.match(ln)]
+    perm: dict[str, Any] = {"display": None, "problem": None}
+    starts = [i for i, ln in enumerate(lines) if ln.strip() == TOKEN_PERMISSIONS_GROUP]
+    if len(starts) != 1:
+        perm["problem"] = f"GITHUB_TOKEN Permissions group count = {len(starts)} (expected 1)"
+    else:
+        end = next((j for j in range(starts[0] + 1, len(lines)) if lines[j].strip() == GROUP_END), None)
+        if end is None:
+            perm["problem"] = "GITHUB_TOKEN Permissions group is not closed"
+        else:
+            perm["display"] = [lines[j].strip() for j in range(starts[0] + 1, end) if lines[j].strip()]
+    heads = [m.group(1) for ln in lines if (m := _FETCH_HEAD_RE.fullmatch(ln.strip()))]
+    creds = [ln for ln in lines if ln.strip() == CREDENTIALS_CHECK_LINE]
+    return {
+        "token_inputs": {"ok": not token_lines, "lines": token_lines[:20]},
+        "token_permissions": perm,
+        "fetch": {"heads": heads[:5], "head_count": len(heads), "credentials_check_count": len(creds)},
+    }
+
+
+def fetch_check(eval_log: Optional[dict[str, Any]], meta: dict[str, Any]) -> list[str]:
+    """E5：取得のステップの証跡を、API の head_sha と照合する。"""
+    if not isinstance(eval_log, dict):
+        return ["evaluate job log not checked"]
+    f = eval_log.get("fetch") or {}
+    problems = []
+    if f.get("head_count") != 1:
+        problems.append(f"g2_fetch_head line count = {f.get('head_count')} (expected 1)")
+    elif not meta.get("api_head_sha") or f["heads"][0] != meta.get("api_head_sha"):
+        problems.append("g2_fetch_head does not match API head_sha")
+    if f.get("credentials_check_count") != 1:
+        problems.append(f"{CREDENTIALS_CHECK_LINE} line count = {f.get('credentials_check_count')} (expected 1)")
+    return problems
+
+
+def token_permissions_check(eval_log: Optional[dict[str, Any]], expected: Optional[list[str]]) -> list[str]:
+    """E3：GITHUB_TOKEN Permissions の表示を、想定の表示と照合する。想定が無ければ不合格。"""
+    if not isinstance(eval_log, dict):
+        return ["evaluate job log not checked"]
+    perm = eval_log.get("token_permissions") or {}
+    if perm.get("problem"):
+        return [perm["problem"]]
+    if expected is None:
+        return ["expected GITHUB_TOKEN Permissions display not determined (to be confirmed on Actions)"]
+    if perm.get("display") != list(expected):
+        return [f"GITHUB_TOKEN Permissions display differs: {perm.get('display')!r}"]
+    return []
+
+
+def process_env_check(run: dict[str, Any]) -> list[str]:
+    """E4：評価プロセスに GITHUB_TOKEN が無く、名前に TOKEN を含む環境変数も無いこと（ACTIONS_RUNTIME_TOKEN を含む）。"""
+    tok = (run.get("checks") or {}).get("token")
+    if not isinstance(tok, dict):
+        return ["token check record missing in run.json"]
+    problems = []
+    if tok.get("github_token_present") is not False:
+        problems.append("GITHUB_TOKEN present (or unrecorded) in evaluation process")
+    if tok.get("token_like_env_names") != []:
+        problems.append(f"token-like environment variables in evaluation process: {tok.get('token_like_env_names')!r}")
+    return problems
+
+
+# ---- 集約側の基準（2026-11-06 の GPT 判断：評価側と分けて固定する） ----
+# 形：{"kind": "aggregate", "files": {<self_version() の4ファイル>: <SHA-256>}, "python_version": [3, 11, 9]}
+# gh・jq の版は観測値として記録するだけで、照合しない。
+def aggregate_baseline_check(path: Optional[str]) -> dict[str, Any]:
+    """集約側の基準と、この集約のコード（self_version）・Python の版を照合する。"""
+    out: dict[str, Any] = {"status": "no_baseline", "path": path or None, "sha256": None, "diffs": []}
+    if not path:
+        return out
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        base = json.loads(raw)
+        if not isinstance(base, dict):
+            raise ValueError("aggregate baseline is not a JSON object")
+    except (OSError, ValueError) as exc:
+        out["status"] = "read_error"
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        return out
+    out["sha256"] = _sha256(raw)
+    mine = self_version()
+    files = base.get("files")
+    if base.get("kind") != "aggregate" or not isinstance(files, dict):
+        out["status"] = "invalid"
+        return out
+    for rel in sorted(set(mine) | set(files)):
+        if mine.get(rel) is None or files.get(rel) != mine.get(rel):
+            out["diffs"].append(f"file:{rel}")
+    if base.get("python_version") != list(sys.version_info[:3]):
+        out["diffs"].append("python_version")
+    out["status"] = "ok" if not out["diffs"] else "mismatch"
+    return out
+
+
+# aggregate() の formal_context の既定：どの条件も満たさない（正式な合格を出さない）
+DEFAULT_FORMAL_CONTEXT: dict[str, Any] = {
+    "aggregate_baseline_check": "not_checked",
+    "expected_eval_token_permissions": None,  # Actions で確かめるまで未決定
+    "registration_verified": False,  # baseline の登録方式は本人判断項目2 で未決定
+}
+REGISTRATION_NOTE = (
+    "baseline の登録方式は未決定（本人判断項目2）。登録を確認できないため、正式な実行に合格を出さない。"
+    "基準の候補と一致しても正式な合格にはしない（2026-11-06 の GPT 判断）。"
+)
+
+
 GROUP_END = "##[endgroup]"
 
 
@@ -229,6 +619,7 @@ def verify_run(run_dir: str) -> dict[str, Any]:
     # M7-3：ジョブログ（Runner Image）の照合。環境変数の値は観測値として別に記録する。
     log_check = verify_job_log(run_dir, meta)
     res["job_log"] = log_check
+    res["eval_log"] = log_check.get("eval_log")
     res["runner_image"] = {
         "log": log_check.get("runner_image"),
         "env_observed": ((run_json or {}).get("env_snapshot") or {}).get("image"),
@@ -244,6 +635,9 @@ def verify_run(run_dir: str) -> dict[str, Any]:
                 if line.strip():
                     races.append(json.loads(line))
         res["races"] = races
+        raw = zf.read("programs_raw.json") if "programs_raw.json" in names else None
+        res["condition5"] = condition5_check(raw, run_json, races)
+        res["run_metadata"] = run_metadata_check(res)
     return res
 
 
@@ -331,6 +725,7 @@ def verify_job_log(run_dir: str, meta: dict[str, Any]) -> dict[str, Any]:
     except UnicodeDecodeError:
         res["problems"].append("log not decodable as UTF-8")
         return res
+    res["eval_log"] = eval_log_check(text)  # E2・E3・E5 の材料（判定は aggregate）
     parsed = parse_runner_image(text)
     res["parse"] = {k: parsed[k] for k in ("lines", "problems") if k in parsed}
     res["parse"]["group_lines"] = parsed.get("group_lines")
@@ -357,16 +752,20 @@ def baseline_identity_check(run: dict[str, Any], baseline_sha256: Optional[str])
 
 
 def runner_image_check(vr: dict[str, Any], baseline: Optional[dict[str, Any]]) -> str:
-    """M7-3 の照合結果："ok" / "no_baseline" / "baseline_invalid" / "log_unverified" / "mismatch"。"""
+    """M7-3 の照合結果："ok" / "no_baseline" / "baseline_invalid" / "log_unverified" / "mismatch"。
+
+    2026-11-06 の GPT 判断（M7-3 の本人承認は未了）：基準の固定条件は Image だけ。基準の runner_image は
+    {"image": str} の形とし、Version はジョブログの観測値として記録するだけで照合しない。
+    """
     log = (vr.get("runner_image") or {}).get("log")
     if not log:
         return "log_unverified"
     if baseline is None:
         return "no_baseline"
     ri = baseline.get("runner_image")
-    if not isinstance(ri, dict) or set(ri) != {"image", "version"}:
+    if not isinstance(ri, dict) or set(ri) != {"image"} or not isinstance(ri.get("image"), str) or not ri["image"]:
         return "baseline_invalid"
-    return "ok" if (ri.get("image"), ri.get("version")) == (log["image"], log["version"]) else "mismatch"
+    return "ok" if ri["image"] == log["image"] else "mismatch"
 
 
 # ---- 正式な実行かどうか（§6.3〜§6.5 の 6） ----
@@ -416,6 +815,8 @@ def race_state(rec: dict[str, Any], run_ok: bool) -> str:
         return "compare_not_established"
     if any(k not in rec for k in REQUIRED_COMPARED_KEYS):
         return "evidence_incomplete"
+    if not comparable_scope_ok(rec):
+        return "evidence_incomplete"  # comparable_hash が5項目の値から作られた形になっていない
     if cat == "mismatch":
         return "mismatch"
     states = rec.get("d9_states") or []
@@ -449,10 +850,17 @@ def run_level_ok(run: dict[str, Any], races_count: Optional[int] = None) -> bool
 def aggregate(verified: list[dict[str, Any]], permissions: list[dict[str, Any]],
               first_date: str, last_date: str,
               baseline: Optional[dict[str, Any]] = None,
-              baseline_sha256: Optional[str] = None) -> dict[str, Any]:
+              baseline_sha256: Optional[str] = None,
+              formal_context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """基準が無い・評価側と同じ基準だと確かめられない・形が正しくない・ジョブログの
     Runner Image と一致しない実行は、その日の全レースを正式カウントから除外し、区間を
-    終える（M7-3・基準の同一性。評価側の A-1 に相当）。これらは baseline_failures に入る。"""
+    終える（M7-3・基準の同一性。評価側の A-1 に相当）。これらは baseline_failures に入る。
+
+    formal_context（2026-11-06）：集約側の基準の照合結果、E3 の想定の表示、登録の確認の結果。
+    省略すると DEFAULT_FORMAL_CONTEXT（どれも満たさない）になり、正式な実行には合格を出さない。
+    main() は登録の確認の手段を持たない（本人判断項目2 で未決定）ので、常に registration_verified=False。
+    """
+    ctx = dict(DEFAULT_FORMAL_CONTEXT, **(formal_context or {}))
     baseline_failures: list[dict[str, Any]] = []
     by_date: dict[str, list[dict[str, Any]]] = {}
     for vr in verified:
@@ -490,6 +898,15 @@ def aggregate(verified: list[dict[str, Any]], permissions: list[dict[str, Any]],
                 day["ref_check"] = ref_problems(run) or "ok"
                 w7p = w7_run_problems(run, len(sel.get("races") or []))
                 day["w7_check"] = (w7p or "ok") if run.get("status") == "completed" else "not_applicable_stopped_run"
+                md = sel.get("run_metadata") or {"ok": False, "problems": ["run metadata not checked"]}
+                day["run_metadata_check"] = "ok" if md.get("ok") else md.get("problems")
+                c5 = sel.get("condition5") or {"status": "failed", "problems": ["condition5 not checked"]}
+                day["condition5_check"] = c5["status"] if c5["status"] != "failed" else c5.get("problems")
+                ev = sel.get("eval_log")
+                # E2（アクションの入力のトークン）・E4（評価プロセスの環境）は、止まった実行にも当てはめる
+                day["eval_token_input_check"] = ("ok" if isinstance(ev, dict) and (ev.get("token_inputs") or {}).get("ok")
+                                                 else ["token value passed to an action input (or log not checked)"])
+                day["eval_process_env_check"] = process_env_check(run) or "ok"
                 passing = ("ok", "not_applicable_stopped_run")
                 if day["ref_check"] != "ok":
                     failed_check = "ref_not_main"  # 正式な実行は main で行う（調査用の実行には適用しない）
@@ -499,10 +916,35 @@ def aggregate(verified: list[dict[str, Any]], permissions: list[dict[str, Any]],
                     failed_check = f"runner_image_{ri_check}"
                 elif day["w7_check"] not in passing:
                     failed_check = "w7_monitoring"
+                elif day["run_metadata_check"] != "ok":
+                    failed_check = "run_metadata"  # 証跡の不備（比較値の差分ではない）
+                elif day["condition5_check"] not in passing:
+                    failed_check = "condition5"  # 対象一覧・program_sha256 の照合の不合格
+                elif day["eval_token_input_check"] != "ok":
+                    failed_check = "eval_token_input"  # E2
+                elif day["eval_process_env_check"] != "ok":
+                    failed_check = "eval_process_token_env"  # E4
                 else:
                     failed_check = None
+                if failed_check is None and run.get("status") == "completed" \
+                        and not (run.get("config_detection") or {}).get("detected", True) and targets:
+                    # 加算されうる実行にだけ当てはめる条件（止まった実行は、もともと加算されない）
+                    day["aggregate_baseline_check"] = ctx["aggregate_baseline_check"]
+                    day["eval_fetch_check"] = fetch_check(ev, sel.get("meta") or {}) or "ok"
+                    day["eval_token_permissions_check"] = (
+                        token_permissions_check(ev, ctx["expected_eval_token_permissions"]) or "ok")
+                    day["registration_check"] = "ok" if ctx["registration_verified"] is True else "unverified"
+                    if day["aggregate_baseline_check"] != "ok":
+                        failed_check = f"aggregate_baseline_{day['aggregate_baseline_check']}"
+                    elif day["eval_fetch_check"] != "ok":
+                        failed_check = "eval_fetch"  # E5
+                    elif day["eval_token_permissions_check"] != "ok":
+                        failed_check = "eval_token_permissions"  # E3
+                    elif day["registration_check"] != "ok":
+                        failed_check = "baseline_registration_unverified"  # 候補の基準では正式な合格を出さない
                 if failed_check is not None:
-                    # ref・基準の同一性・M7-3 の Runner Image・W7 の監視のいずれかを満たさない
+                    # ref・基準の同一性・M7-3 の Runner Image・W7 の監視・実行メタデータ・条件5・E2〜E5・
+                    # 集約側の基準・登録の確認のいずれかを満たさない
                     day["class"] = "normal" if targets else day["class"]
                     day["excluded"] = failed_check
                     seq.append({"break": failed_check, "race_date": ds})
@@ -560,8 +1002,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--first-date", required=True)
     p.add_argument("--last-date", required=True)
     p.add_argument("--out", default="g2_aggregate_out")
-    p.add_argument("--baseline", default="", help="登録済みの基準 JSON（M7-3 の runner_image を照合する）")
+    p.add_argument("--baseline", default="", help="評価側の基準 JSON（M7-3 の runner_image を照合する）")
+    p.add_argument("--aggregate-baseline", default="", help="集約側の基準 JSON（集約のコード・Python の版）")
+    p.add_argument("--tools-json", default="", help="gh・jq の版（観測値。照合しない）")
     args = p.parse_args(argv)
+    try:
+        tools = json.loads(args.tools_json) if args.tools_json else None
+    except ValueError:
+        tools = {"unparsed": args.tools_json[:200]}
+    agg_base = aggregate_baseline_check(args.aggregate_baseline or None)
 
     loaded_repo_modules = sorted(
         n for n, m in sys.modules.items()
@@ -585,8 +1034,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         for d in sorted(os.listdir(args.artifacts_dir))
         if os.path.isdir(os.path.join(args.artifacts_dir, d))
     ]
+    # 登録の確認の手段は無い（本人判断項目2 で未決定）。E3 の想定の表示も未決定。どちらも満たさない扱い。
+    formal_context = {"aggregate_baseline_check": agg_base["status"],
+                      "expected_eval_token_permissions": None,
+                      "registration_verified": False}
     result = aggregate(verified, load_permissions(args.permissions), args.first_date, args.last_date,
-                       baseline, baseline_sha256)
+                       baseline, baseline_sha256, formal_context)
     result["runs"] = [
         {k: v for k, v in vr.items()
          if k in ("dir", "verified", "problems", "meta", "artifact_sha256", "job_log", "runner_image")}
@@ -597,6 +1050,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         out_run["w7_check"] = (w7_run_problems(run_json, len(vr.get("races") or []))
                                if vr.get("verified") else None)
         out_run["ref"] = {k: (run_json.get("info") or {}).get(k) for k in ("github_ref", "github_workflow_ref", "mode")}
+        out_run["run_metadata"] = vr.get("run_metadata")
+        out_run["condition5"] = vr.get("condition5")
+        out_run["release_and_network"] = release_and_network_record(run_json) if vr.get("verified") else None
+        out_run["eval_log"] = vr.get("eval_log")
+        out_run["eval_process_env"] = process_env_check(run_json) if vr.get("verified") else None
+        out_run["eval_fetch"] = fetch_check(vr.get("eval_log"), vr.get("meta") or {}) if vr.get("verified") else None
+    result["release_availability_note"] = RELEASE_AVAILABILITY_NOTE
+    result["aggregate_baseline"] = agg_base
+    result["aggregate_environment"] = {  # 観測値（照合しない）
+        "github_sha": os.environ.get("GITHUB_SHA"), "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+        "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+        "python_version": list(sys.version_info[:3]), "tools": tools,
+    }
+    result["formal_judgment"] = {"registration_verified": False, "note": REGISTRATION_NOTE,
+                                 "expected_eval_token_permissions": None}
     result["baseline"] = {"path": args.baseline or None, "sha256": baseline_sha256,
                           "read_error": baseline_error,
                           "runner_image": (baseline or {}).get("runner_image")}
@@ -623,7 +1091,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"aggregate: runs={len(verified)} verified={len(verified) - len(failed)} failed={len(failed)} "
           f"baseline_sha256={baseline_sha256} baseline_read_error={baseline_error} "
           f"baseline_failures={len(result['baseline_failures'])} "
-          f"best_segment={result['best_segment']} g2_status={result['g2_status']}")
+          f"best_segment={result['best_segment']} g2_status={result['g2_status']} "
+          f"aggregate_baseline={agg_base['status']} registration_verified=False")
     for vr in verified:
         ri = vr.get("runner_image") or {}
         print(f"run {vr['dir']}: verified={vr['verified']} runner_image_log={ri.get('log')} "

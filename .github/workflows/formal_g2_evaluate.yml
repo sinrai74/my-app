@@ -1,8 +1,12 @@
 # 正式G2：評価（G2 独立経路。P11・判断C・M7）
 #
 # - 起動は workflow_dispatch だけ（schedule・push などは持たない）。
-# - 評価の job には GITHUB_TOKEN を環境変数として渡さない（C-4）。
-# - 書き込み権限は持たない。出力は artifact だけ（Release・Cache・commit をしない）。
+# - 評価ジョブのどのステップにも GITHUB_TOKEN を渡さない（§6.8 B の条件1・3・6。07g・2026-11-05/06 の GPT 判断）。
+#   actions/checkout は token が必須の入力なので使わない。ソースは公開リポジトリから匿名で取得する。
+#   setup-python には token: "" を明示する（既定値の github.token を使わせない）。
+# - 評価ジョブはリポジトリ取得用の認証情報を作成・使用・保持しない（条件5）。取得のステップの中で確かめる。
+# - 権限は permissions: {}（GITHUB_TOKEN に権限を与えない）。出力は artifact だけ（Release・Cache・commit をしない）。
+# - アクションは40桁のコミット SHA で固定する（setup-python v5.6.0、upload-artifact v4.6.2）。
 # - 加算・連続数は判定しない（集約は formal_g2_aggregate.yml で行う）。
 # - G2 のスクリプトが無いブランチ（例：スクリプトを含まない main）で起動された場合は、
 #   何もせずに終わる。
@@ -31,8 +35,7 @@ on:
         required: false
         default: ""
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: formal-g2-evaluate
@@ -42,10 +45,28 @@ jobs:
   evaluate:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Fetch source anonymously
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init -q .
+          git -c credential.helper= -c protocol.version=2 fetch --no-tags --depth=1 "https://github.com/${REPO}.git" "${SHA}"
+          git -c advice.detachedHead=false checkout -q --detach FETCH_HEAD
+          head="$(git rev-parse HEAD)"
+          if [ "${head}" != "${SHA}" ]; then echo "fetched HEAD ${head} does not match GITHUB_SHA ${SHA}"; exit 1; fi
+          if [ -n "$(git status --porcelain)" ]; then echo "working tree is not clean"; exit 1; fi
+          creds="$(git config --show-origin --get-regexp '^(http\..*\.extraheader|http\.extraheader|credential\..*|url\..*\.insteadof)$' || true)"
+          if [ -n "${creds}" ]; then echo "credential settings are present"; exit 1; fi
+          if [ -e "${HOME}/.git-credentials" ] || [ -n "${GIT_ASKPASS:-}" ]; then
+            echo "credential material is present"; exit 1
+          fi
+          if env | grep -qiE '^[^=]*token[^=]*='; then echo "token-like environment variable is present"; exit 1; fi
+          echo "g2_credentials_check=none"
+          echo "g2_fetch_head=${head}"
 
       - name: Check G2 script presence
         id: presence
@@ -60,9 +81,10 @@ jobs:
 
       - name: Set up Python
         if: steps.presence.outputs.present == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11.9"
+          token: ""
 
       - name: Install locked dependencies
         if: steps.presence.outputs.present == 'true'
@@ -89,7 +111,7 @@ jobs:
       - name: Upload evidence
         id: upload
         if: always() && steps.presence.outputs.present == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: g2-${{ inputs.race_date }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: g2_out/

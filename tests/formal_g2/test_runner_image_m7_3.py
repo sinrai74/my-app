@@ -18,7 +18,7 @@ from io import StringIO
 
 from formal_g2 import env_baseline as eb
 from formal_g2.aggregate import main as agg
-from test_aggregate import BASELINE, BASELINE_RAW, BASELINE_SHA, PERMS, Q8_ENV_IMAGE, Q8_LOG_HEAD, _race, _write_run
+from test_aggregate import BASELINE, BASELINE_RAW, BASELINE_SHA, FORMAL_OK, PERMS, Q8_ENV_IMAGE, Q8_LOG_HEAD, _race, _write_run
 
 ROOT = os.path.realpath(os.getcwd())
 
@@ -112,24 +112,39 @@ class BaselineTests(unittest.TestCase):
             self.assertEqual(ri["log"], {"image": "ubuntu-24.04", "version": "20261025.353.1"})
             self.assertEqual(ri["env_observed"], Q8_ENV_IMAGE)
             self.assertTrue(ri["env_version_differs_from_log"])
-            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA)
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA, FORMAL_OK)
             self.assertEqual(res["days"][0]["runner_image_check"], "ok")
             self.assertEqual(res["best_segment"], 1)
 
     def test_log_value_differs_from_baseline_is_A1(self):
         with tempfile.TemporaryDirectory() as base:
             _write_run(base, 1, 1, "20990101", [_race("a")], ["a"])
-            other = {"runner_image": {"image": "ubuntu-24.04", "version": "20261026.354.1"}}
-            res = agg.aggregate(_verify_all(base), PERMS, "20990101", "20990101", other, BASELINE_SHA)
+            # 2026-11-06：Image が違えば除外する（Version は照合しない）
+            other = {"runner_image": {"image": "ubuntu-22.04"}}
+            res = agg.aggregate(_verify_all(base), PERMS, "20990101", "20990101", other, BASELINE_SHA, FORMAL_OK)
             self.assertEqual(res["days"][0]["excluded"], "runner_image_mismatch")
             self.assertEqual(res["best_segment"], 0)
+
+    def test_version_differs_is_recorded_but_not_excluded(self):
+        # 2026-11-06：ジョブログの Version（20261025.353.1）は観測値。基準は Image だけなので除外しない
+        with tempfile.TemporaryDirectory() as base:
+            _write_run(base, 1, 1, "20990101", [_race("a")], ["a"])
+            v = _verify_all(base)
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA, FORMAL_OK)
+            self.assertEqual(v[0]["runner_image"]["log"]["version"], "20261025.353.1")
+            self.assertEqual(res["days"][0]["runner_image_check"], "ok")
+            self.assertEqual(res["best_segment"], 1)
 
     def test_no_or_invalid_baseline_is_not_added(self):
         with tempfile.TemporaryDirectory() as base:
             _write_run(base, 1, 1, "20990101", [_race("a")], ["a"])
             v = _verify_all(base)
             for b, expected in ((None, "baseline_no_baseline"),
-                                ({"runner_image": {"version": "20261025.353.1"}}, "runner_image_baseline_invalid")):
+                                ({"runner_image": {"version": "20261025.353.1"}}, "runner_image_baseline_invalid"),
+                                # Version を持つ旧形式の基準は形が違うとする
+                                ({"runner_image": {"image": "ubuntu-24.04", "version": "20261025.353.1"}},
+                                 "runner_image_baseline_invalid"),
+                                ({"runner_image": {"image": ""}}, "runner_image_baseline_invalid")):
                 with self.subTest(baseline=b):
                     res = agg.aggregate(v, PERMS, "20990101", "20990101", b, BASELINE_SHA if b else None)
                     self.assertEqual(res["days"][0]["excluded"], expected)
@@ -151,8 +166,9 @@ class BaselineTests(unittest.TestCase):
         # 環境変数の値の違いだけでは差にしない
         self.assertEqual(eb.compare_to_baseline(snap, registered), [])
         # runner_image が無い・形が違う基準は差にする（＝正式な実行では A-1）
-        for bad in (None, {"image": "ubuntu-24.04"}, {"image": "ubuntu-24.04", "version": "x"},
-                    {"image": "", "version": "20261025.353.1"}):
+        # 2026-11-06：基準の形は {"image": str} だけ。Version を持つ旧形式・Image が空・Image が無いものは差にする
+        for bad in (None, {"image": "ubuntu-24.04", "version": "20261025.353.1"}, {"image": ""},
+                    {"version": "20261025.353.1"}, {"image": 1}):
             with self.subTest(bad=bad):
                 b = dict(registered)
                 if bad is None:
@@ -197,7 +213,8 @@ class OutputAndExclusionTests(unittest.TestCase):
             d = _write_run(base, 1, 1, "20990101", [_race("a")], ["a"])
             out = os.path.join(tmp, "out")
             rc, log = self._main(base, out, self._baseline_file(tmp))
-            self.assertEqual(rc, 0)
+            # 2026-11-06：main() は正式な合格を出さない（集約側の基準が無く、登録も確認できない）ので終了コード 3
+            self.assertEqual(rc, agg.EXIT_VERIFICATION_FAILED)
             with open(os.path.join(out, "manifest.json"), encoding="utf-8") as f:
                 man = json.load(f)
             self.assertTrue(man["complete"])
@@ -216,7 +233,8 @@ class OutputAndExclusionTests(unittest.TestCase):
             self.assertEqual(run["runner_image"]["env_observed"]["ImageVersion"], "20261026.354.1")
             self.assertEqual(run["job_log"]["sha256"], meta["log_sha256"])
             self.assertEqual(result["days"][0]["runner_image_check"], "ok")
-            self.assertEqual(result["best_segment"], 1)
+            self.assertEqual(result["days"][0]["excluded"], "aggregate_baseline_no_baseline")
+            self.assertEqual(result["best_segment"], 0)
             self.assertIn("runner_image_log={'image': 'ubuntu-24.04', 'version': '20261025.353.1'}", log)
 
     def test_log_failure_run_is_excluded_and_exit_code_nonzero(self):
@@ -243,17 +261,21 @@ class PermissionSeparationTests(unittest.TestCase):
         with open(os.path.join(ROOT, rel), "rb") as f:
             return f.read()
 
-    def test_evaluate_workflow_unchanged_since_q8(self):
-        # Q8（run 41401359888）の run.json env_snapshot.code に記録された値
+    # 2026-11-06：評価 workflow を変えた（匿名の取得・permissions: {}・SHA の固定）。旧 Q8 の SHA
+    # （8dcd5f8b…）を固定していたテストを、変更後の内容の SHA に置き換えた。この値は評価側の新しい基準の
+    # 候補（code）にも入る。workflow を変えるたびに、ここと基準の候補を作り直す。
+    EVALUATE_WORKFLOW_SHA256 = "7f73606d7d20c21dc8909410a33fab8cd7e59ccf51d59b19de3da253b22a1129"
+
+    def test_evaluate_workflow_pinned_content(self):
         self.assertEqual(hashlib.sha256(self._read(".github/workflows/formal_g2_evaluate.yml")).hexdigest(),
-                         "8dcd5f8bbc4fd4ebc0dc00193b06d3dd6d7c26f4d5ea394e3e17371743e8c3d2")
+                         self.EVALUATE_WORKFLOW_SHA256)
 
     def test_evaluate_workflow_has_no_token(self):
         text = self._read(".github/workflows/formal_g2_evaluate.yml").decode("utf-8")
         code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
-        for word in ("GITHUB_TOKEN", "GH_TOKEN", "github.token", "secrets.", "actions:"):
+        for word in ("GITHUB_TOKEN", "GH_TOKEN", "github.token", "secrets.", "actions:", "actions/checkout"):
             self.assertNotIn(word, code)
-        self.assertRegex(code, r"permissions:\n  contents: read\n\n")
+        self.assertRegex(code, r"\npermissions: \{\}\n")
 
     def test_aggregate_token_only_in_download_step(self):
         text = self._read(".github/workflows/formal_g2_aggregate.yml").decode("utf-8")

@@ -84,7 +84,7 @@ class SnapshotTests(unittest.TestCase):
         snap = self._snap()
         base = eb.baseline_view(snap)
         # M7-3：runner_image（ジョブログ由来）は登録時に加える
-        base["runner_image"] = {"image": "ubuntu-24.04", "version": "20261025.353.1"}
+        base["runner_image"] = {"image": "ubuntu-24.04"}  # 2026-11-06：Image だけ（Version は観測値）
         self.assertEqual(eb.compare_to_baseline(snap, base), [])
         base["code"] = {"a.py": "y"}
         self.assertEqual(eb.compare_to_baseline(snap, base), ["code:a.py"])

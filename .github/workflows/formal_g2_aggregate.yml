@@ -7,6 +7,13 @@
 # - M7-3：評価ジョブのログ原本を actions: read で取得し、Runner Image の値を照合する。
 #   トークンを使うのはこの集約ジョブだけで、評価の workflow・プロセスには渡さない（C-4）。
 # - 照合に失敗した実行が1件でもあれば Aggregate のステップは失敗する（結果は upload される）。
+# - 権限は actions: read（artifact・ジョブログ・実行情報の取得）と、checkout に必要な contents: read だけ
+#   （2026-11-05 の GPT 判断）。トークンを使うのは Download のステップだけ。
+# - 実行情報（run_id・run_attempt・head_sha・head_branch・path・repository・event）は API の attempts の応答から
+#   取り、meta.json の api_* に入れる。取り出せない値は空のままにし、集約で不合格にする（fail-closed）。
+# - アクションは40桁のコミット SHA で固定する（checkout v4.4.0、setup-python v5.6.0、upload-artifact v4.6.2）。
+# - 集約側の基準（aggregate_baseline_path）で、集約のコードと Python の版を照合する。gh・jq の版は観測値として記録する。
+# - baseline の登録方式は未決定（本人判断項目2）のため、正式な実行に合格を出すことはない。
 
 name: formal-g2-aggregate
 
@@ -27,7 +34,11 @@ on:
         required: false
         default: ""
       baseline_path:
-        description: "登録済みの基準 JSON のリポジトリ内パス（空なら M7-3 を照合できず、正式な実行は加算しない）"
+        description: "評価側の基準 JSON のリポジトリ内パス（空なら M7-3 を照合できず、正式な実行は加算しない）"
+        required: false
+        default: ""
+      aggregate_baseline_path:
+        description: "集約側の基準 JSON のリポジトリ内パス（空なら集約側の照合ができず、正式な実行は加算しない）"
         required: false
         default: ""
 
@@ -44,7 +55,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
@@ -61,7 +72,7 @@ jobs:
 
       - name: Set up Python
         if: steps.presence.outputs.present == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11.9"
 
@@ -83,7 +94,16 @@ jobs:
             while IFS=$'\t' read -r aid aname adigest; do
               att="${aname##*-}"
               case "$att" in (*[!0-9]*|'') echo "unexpected artifact name: $aname"; exit 1;; esac
-              started=$(gh api "repos/${REPO}/actions/runs/${rid}/attempts/${att}" --jq '.run_started_at')
+              # 実行情報は attempts の応答（API）から取る。入力の run_id・artifact 名の attempt とは別の項目にする。
+              att_json=$(gh api "repos/${REPO}/actions/runs/${rid}/attempts/${att}")
+              started=$(jq -r '.run_started_at // ""' <<<"$att_json")
+              api_run_id=$(jq -r '.id // "" | tostring' <<<"$att_json")
+              api_run_attempt=$(jq -r '.run_attempt // "" | tostring' <<<"$att_json")
+              api_head_sha=$(jq -r '.head_sha // ""' <<<"$att_json")
+              api_head_branch=$(jq -r '.head_branch // ""' <<<"$att_json")
+              api_workflow_path=$(jq -r '.path // ""' <<<"$att_json")
+              api_repository=$(jq -r '.repository.full_name // ""' <<<"$att_json")
+              api_event=$(jq -r '.event // ""' <<<"$att_json")
               d="g2_artifacts/${rid}-${att}"
               mkdir -p "$d"
               gh api "repos/${REPO}/actions/artifacts/${aid}/zip" > "$d/artifact.zip"
@@ -123,6 +143,10 @@ jobs:
                     --arg job_id "$job_id" --argjson job_count "$job_count" --argjson log_ok "$log_ok" \
                     --arg log_err "$log_err" --arg log_sha "$log_sha" --arg log_bytes "$log_bytes" \
                     --arg fetched_at "$fetched_at" \
+                    --arg api_run_id "$api_run_id" --arg api_run_attempt "$api_run_attempt" \
+                    --arg api_head_sha "$api_head_sha" --arg api_head_branch "$api_head_branch" \
+                    --arg api_workflow_path "$api_workflow_path" --arg api_repository "$api_repository" \
+                    --arg api_event "$api_event" \
                 '{run_id:$run_id, run_attempt:$run_attempt, artifact_name:$name,
                   expected_digest:$digest, run_started_at:$started, latest_attempt:$latest_attempt,
                   job_id:$job_id, job_count:$job_count, log_fetch_ok:$log_ok,
@@ -130,7 +154,10 @@ jobs:
                   log_file:(if $log_ok then "job.log" else null end),
                   log_sha256:(if $log_sha == "" then null else $log_sha end),
                   log_bytes:(if $log_bytes == "" then null else ($log_bytes | tonumber) end),
-                  log_fetched_at:$fetched_at}' \
+                  log_fetched_at:$fetched_at,
+                  api_run_id:$api_run_id, api_run_attempt:$api_run_attempt, api_head_sha:$api_head_sha,
+                  api_head_branch:$api_head_branch, api_workflow_path:$api_workflow_path,
+                  api_repository:$api_repository, api_event:$api_event}' \
                 > "$d/meta.json"
             done
           done
@@ -143,15 +170,20 @@ jobs:
           LAST_DATE: ${{ inputs.last_date }}
           PERMISSIONS_PATH: ${{ inputs.permissions_path }}
           BASELINE_PATH: ${{ inputs.baseline_path }}
+          AGGREGATE_BASELINE_PATH: ${{ inputs.aggregate_baseline_path }}
         run: |
+          # gh・jq の版は観測値として記録する（固定はしない）
+          tools=$(jq -n --arg gh "$(gh --version 2>&1 | head -1)" --arg jq "$(jq --version 2>&1)" '{gh:$gh, jq:$jq}')
           args=(--artifacts-dir g2_artifacts --first-date "$FIRST_DATE" --last-date "$LAST_DATE" --out g2_aggregate_out)
+          args+=(--tools-json "$tools")
           if [ -n "$PERMISSIONS_PATH" ]; then args+=(--permissions "$PERMISSIONS_PATH"); fi
           if [ -n "$BASELINE_PATH" ]; then args+=(--baseline "$BASELINE_PATH"); fi
+          if [ -n "$AGGREGATE_BASELINE_PATH" ]; then args+=(--aggregate-baseline "$AGGREGATE_BASELINE_PATH"); fi
           PYTHONPATH="${GITHUB_WORKSPACE}/rebuild" python -P -B -m formal_g2.aggregate.main "${args[@]}"
 
       - name: Upload aggregate result
         if: always() && steps.presence.outputs.present == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: g2-aggregate-${{ github.run_id }}-${{ github.run_attempt }}
           path: g2_aggregate_out/

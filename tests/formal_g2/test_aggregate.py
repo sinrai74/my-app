@@ -29,9 +29,26 @@ Q8_LOG_HEAD = (
     "2026-11-02T06:40:09.9053848Z ##[endgroup]\n"
 )
 Q8_ENV_IMAGE = {"ImageOS": "ubuntu24", "ImageVersion": "20261026.354.1", "identified": True}
-BASELINE = {"runner_image": {"image": "ubuntu-24.04", "version": "20261025.353.1"}}
+# 2026-11-06：評価ジョブのログに、GITHUB_TOKEN Permissions の表示と、取得のステップの証跡がある形（合成）。
+# 「Metadata: read」は合成の値で、permissions: {} のときの実際の表示は Actions で確かめるまで未決定。
+EVAL_LOG_TAIL = (
+    "2026-11-02T06:40:09.9060000Z ##[group]GITHUB_TOKEN Permissions\n"
+    "2026-11-02T06:40:09.9060001Z Metadata: read\n"
+    "2026-11-02T06:40:09.9060002Z ##[endgroup]\n"
+    "2026-11-02T06:40:10.0000000Z ##[group]Run set -euo pipefail\n"
+    "2026-11-02T06:40:10.0000001Z \x1b[36;1m  echo \"g2_fetch_head=${head}\"\x1b[0m\n"
+    "2026-11-02T06:40:10.0000002Z ##[endgroup]\n"
+    "2026-11-02T06:40:11.0000000Z g2_credentials_check=none\n"
+    "2026-11-02T06:40:11.0000001Z g2_fetch_head=" + "0" * 40 + "\n"
+)
+EXPECTED_TOKEN_PERMISSIONS = ["Metadata: read"]
+# 2026-11-06（GPT 判断・M7-3 は本人承認待ち）：評価側の基準の runner_image は Image だけ
+BASELINE = {"runner_image": {"image": "ubuntu-24.04"}}
 BASELINE_RAW = json.dumps(BASELINE, sort_keys=True).encode("utf-8")
 BASELINE_SHA = hashlib.sha256(BASELINE_RAW).hexdigest()
+# 正式な判定に必要な条件をすべて満たした場合（登録の確認はテストでだけ True にできる。main() は常に False）
+FORMAL_OK = {"aggregate_baseline_check": "ok", "expected_eval_token_permissions": EXPECTED_TOKEN_PERMISSIONS,
+             "registration_verified": True}
 
 
 FORBIDDEN_ZERO = {lab: 0 for lab in agg.EXPECTED_FORBIDDEN_LABELS}
@@ -45,10 +62,34 @@ def _instrument_ok():
                               "thread_starts": [], "thread_checks": 100, "unobserved_thread_violations": []}}
 
 
+FIVE = ("danger_score", "danger_breakdown", "upset_score", "rank_index", "featured_boats")
+
+
 def _race(eid, cat="diff_zero", ok=True, counts=None):
+    # values・comparable_hash は、評価側と同じ形（両側とも既決の5項目、SHA-256 の16進64桁）にする
     return {"eval_id": eid, "result_category": cat, "d9_states": [] if ok else ["compare_not_established"],
-            "counts": dict(FORBIDDEN_ZERO, **(counts or {})), "d5": {}, "values": {}, "comparable_hash": {},
+            "counts": dict(FORBIDDEN_ZERO, **(counts or {})), "d5": {},
+            "values": {"legacy": {k: 0 for k in FIVE}, "rebuild": {k: 0 for k in FIVE}},
+            "comparable_hash": {"legacy": "a" * 64, "rebuild": "a" * 64},
             "hashes": {}, "d13_2": {}, "diffs": [], "input_identity_ok": ok}
+
+
+def _programs_for(date, labels):
+    """ラベル（"a" など）ごとに出走表の要素を作り、評価側と同じ規則で eval_id・一覧・ハッシュを作る。"""
+    progs = [{"race_stadium_number": 1, "race_number": i + 1, "race_closed_at": f"2099-01-01T{i:05d}",
+              "race_date": date} for i in range(len(labels))]
+    eids = {lab: f"{date}_01_{i + 1:02d}" for i, lab in enumerate(labels)}
+    targets = [{"eval_id": eids[lab], "venue_num": 1, "race_number": i + 1,
+                "race_closed_at": progs[i]["race_closed_at"], "race_date_in_program": date}
+               for i, lab in enumerate(labels)]
+    raw = json.dumps({"programs": progs}, ensure_ascii=False).encode("utf-8")
+    tsha = hashlib.sha256(json.dumps(targets, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+    psha = {eids[lab]: hashlib.sha256(json.dumps(progs[i], sort_keys=True, ensure_ascii=False, allow_nan=True,
+                                                 separators=(",", ":")).encode("utf-8")).hexdigest()
+            for i, lab in enumerate(labels)}
+    return raw, {"raw_sha256": hashlib.sha256(raw).hexdigest(), "targets": targets, "targets_sha256": tsha,
+                 "http_get_calls": 1}, eids, psha
 
 
 def _run_json(date, targets, config_detected=False, preload_ok=True):
@@ -57,6 +98,7 @@ def _run_json(date, targets, config_detected=False, preload_ok=True):
             "checks": {"env_self_check": [], "baseline_diffs": [], "modules_pre_eval": {"ok": True},
                        "modules_post_eval": {"ok": True}, "tests_not_loaded": {"T3_ok": True},
                        "shadow_package_loaded": [],
+                       "token": {"github_token_present": False, "token_like_env_names": []},
                        "baseline_identity": {"path": "baseline.json", "sha256": BASELINE_SHA,
                                              "sha256_at_end": BASELINE_SHA, "unchanged_during_run": True}},
             "info": {"race_date": date, "github_ref": "refs/heads/main",
@@ -83,8 +125,20 @@ def _write_run(base, rid, att, date, races, targets, digest_ok=True, complete=Tr
     d = os.path.join(base, f"{rid}-{att}")
     os.makedirs(d)
     run = _run_json(date, targets, config_detected, preload_ok)
+    # 条件5：評価側と同じ規則の programs_raw.json・一覧・program_sha256 を付ける。ラベルは eval_id に置き換える
+    raw, programs, eids, psha = _programs_for(date, list(targets))  # レースの記録は対象一覧の中にあるものとする
+    run["programs"] = programs
+    races = [dict(r, eval_id=eids[r["eval_id"]], program_sha256=psha[eids[r["eval_id"]]]) for r in races]
+    # 実行メタデータ：run.json・manifest・meta.json（API の値）を一致させる
+    run["info"].update({"mode": mode, "permission_id": permission, "github_run_id": str(rid),
+                        "github_run_attempt": str(att), "github_sha": "0" * 40,
+                        "started_at": "2099-01-01T09:00:00+09:00"})
+    run["finished_at"] = "2099-01-01T09:05:00+09:00"
     run["env_snapshot"] = {"image": env_image or dict(Q8_ENV_IMAGE)}
+    base_info = dict(run["info"])
     run.update(run_overrides or {})
+    for k, v in base_info.items():  # info を置き換えたテストでも、識別情報は残す（ref などの上書きは保つ）
+        run["info"].setdefault(k, v)
     for k, v in (check_overrides or {}).items():
         if v is None:
             run["checks"].pop(k, None)
@@ -93,18 +147,23 @@ def _write_run(base, rid, att, date, races, targets, digest_ok=True, complete=Tr
     files = {
         "run.json": json.dumps(run).encode(),
         "races.jsonl": "\n".join(json.dumps(r) for r in races).encode(),
+        "programs_raw.json": raw,
     }
-    blob = _make_zip(files, {"run": {"mode": mode, "permission_id": permission, "race_date": date}}, complete)
+    blob = _make_zip(files, {"run": dict(run["info"])}, complete)
     with open(os.path.join(d, "artifact.zip"), "wb") as f:
         f.write(blob)
     digest = hashlib.sha256(blob).hexdigest() if digest_ok else "0" * 64
-    log = (log_text if log_text is not None else Q8_LOG_HEAD).encode("utf-8")
+    log = (log_text if log_text is not None else Q8_LOG_HEAD + EVAL_LOG_TAIL).encode("utf-8")
     meta = {"run_id": str(rid), "run_attempt": str(att), "expected_digest": "sha256:" + digest,
             "run_started_at": started, "job_id": "125133673866", "job_count": 1,
             "log_fetch_ok": log_fetch_ok, "log_fetch_error": None if log_fetch_ok else "HTTP 404",
             "log_file": "job.log" if log_fetch_ok else None,
             "log_sha256": hashlib.sha256(log).hexdigest() if log_fetch_ok else None,
-            "log_bytes": len(log) if log_fetch_ok else None, "log_fetched_at": "2099-01-02T00:00:00Z"}
+            "log_bytes": len(log) if log_fetch_ok else None, "log_fetched_at": "2099-01-02T00:00:00Z",
+            "latest_attempt": str(att), "api_run_id": str(rid), "api_run_attempt": str(att),
+            "api_head_sha": "0" * 40, "api_head_branch": "main",
+            "api_workflow_path": ".github/workflows/formal_g2_evaluate.yml", "api_repository": "o/r",
+            "api_event": "workflow_dispatch"}
     if log_fetch_ok:
         with open(os.path.join(d, "job.log"), "wb") as f:
             f.write(log)
@@ -146,7 +205,7 @@ class CountingTests(unittest.TestCase):
             races = [_race("a"), _race("b"), _race("c", "mismatch"), _race("d")]
             _write_run(base, 1, 1, "20990101", races, ["a", "b", "c", "d", "e"])
             v = [agg.verify_run(os.path.join(base, x)) for x in os.listdir(base)]
-            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA)
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA, FORMAL_OK)
             self.assertEqual([s["count"] for s in res["segments"]], [2, 1])
             self.assertEqual(res["segments"][1]["ended_by"], "unprocessed")
             self.assertEqual(res["g2_status"], "undetermined")
@@ -156,7 +215,7 @@ class CountingTests(unittest.TestCase):
             _write_run(base, 1, 1, "20990101", [_race("a", "mismatch")], ["a"], started="2099-01-01T01:00:00Z")
             _write_run(base, 2, 1, "20990101", [_race("a")], ["a"], started="2099-01-01T02:00:00Z")
             v = [agg.verify_run(os.path.join(base, x)) for x in sorted(os.listdir(base))]
-            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA)
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA, FORMAL_OK)
             self.assertEqual(res["days"][0]["selected_run"]["run_id"], "1")
             self.assertEqual(res["best_segment"], 0)
 
@@ -164,21 +223,21 @@ class CountingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as base:
             _write_run(base, 1, 1, "20990101", [_race("a")], ["a"], permission="OTHER")
             v = [agg.verify_run(os.path.join(base, x)) for x in os.listdir(base)]
-            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA)
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA, FORMAL_OK)
             self.assertEqual(res["days"][0]["class"], "pending_confirmation")
 
     def test_duplicate_eval_id(self):
         with tempfile.TemporaryDirectory() as base:
             _write_run(base, 1, 1, "20990101", [_race("a"), _race("a")], ["a"])
             v = [agg.verify_run(os.path.join(base, x)) for x in os.listdir(base)]
-            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA)
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA, FORMAL_OK)
             self.assertEqual(res["sequence"][0]["state"], "duplicate_eval_id")
 
     def test_config_detected_run_excludes_all_races(self):
         with tempfile.TemporaryDirectory() as base:
             _write_run(base, 1, 1, "20990101", [_race("a"), _race("b")], ["a", "b"], config_detected=True)
             v = [agg.verify_run(os.path.join(base, x)) for x in os.listdir(base)]
-            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA)
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA, FORMAL_OK)
             self.assertEqual(res["best_segment"], 0)
             self.assertEqual(res["days"][0]["excluded"], "config_detected")
             self.assertEqual([s for s in res["sequence"] if "state" in s], [])
@@ -187,7 +246,7 @@ class CountingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as base:
             _write_run(base, 1, 1, "20990101", [_race("a")], ["a"], preload_ok=False)
             v = [agg.verify_run(os.path.join(base, x)) for x in os.listdir(base)]
-            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA)
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA, FORMAL_OK)
             self.assertEqual(res["best_segment"], 0)
 
     def test_aggregator_does_not_import_evaluation_code(self):
@@ -277,7 +336,7 @@ class ThreadObservationCheckTests(unittest.TestCase):
             inst["monitor_state"]["unobserved_thread_violations"] = [{"where": "after a", "count": 1, "alive": 2}]
             _write_run(base, 1, 1, "20990101", [_race("a")], ["a"], run_overrides={"instrument": inst})
             v = [agg.verify_run(os.path.join(base, x)) for x in os.listdir(base)]
-            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA)
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA, FORMAL_OK)
             self.assertEqual(res["days"][0]["excluded"], "w7_monitoring")
             self.assertEqual(res["best_segment"], 0)
 
@@ -287,7 +346,7 @@ class ThreadObservationCheckTests(unittest.TestCase):
             inst["monitor_state"]["thread_checks"] = 3  # 1レースなら 4 以上が必要
             _write_run(base, 1, 1, "20990101", [_race("a")], ["a"], run_overrides={"instrument": inst})
             v = [agg.verify_run(os.path.join(base, x)) for x in os.listdir(base)]
-            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA)
+            res = agg.aggregate(v, PERMS, "20990101", "20990101", BASELINE, BASELINE_SHA, FORMAL_OK)
             self.assertEqual(res["days"][0]["excluded"], "w7_monitoring")
 
 

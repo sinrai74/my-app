@@ -239,24 +239,22 @@ def collect_snapshot(repo_root: str, cfg: Optional[dict]) -> dict[str, Any]:
     }
 
 
-# M7-3（2026-11-03 の判断）：Runner Image の識別値は、ジョブログの
-# 「Set up job → Runner Image」に記録された値（Image・Version）を照合の基準とする。
-# 評価プロセスはジョブログを読めない（C-4：トークンを持たない）ため、この値の照合は
-# 集約（aggregate）で行う。評価プロセスでは、登録済みの基準に runner_image が
-# 正しい形で入っていることだけを確かめる。
+# M7-3：Runner Image の識別値は、ジョブログの「Set up job → Runner Image」に記録された値とする。
+# 2026-11-06 の GPT 判断（M7-3 の本人承認は未了）：基準の固定条件は Image だけとし、Version は
+# 実行ごとの観測値として記録するだけにする（週ごとに変わりうるため）。
+# 評価プロセスはジョブログを読めない（トークンを持たない）ため、Image の照合は集約（aggregate）で行う。
+# 評価プロセスでは、登録済みの基準に runner_image が {"image": str} の形で入っていることだけを確かめる。
 # プロセス内の環境変数 ImageOS・ImageVersion は観測値として記録し、照合には使わない。
-RUNNER_IMAGE_KEYS = ("image", "version")
-RUNNER_IMAGE_VERSION_RE = re.compile(r"\d{8}\.\d+\.\d+")
+RUNNER_IMAGE_KEYS = ("image",)
 
 
 def runner_image_baseline_ok(baseline: dict[str, Any]) -> bool:
-    """登録済みの基準の runner_image が {"image": str, "version": "YYYYMMDD.N.N"} の形か。"""
+    """登録済みの基準の runner_image が {"image": str} の形か（version を持つ基準は形が違うとする）。"""
     ri = baseline.get("runner_image")
     if not isinstance(ri, dict) or set(ri) != set(RUNNER_IMAGE_KEYS):
         return False
-    image, version = ri.get("image"), ri.get("version")
-    return (isinstance(image, str) and bool(image.strip()) and isinstance(version, str)
-            and RUNNER_IMAGE_VERSION_RE.fullmatch(version) is not None)
+    image = ri.get("image")
+    return isinstance(image, str) and bool(image.strip())
 
 
 def baseline_view(snapshot: dict[str, Any]) -> dict[str, Any]:
