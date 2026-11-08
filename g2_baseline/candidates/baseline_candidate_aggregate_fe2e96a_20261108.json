@@ -1,0 +1,21 @@
+{
+  "files": {
+    ".github/workflows/formal_g2_aggregate.yml": "b829987a4c8da405c6d025e1db7210b66339a5770b9aec0686ec813636340a01",
+    "rebuild/formal_g2/aggregate/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "rebuild/formal_g2/aggregate/fetch_log.py": "724ee6040af77fee9b5bb5a89bc628851a267251f748de8ce3febcd5e14c463b",
+    "rebuild/formal_g2/aggregate/main.py": "8e27a4b933f4aef3cfa677f0d0e19115edfb0502c314f0ade3b7abd5e7a6e728"
+  },
+  "kind": "aggregate",
+  "python_version": [
+    3,
+    11,
+    9
+  ],
+  "source": {
+    "code_commit": "fe2e96a1afab6ea6c4f691f38f8ad48e8366a962",
+    "python_version_source": "集約 run 42433954166 のジョブログ「Successfully set up CPython (3.11.9)」と workflow の python-version: \"3.11.9\"（fe2e96a でも workflow は同じ）",
+    "replaces": "11_baseline_candidate_aggregate_9558249_20261108.json（07863d70…。aggregate/main.py が fe2e96a で変わったため使えない）",
+    "status": "candidate（未登録・未承認。登録は本人判断項目2）",
+    "tools_observed_only": "gh・jq の版は観測値として記録するだけで、照合しない（07h §2.3）"
+  }
+}
