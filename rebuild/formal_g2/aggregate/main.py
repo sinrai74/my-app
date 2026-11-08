@@ -39,7 +39,10 @@
   EXPECTED_EVAL_TOKEN_PERMISSIONS＝「Metadata: read」の1行だけを合格とする）、E5（g2_fetch_head と API の head_sha、g2_credentials_check）。E4（評価プロセスの環境）は run.json。
 - 集約側の基準の照合（aggregate_baseline_check）。
 - Runner Image は Image だけを照合し、Version は観測値として記録する。
-- baseline の登録方式は未決定なので、main() は登録を確認できない。正式な実行に合格を出すことはない。
+- baseline の登録（2026-11-08、本人が案A を採用。07h §2.8）：main() は、リポジトリの
+  g2_baseline/registered/approvals.json（承認記録）と、--baseline・--aggregate-baseline に渡された基準を照合する
+  （registration_check）。承認記録が無い・形が正しくない・一致しない場合は登録を確認できないとし、正式な実行に
+  合格を出さない。候補のファイルが置かれているだけでは登録とみなさない。
 
 M7-3（2026-11-03 の判断）：Runner Image の識別値は、ジョブログの「Set up job →
 Runner Image」グループの Image・Version を基準とする。artifact 内の環境変数
@@ -549,12 +552,171 @@ def aggregate_baseline_check(path: Optional[str]) -> dict[str, Any]:
 DEFAULT_FORMAL_CONTEXT: dict[str, Any] = {
     "aggregate_baseline_check": "not_checked",
     "expected_eval_token_permissions": None,  # aggregate() を直接呼ぶときの既定（不合格）。main() は EXPECTED_EVAL_TOKEN_PERMISSIONS を渡す
-    "registration_verified": False,  # baseline の登録方式は本人判断項目2 で未決定
+    "registration_verified": False,  # aggregate() を直接呼ぶときの既定（不合格）。main() は registration_check の結果を渡す
 }
 REGISTRATION_NOTE = (
-    "baseline の登録方式は未決定（本人判断項目2）。登録を確認できないため、正式な実行に合格を出さない。"
-    "基準の候補と一致しても正式な合格にはしない（2026-11-06 の GPT 判断）。"
+    "baseline の登録は案A（07h §2.8、2026-11-08 に本人が採用）：g2_baseline/registered/approvals.json の承認記録"
+    "（種類・パス・SHA-256・承認日）と、使った基準のパス・内容の SHA-256 を照合する。登録を確認できなければ、"
+    "正式な実行に合格を出さない。候補のファイルが置かれているだけでは登録とみなさない。"
 )
+
+# ---- baseline の登録の確認（案A。07h §2.8、2026-11-08 に本人が採用） ----
+# 承認記録：<リポジトリ>/g2_baseline/registered/approvals.json
+#   {"kind": "g2_baseline_registration", "format_version": 1,
+#    "entries": [{"type": "evaluate"|"aggregate", "path": "g2_baseline/registered/<type>/<name>.json",
+#                 "sha256": "<64桁の小文字の16進>", "approved_on": "YYYY-MM-DD", "note": "<任意>"}]}
+# 種類ごとにちょうど1件。登録の対象は、そのパスに置かれ、内容の SHA-256 が一致するファイルだけ。
+# 照合に使った基準（--baseline・--aggregate-baseline）は、パス（リポジトリからの相対、実体のパス）と内容の
+# SHA-256 の両方が、その種類の記録と一致しなければならない。どれか1つでも満たさなければ確認できないとする。
+REGISTRY_REL = "g2_baseline/registered/approvals.json"
+REGISTRY_KIND = "g2_baseline_registration"
+REGISTRY_FORMAT_VERSION = 1
+REGISTRY_TYPES = ("evaluate", "aggregate")
+_REGISTRY_REQUIRED = ("type", "path", "sha256", "approved_on")
+_REGISTRY_OPTIONAL = ("note",)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_REG_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+\.json$")
+
+
+def _repo_root() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.abspath(os.path.join(here, "..", "..", ".."))
+
+
+def _repo_relpath(repo_root: str, path: str) -> Optional[str]:
+    """path の実体の、リポジトリからの相対パス（posix）。リポジトリの外なら None。"""
+    try:
+        root = os.path.realpath(repo_root)
+        real = os.path.realpath(path)
+        rel = os.path.relpath(real, root)
+    except (OSError, ValueError):
+        return None
+    if rel == os.curdir or rel.startswith(os.pardir + os.sep) or rel == os.pardir or os.path.isabs(rel):
+        return None
+    return rel.replace(os.sep, "/")
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """承認記録の JSON で、同じキーが2回以上ある object を拒否する（後の値で黙って上書きしない）。"""
+    out: dict[str, Any] = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError(f"duplicate key {k!r}")
+        out[k] = v
+    return out
+
+
+def _registry_entry_problems(e: Any) -> list[str]:
+    if not isinstance(e, dict):
+        return ["entry is not an object"]
+    probs = []
+    missing = [k for k in _REGISTRY_REQUIRED if k not in e]
+    extra = [k for k in e if k not in _REGISTRY_REQUIRED + _REGISTRY_OPTIONAL]
+    if missing:
+        probs.append(f"missing keys {missing}")
+    if extra:
+        probs.append(f"unexpected keys {sorted(extra)}")
+    t = e.get("type")
+    if t not in REGISTRY_TYPES:
+        probs.append(f"type {t!r} not in {list(REGISTRY_TYPES)}")
+    path = e.get("path")
+    if not isinstance(path, str):
+        probs.append("path is not a string")
+    else:
+        parts = path.split("/")
+        if (len(parts) != 4 or parts[:3] != ["g2_baseline", "registered", str(t)]
+                or not _REG_NAME_RE.match(parts[3]) or parts[3] in (".json", "..json") or "\\" in path):
+            probs.append(f"path {path!r} is not g2_baseline/registered/{t}/<name>.json")
+    if not (isinstance(e.get("sha256"), str) and _SHA256_RE.match(e["sha256"])):
+        probs.append("sha256 is not 64 lowercase hex digits")
+    d = e.get("approved_on")
+    if not (isinstance(d, str) and _DATE_RE.match(d)):
+        probs.append("approved_on is not YYYY-MM-DD")
+    else:
+        try:
+            datetime.strptime(d, "%Y-%m-%d")
+        except ValueError:
+            probs.append("approved_on is not a valid date")
+    if "note" in e and not isinstance(e["note"], str):
+        probs.append("note is not a string")
+    return probs
+
+
+def registration_check(repo_root: str,
+                       eval_baseline_path: Optional[str], eval_baseline_sha256: Optional[str],
+                       agg_baseline_path: Optional[str], agg_baseline_sha256: Optional[str]) -> dict[str, Any]:
+    """案A の登録の確認。status が "ok" のときだけ registration_verified=True にする。
+
+    status："ok" / "registry_missing" / "registry_invalid" / "registered_file_invalid" /
+            "evaluate_baseline_not_registered" / "aggregate_baseline_not_registered"
+            （main() は、この関数の想定外の例外を "check_error" として扱う）
+    """
+    out: dict[str, Any] = {"status": None, "registry": REGISTRY_REL, "registry_sha256": None,
+                           "problems": [], "entries": {}}
+
+    def fail(status: str, problem: str) -> dict[str, Any]:
+        out["status"] = status
+        out["problems"].append(problem)
+        return out
+
+    reg_path = os.path.join(repo_root, *REGISTRY_REL.split("/"))
+    if not os.path.isfile(reg_path) or os.path.islink(reg_path):
+        return fail("registry_missing", f"{REGISTRY_REL} not found (or is a symlink)")
+    if _repo_relpath(repo_root, reg_path) != REGISTRY_REL:
+        # 途中のディレクトリがシンボリックリンクで、実体が別の場所にある
+        return fail("registry_invalid", f"{REGISTRY_REL} does not resolve to itself inside the repository")
+    try:
+        with open(reg_path, "rb") as f:
+            raw = f.read()
+        reg = json.loads(raw, object_pairs_hook=_no_duplicate_keys)
+    except (OSError, ValueError) as exc:
+        return fail("registry_invalid", f"{type(exc).__name__}: {exc}")
+    out["registry_sha256"] = _sha256(raw)
+    if not isinstance(reg, dict) or set(reg) != {"kind", "format_version", "entries"}:
+        return fail("registry_invalid", "registry must be an object with exactly kind, format_version, entries")
+    if reg.get("kind") != REGISTRY_KIND or reg.get("format_version") != REGISTRY_FORMAT_VERSION \
+            or isinstance(reg.get("format_version"), bool):
+        return fail("registry_invalid", "kind or format_version differs")
+    entries = reg.get("entries")
+    if not isinstance(entries, list):
+        return fail("registry_invalid", "entries is not a list")
+    by_type: dict[str, list[dict[str, Any]]] = {t: [] for t in REGISTRY_TYPES}
+    for i, e in enumerate(entries):
+        probs = _registry_entry_problems(e)
+        if probs:
+            return fail("registry_invalid", f"entry {i}: {'; '.join(probs)}")
+        by_type[e["type"]].append(e)
+    for t in REGISTRY_TYPES:
+        if len(by_type[t]) != 1:
+            return fail("registry_invalid", f"{t}: {len(by_type[t])} entries (expected exactly 1)")
+    for t in REGISTRY_TYPES:
+        e = by_type[t][0]
+        p = os.path.join(repo_root, *e["path"].split("/"))
+        if not os.path.isfile(p) or os.path.islink(p) or _repo_relpath(repo_root, p) != e["path"]:
+            return fail("registered_file_invalid", f"{t}: {e['path']} not found as a regular file")
+        try:
+            with open(p, "rb") as f:
+                got = _sha256(f.read())
+        except OSError as exc:
+            return fail("registered_file_invalid", f"{t}: {e['path']} unreadable ({type(exc).__name__})")
+        if got != e["sha256"]:
+            return fail("registered_file_invalid", f"{t}: SHA-256 of {e['path']} differs from the record")
+        out["entries"][t] = {"path": e["path"], "sha256": e["sha256"], "approved_on": e["approved_on"]}
+    for t, path, sha, status in (("evaluate", eval_baseline_path, eval_baseline_sha256,
+                                  "evaluate_baseline_not_registered"),
+                                 ("aggregate", agg_baseline_path, agg_baseline_sha256,
+                                  "aggregate_baseline_not_registered")):
+        e = by_type[t][0]
+        if not path or not sha:
+            return fail(status, f"{t}: no baseline was given or it could not be read")
+        rel = _repo_relpath(repo_root, path)
+        if rel != e["path"]:
+            return fail(status, f"{t}: baseline path {rel!r} is not the registered path {e['path']!r}")
+        if sha != e["sha256"]:
+            return fail(status, f"{t}: baseline SHA-256 differs from the registered one")
+    out["status"] = "ok"
+    return out
 
 
 GROUP_END = "##[endgroup]"
@@ -863,7 +1025,7 @@ def aggregate(verified: list[dict[str, Any]], permissions: list[dict[str, Any]],
 
     formal_context（2026-11-06）：集約側の基準の照合結果、E3 の想定の表示、登録の確認の結果。
     省略すると DEFAULT_FORMAL_CONTEXT（どれも満たさない）になり、正式な実行には合格を出さない。
-    main() は登録の確認の手段を持たない（本人判断項目2 で未決定）ので、常に registration_verified=False。
+    main() は registration_check（案A、2026-11-08）の結果が "ok" のときだけ registration_verified=True を渡す。
     """
     ctx = dict(DEFAULT_FORMAL_CONTEXT, **(formal_context or {}))
     baseline_failures: list[dict[str, Any]] = []
@@ -1039,11 +1201,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         for d in sorted(os.listdir(args.artifacts_dir))
         if os.path.isdir(os.path.join(args.artifacts_dir, d))
     ]
-    # 登録の確認の手段は無い（本人判断項目2 で未決定）ので、登録は満たさない扱い。
+    # 登録の確認（案A、2026-11-08）。基準が読めない場合は SHA-256 が無いので確認できない。
     # E3 の想定の表示は EXPECTED_EVAL_TOKEN_PERMISSIONS（GPT 決定、2026-11-06）。
+    try:
+        registration = registration_check(_repo_root(), args.baseline or None, baseline_sha256,
+                                          args.aggregate_baseline or None, agg_base.get("sha256"))
+    except Exception as exc:  # 想定外の例外でも登録を確認できたとはしない（fail-closed）
+        registration = {"status": "check_error", "registry": REGISTRY_REL, "registry_sha256": None,
+                        "problems": [f"{type(exc).__name__}: {exc}"], "entries": {}}
+    registration_verified = registration["status"] == "ok"
     formal_context = {"aggregate_baseline_check": agg_base["status"],
                       "expected_eval_token_permissions": list(EXPECTED_EVAL_TOKEN_PERMISSIONS),
-                      "registration_verified": False}
+                      "registration_verified": registration_verified}
     result = aggregate(verified, load_permissions(args.permissions), args.first_date, args.last_date,
                        baseline, baseline_sha256, formal_context)
     result["runs"] = [
@@ -1073,7 +1242,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
         "python_version": list(sys.version_info[:3]), "tools": tools,
     }
-    result["formal_judgment"] = {"registration_verified": False, "note": REGISTRATION_NOTE,
+    result["registration"] = registration
+    result["formal_judgment"] = {"registration_verified": registration_verified, "note": REGISTRATION_NOTE,
                                  "expected_eval_token_permissions": formal_context["expected_eval_token_permissions"]}
     result["baseline"] = {"path": args.baseline or None, "sha256": baseline_sha256,
                           "read_error": baseline_error,
@@ -1102,7 +1272,8 @@ def main(argv: Optional[list[str]] = None) -> int:
           f"baseline_sha256={baseline_sha256} baseline_read_error={baseline_error} "
           f"baseline_failures={len(result['baseline_failures'])} "
           f"best_segment={result['best_segment']} g2_status={result['g2_status']} "
-          f"aggregate_baseline={agg_base['status']} registration_verified=False")
+          f"aggregate_baseline={agg_base['status']} registration_verified={registration_verified} "
+          f"registration={registration['status']}")
     for vr in verified:
         ri = vr.get("runner_image") or {}
         print(f"run {vr['dir']}: verified={vr['verified']} runner_image_log={ri.get('log')} "
