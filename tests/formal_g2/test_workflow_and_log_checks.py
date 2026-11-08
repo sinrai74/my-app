@@ -338,13 +338,94 @@ class MainFormalJudgmentTests(unittest.TestCase):
                 res = json.load(f)
         self.assertEqual(res["aggregate_baseline"]["status"], "ok")
         self.assertEqual(rc, agg.EXIT_VERIFICATION_FAILED)
-        # E3 の想定の表示が未決定なので、登録の確認より先にそこで止まる
-        self.assertEqual(res["days"][0]["excluded"], "eval_token_permissions")
+        # E3 は main() の想定の表示（Metadata: read）で合格し、登録の確認で止まる（正式な合格は出ない）
+        self.assertEqual(res["days"][0]["eval_token_permissions_check"], "ok")
+        self.assertEqual(res["days"][0]["excluded"], "baseline_registration_unverified")
         self.assertEqual(res["best_segment"], 0)
         self.assertEqual(res["aggregate_environment"]["tools"], {"gh": "gh version x", "jq": "jq-1.7"})
         self.assertIs(res["formal_judgment"]["registration_verified"], False)
         self.assertEqual(res["runs"][0]["eval_fetch"], [])
+        # E3 の照合結果は実行ごとにも記録され、記録上の想定の表示も main() が使ったものと同じ
+        self.assertEqual(res["runs"][0]["eval_token_permissions"], [])
+        self.assertEqual(res["formal_judgment"]["expected_eval_token_permissions"], ["Metadata: read"])
         self.assertEqual(res["runs"][0]["eval_process_env"], [])
+
+    def test_main_records_e3_for_investigation_run_without_counting(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        for log_text, expected_ok in ((None, True), (Q8_LOG_HEAD, False)):
+            with self.subTest(has_permissions_group=expected_ok), tempfile.TemporaryDirectory() as tmp:
+                base = os.path.join(tmp, "a")
+                os.makedirs(base)
+                kw = {} if log_text is None else {"log_text": log_text}
+                _write_run(base, 1, 1, "20990101", [_race("a")], ["a"], mode="investigation", **kw)
+                out = os.path.join(tmp, "out")
+                with redirect_stdout(StringIO()):
+                    rc = agg.main(["--artifacts-dir", base, "--first-date", "20990101", "--last-date", "20990101",
+                                   "--out", out])
+                with open(os.path.join(out, "aggregate_result.json"), encoding="utf-8") as f:
+                    res = json.load(f)
+                self.assertEqual(res["best_segment"], 0)  # 調査の実行は加算しない
+                self.assertEqual(res["runs"][0]["eval_token_permissions"] == [], expected_ok)
+                self.assertEqual(rc, 0)  # 調査の実行は正式カウントの判定に入らない（E3 は記録だけ。終了コードは変えない）
+
+
+# 調査 run 42190083860（attempt 1、評価 workflow、permissions: {}）のジョブログ「Set up job」の実際の行の一部。
+REAL_EVAL_LOG_PERMISSIONS = (
+    "2026-11-06T08:46:31.8141199Z ##[group]Runner Image\n"
+    "2026-11-06T08:46:31.8141628Z Image: ubuntu-24.04\n"
+    "2026-11-06T08:46:31.8142006Z Version: 20261101.360.1\n"
+    "2026-11-06T08:46:31.8144675Z ##[endgroup]\n"
+    "2026-11-06T08:46:31.8145346Z ##[group]GITHUB_TOKEN Permissions\n"
+    "2026-11-06T08:46:31.8146726Z Metadata: read\n"
+    "2026-11-06T08:46:31.8147110Z ##[endgroup]\n"
+    "2026-11-06T08:46:31.8148740Z Secret source: Actions\n"
+    "2026-11-06T08:46:31.8149410Z Cache mode: write\n"
+)
+_PERM_LINE = "2026-11-06T08:46:31.8146726Z Metadata: read\n"
+
+
+class E3ExpectedDisplayTests(unittest.TestCase):
+    """E3 の想定の表示（GPT 決定、2026-11-06）：Metadata: read の1行だけを合格にする。"""
+
+    def _check(self, text):
+        return agg.token_permissions_check(agg.eval_log_check(text), list(agg.EXPECTED_EVAL_TOKEN_PERMISSIONS))
+
+    def test_expected_constant(self):
+        self.assertEqual(agg.EXPECTED_EVAL_TOKEN_PERMISSIONS, ("Metadata: read",))
+
+    def test_real_log_passes(self):
+        self.assertEqual(agg.eval_log_check(REAL_EVAL_LOG_PERMISSIONS)["token_permissions"],
+                         {"display": ["Metadata: read"], "problem": None})
+        self.assertEqual(self._check(REAL_EVAL_LOG_PERMISSIONS), [])
+
+    def test_extra_or_different_permissions_fail(self):
+        for extra in ("Contents: read", "Actions: read", "Packages: write", "Metadata: write",
+                      "metadata: read", "Metadata:read", "Metadata: read extra"):
+            with self.subTest(extra=extra):
+                text = REAL_EVAL_LOG_PERMISSIONS.replace(_PERM_LINE, f"2026-11-06T08:46:31.8146726Z {extra}\n")
+                self.assertTrue(self._check(text))
+                text = REAL_EVAL_LOG_PERMISSIONS.replace(
+                    _PERM_LINE, _PERM_LINE + f"2026-11-06T08:46:31.8146800Z {extra}\n")
+                self.assertTrue(self._check(text))
+
+    def test_missing_or_malformed_group_fails(self):
+        cases = {
+            "missing": REAL_EVAL_LOG_PERMISSIONS.replace("##[group]GITHUB_TOKEN Permissions", "GITHUB_TOKEN Permissions"),
+            "empty": REAL_EVAL_LOG_PERMISSIONS.replace(_PERM_LINE, ""),
+            "not_closed": REAL_EVAL_LOG_PERMISSIONS.replace(
+                _PERM_LINE + "2026-11-06T08:46:31.8147110Z ##[endgroup]\n", _PERM_LINE),
+            "duplicated": REAL_EVAL_LOG_PERMISSIONS + REAL_EVAL_LOG_PERMISSIONS,
+            "no_log": "",
+        }
+        for name, text in cases.items():
+            with self.subTest(case=name):
+                self.assertTrue(self._check(text))
+        self.assertTrue(agg.token_permissions_check(None, list(agg.EXPECTED_EVAL_TOKEN_PERMISSIONS)))
+
+    def test_default_context_still_fails_closed(self):
+        self.assertIsNone(agg.DEFAULT_FORMAL_CONTEXT["expected_eval_token_permissions"])
+        self.assertTrue(agg.token_permissions_check(agg.eval_log_check(REAL_EVAL_LOG_PERMISSIONS), None))
 
 
 if __name__ == "__main__":

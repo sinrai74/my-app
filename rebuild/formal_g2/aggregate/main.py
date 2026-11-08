@@ -35,8 +35,8 @@
 
 2026-11-06 の追加（§6.8 B の条件1・3・5・6、GPT 判断。M7-3・baseline の登録は本人の判断待ち）：
 - run_id・run_attempt は API の値（api_run_id・api_run_attempt）と照合し、event が workflow_dispatch であること。
-- 評価ジョブのログの検査：E2（アクションの入力のトークン）、E3（GITHUB_TOKEN Permissions の表示。想定は未決定の
-  ため不合格）、E5（g2_fetch_head と API の head_sha、g2_credentials_check）。E4（評価プロセスの環境）は run.json。
+- 評価ジョブのログの検査：E2（アクションの入力のトークン）、E3（GITHUB_TOKEN Permissions の表示。main() は
+  EXPECTED_EVAL_TOKEN_PERMISSIONS＝「Metadata: read」の1行だけを合格とする）、E5（g2_fetch_head と API の head_sha、g2_credentials_check）。E4（評価プロセスの環境）は run.json。
 - 集約側の基準の照合（aggregate_baseline_check）。
 - Runner Image は Image だけを照合し、Version は観測値として記録する。
 - baseline の登録方式は未決定なので、main() は登録を確認できない。正式な実行に合格を出すことはない。
@@ -431,8 +431,8 @@ def release_and_network_record(run: dict[str, Any]) -> dict[str, Any]:
 
 # ---- 評価ジョブのログの検査（§6.8 B の条件1・3・5・6。2026-11-06 の GPT 判断） ----
 # E2：アクションの入力にトークンの値（GitHub が *** で伏せたもの）が渡っていないこと。
-# E3：ジョブの「GITHUB_TOKEN Permissions」の表示。想定の表示は Actions で確かめるまで未決定のため、
-#     想定が与えられない限り不合格にする（fail-closed）。
+# E3：ジョブの「GITHUB_TOKEN Permissions」の表示。想定の表示と完全に一致する場合だけ合格にする。
+#     想定が与えられなければ不合格（fail-closed）。想定の表示は EXPECTED_EVAL_TOKEN_PERMISSIONS。
 # E5：取得のステップが出す g2_fetch_head=<40桁> と g2_credentials_check=none が、それぞれちょうど1行あること。
 #     g2_fetch_head は API の head_sha と一致すること。
 # いずれも、ログに *** が無いことだけを合格の根拠にはしない（E1 の静的な検査・E4 のプロセスの環境と組み合わせる）。
@@ -440,6 +440,11 @@ _TOKEN_INPUT_RE = re.compile(r"^\s+[A-Za-z0-9_-]*token[A-Za-z0-9_-]*:\s*\*\*\*\s
 _FETCH_HEAD_RE = re.compile(r"g2_fetch_head=([0-9a-f]{40})")
 CREDENTIALS_CHECK_LINE = "g2_credentials_check=none"
 TOKEN_PERMISSIONS_GROUP = "##[group]GITHUB_TOKEN Permissions"
+# E3 の想定の表示（GPT 決定、2026-11-06）。根拠は、評価 workflow（permissions: {}）の調査 run 42190083860
+# （attempt 1）のジョブログで、グループの中が「Metadata: read」の1行だけだったこと。
+# グループの中の空でない行が、この並びと完全に一致する場合だけ合格にする（大文字・小文字も区別する）。
+# Contents・Actions などの権限の追加、行の欠け・増え、表示の形の違い、グループの欠落・重複・未終了は不合格。
+EXPECTED_EVAL_TOKEN_PERMISSIONS: tuple[str, ...] = ("Metadata: read",)
 
 
 def eval_log_check(text: str) -> dict[str, Any]:
@@ -543,7 +548,7 @@ def aggregate_baseline_check(path: Optional[str]) -> dict[str, Any]:
 # aggregate() の formal_context の既定：どの条件も満たさない（正式な合格を出さない）
 DEFAULT_FORMAL_CONTEXT: dict[str, Any] = {
     "aggregate_baseline_check": "not_checked",
-    "expected_eval_token_permissions": None,  # Actions で確かめるまで未決定
+    "expected_eval_token_permissions": None,  # aggregate() を直接呼ぶときの既定（不合格）。main() は EXPECTED_EVAL_TOKEN_PERMISSIONS を渡す
     "registration_verified": False,  # baseline の登録方式は本人判断項目2 で未決定
 }
 REGISTRATION_NOTE = (
@@ -1034,9 +1039,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         for d in sorted(os.listdir(args.artifacts_dir))
         if os.path.isdir(os.path.join(args.artifacts_dir, d))
     ]
-    # 登録の確認の手段は無い（本人判断項目2 で未決定）。E3 の想定の表示も未決定。どちらも満たさない扱い。
+    # 登録の確認の手段は無い（本人判断項目2 で未決定）ので、登録は満たさない扱い。
+    # E3 の想定の表示は EXPECTED_EVAL_TOKEN_PERMISSIONS（GPT 決定、2026-11-06）。
     formal_context = {"aggregate_baseline_check": agg_base["status"],
-                      "expected_eval_token_permissions": None,
+                      "expected_eval_token_permissions": list(EXPECTED_EVAL_TOKEN_PERMISSIONS),
                       "registration_verified": False}
     result = aggregate(verified, load_permissions(args.permissions), args.first_date, args.last_date,
                        baseline, baseline_sha256, formal_context)
@@ -1056,6 +1062,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         out_run["eval_log"] = vr.get("eval_log")
         out_run["eval_process_env"] = process_env_check(run_json) if vr.get("verified") else None
         out_run["eval_fetch"] = fetch_check(vr.get("eval_log"), vr.get("meta") or {}) if vr.get("verified") else None
+        # E3 の照合結果を実行ごとに記録する（調査の実行を含む。正式カウントの判定は aggregate() のゲートで行う）
+        out_run["eval_token_permissions"] = (
+            token_permissions_check(vr.get("eval_log"), formal_context["expected_eval_token_permissions"])
+            if vr.get("verified") else None)
     result["release_availability_note"] = RELEASE_AVAILABILITY_NOTE
     result["aggregate_baseline"] = agg_base
     result["aggregate_environment"] = {  # 観測値（照合しない）
@@ -1064,7 +1074,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "python_version": list(sys.version_info[:3]), "tools": tools,
     }
     result["formal_judgment"] = {"registration_verified": False, "note": REGISTRATION_NOTE,
-                                 "expected_eval_token_permissions": None}
+                                 "expected_eval_token_permissions": formal_context["expected_eval_token_permissions"]}
     result["baseline"] = {"path": args.baseline or None, "sha256": baseline_sha256,
                           "read_error": baseline_error,
                           "runner_image": (baseline or {}).get("runner_image")}
