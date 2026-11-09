@@ -15,7 +15,7 @@ from io import StringIO
 
 from formal_g2 import env_baseline as eb
 from formal_g2.aggregate import main as agg
-from test_aggregate import BASELINE, BASELINE_RAW, BASELINE_SHA, FORMAL_OK, PERMS, _race, _write_run
+from test_aggregate import BASELINE, BASELINE_RAW, BASELINE_SHA, FORMAL_OK, PERMS, _race, _write_run, permitted_by
 
 ROOT = os.path.realpath(os.getcwd())
 
@@ -89,9 +89,9 @@ class ExitCodeTests(unittest.TestCase):
             json.dump(PERMS, f)
         out = os.path.join(tmp, "out")
         buf = StringIO()
-        with redirect_stdout(buf):
+        with permitted_by(), redirect_stdout(buf):
             rc = agg.main(["--artifacts-dir", base, "--first-date", "20990101", "--last-date", "20990101",
-                           "--out", out, "--baseline", bpath, "--permissions", perms])
+                           "--out", out, "--baseline", bpath])
         with open(os.path.join(out, "aggregate_result.json"), encoding="utf-8") as f:
             return rc, json.load(f), buf.getvalue()
 

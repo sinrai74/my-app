@@ -20,7 +20,7 @@ import unittest
 import zipfile
 
 from formal_g2.aggregate import main as agg
-from test_aggregate import BASELINE, BASELINE_RAW, BASELINE_SHA, FORMAL_OK, PERMS, _race, _write_run
+from test_aggregate import BASELINE, BASELINE_RAW, BASELINE_SHA, FORMAL_OK, PERMS, _race, _write_run, permitted_by
 
 
 def _verified(base):
@@ -341,9 +341,9 @@ class Condition7RecordTests(unittest.TestCase):
             with open(perms, "w", encoding="utf-8") as f:
                 json.dump(PERMS, f)
             out = os.path.join(tmp, "out")
-            with redirect_stdout(StringIO()):
+            with permitted_by(), redirect_stdout(StringIO()):
                 rc = agg.main(["--artifacts-dir", base, "--first-date", "20990101", "--last-date", "20990101",
-                               "--out", out, "--baseline", bpath, "--permissions", perms])
+                               "--out", out, "--baseline", bpath])
             with open(os.path.join(out, "aggregate_result.json"), encoding="utf-8") as f:
                 res = json.load(f)
         # 2026-11-06：main() は登録の確認の手段を持たないので、正式な実行は常に合格しない（終了コード 3）。

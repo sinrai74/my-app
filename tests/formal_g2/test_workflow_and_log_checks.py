@@ -25,7 +25,7 @@ import unittest
 
 from formal_g2.aggregate import main as agg
 from test_aggregate import (BASELINE, BASELINE_RAW, BASELINE_SHA, EVAL_LOG_TAIL, EXPECTED_TOKEN_PERMISSIONS,
-                            FORMAL_OK, PERMS, Q8_LOG_HEAD, _race, _write_run)
+                            FORMAL_OK, PERMS, Q8_LOG_HEAD, _race, _write_run, permitted_by)
 
 ROOT = os.path.realpath(os.getcwd())
 EVAL_WF = ".github/workflows/formal_g2_evaluate.yml"
@@ -226,10 +226,11 @@ class AggregateBaselineTests(unittest.TestCase):
             self.assertEqual(agg.aggregate_baseline_check(self._write(tmp, {"kind": "evaluate", "files": {}}))["status"],
                              "invalid")
 
-    def test_self_version_lists_four_files(self):
+    def test_self_version_lists_five_files(self):
+        # 段階6（2026-11-09）：正本の束・検証のモジュール canonical.py を加えた（集約側の基準の対象になる）
         self.assertEqual(sorted(agg.self_version()), sorted([
             "rebuild/formal_g2/aggregate/main.py", "rebuild/formal_g2/aggregate/__init__.py",
-            "rebuild/formal_g2/aggregate/fetch_log.py", AGG_WF]))
+            "rebuild/formal_g2/aggregate/fetch_log.py", "rebuild/formal_g2/aggregate/canonical.py", AGG_WF]))
         self.assertTrue(all(v for v in agg.self_version().values()))
 
 
@@ -329,9 +330,9 @@ class MainFormalJudgmentTests(unittest.TestCase):
                 with open(paths[name], "wb") as f:
                     f.write(data)
             out = os.path.join(tmp, "out")
-            with redirect_stdout(StringIO()):
+            with permitted_by(), redirect_stdout(StringIO()):
                 rc = agg.main(["--artifacts-dir", base, "--first-date", "20990101", "--last-date", "20990101",
-                               "--out", out, "--baseline", paths["b.json"], "--permissions", paths["p.json"],
+                               "--out", out, "--baseline", paths["b.json"],
                                "--aggregate-baseline", paths["ab.json"],
                                "--tools-json", json.dumps({"gh": "gh version x", "jq": "jq-1.7"})])
             with open(os.path.join(out, "aggregate_result.json"), encoding="utf-8") as f:

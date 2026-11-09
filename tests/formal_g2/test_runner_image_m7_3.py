@@ -18,7 +18,7 @@ from io import StringIO
 
 from formal_g2 import env_baseline as eb
 from formal_g2.aggregate import main as agg
-from test_aggregate import BASELINE, BASELINE_RAW, BASELINE_SHA, FORMAL_OK, PERMS, Q8_ENV_IMAGE, Q8_LOG_HEAD, _race, _write_run
+from test_aggregate import BASELINE, BASELINE_RAW, BASELINE_SHA, FORMAL_OK, PERMS, Q8_ENV_IMAGE, Q8_LOG_HEAD, _race, _write_run, permitted_by
 
 ROOT = os.path.realpath(os.getcwd())
 
@@ -195,9 +195,9 @@ class OutputAndExclusionTests(unittest.TestCase):
         with open(perms, "w", encoding="utf-8") as f:
             json.dump(PERMS, f)
         buf = StringIO()
-        with redirect_stdout(buf):
+        with permitted_by(), redirect_stdout(buf):
             rc = agg.main(["--artifacts-dir", base, "--first-date", "20990101", "--last-date", "20990101",
-                           "--out", out, "--baseline", baseline_path, "--permissions", perms])
+                           "--out", out, "--baseline", baseline_path])
         return rc, buf.getvalue()
 
     def _baseline_file(self, tmp):
@@ -218,7 +218,10 @@ class OutputAndExclusionTests(unittest.TestCase):
             with open(os.path.join(out, "manifest.json"), encoding="utf-8") as f:
                 man = json.load(f)
             self.assertTrue(man["complete"])
-            self.assertEqual(sorted(man["files"]), ["aggregate_result.json", "logs/1-1.log"])
+            self.assertEqual(sorted(k for k in man["files"] if not k.startswith("canonical_bundle/")),
+                             ["aggregate_result.json", "logs/1-1.log"])
+            # 段階6（d5）：正本の束も出力の manifest に載る
+            self.assertIn("canonical_bundle/g2_evidence/P1/1-1/artifact.zip", man["files"])
             for rel, info in man["files"].items():
                 with open(os.path.join(out, rel), "rb") as f:
                     blob = f.read()

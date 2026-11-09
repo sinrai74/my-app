@@ -71,12 +71,19 @@ def _race(eid, cat="diff_zero", ok=True, counts=None):
             "counts": dict(FORBIDDEN_ZERO, **(counts or {})), "d5": {},
             "values": {"legacy": {k: 0 for k in FIVE}, "rebuild": {k: 0 for k in FIVE}},
             "comparable_hash": {"legacy": "a" * 64, "rebuild": "a" * 64},
-            "hashes": {}, "d13_2": {}, "diffs": [], "input_identity_ok": ok}
+            "hashes": {pt: {"f_fan_file": "fan2607.txt", "f_fan_cache": "f" * 64}
+                       for pt in ("before", "after_rebuild", "after_v4")},
+            "d13_2": {}, "diffs": [], "input_identity_ok": ok}
+
+
+CLOSED_AT_OVERRIDE = None  # テスト用：ラベルの順に race_closed_at を差し替える（test_race_closed_at.py）
 
 
 def _programs_for(date, labels):
     """ラベル（"a" など）ごとに出走表の要素を作り、評価側と同じ規則で eval_id・一覧・ハッシュを作る。"""
-    progs = [{"race_stadium_number": 1, "race_number": i + 1, "race_closed_at": f"2099-01-01T{i:05d}",
+    progs = [{"race_stadium_number": 1, "race_number": i + 1,
+              "race_closed_at": (CLOSED_AT_OVERRIDE[i] if CLOSED_AT_OVERRIDE is not None
+                                 else f"{date[:4]}-{date[4:6]}-{date[6:]} {10 + i // 60:02d}:{i % 60:02d}:00"),
               "race_date": date} for i in range(len(labels))]
     eids = {lab: f"{date}_01_{i + 1:02d}" for i, lab in enumerate(labels)}
     targets = [{"eval_id": eids[lab], "venue_num": 1, "race_number": i + 1,
@@ -174,6 +181,105 @@ def _write_run(base, rid, att, date, races, targets, digest_ok=True, complete=Tr
 
 PERMS = [{"permission_id": "P1", "race_date": "20990101",
           "window_start": "2099-01-01T00:00:00Z", "window_end": "2099-01-03T00:00:00Z"}]
+
+
+def permitted_by(perms=None, genesis=True, git_ok=True):
+    """main() の許可の照合（項目4）を、PERMS の許可に合格したものとして置き換える（ほかの照合を確かめるテスト用）。
+    許可の照合そのものは test_permission_check.py で確かめる。"""
+    from unittest import mock
+    perms = PERMS if perms is None else perms
+
+    def fake(repo_root, vr):
+        info = (vr.get("manifest") or {}).get("run") or {}
+        for p in perms:
+            if p["permission_id"] == info.get("permission_id") and p["race_date"] == info.get("race_date"):
+                return {"status": "ok", "permission_id": p["permission_id"], "conditions": {}, "problems": [],
+                        "permission": dict(p)}
+        return {"status": "not_permitted", "permission_id": info.get("permission_id"), "conditions": {},
+                "problems": ["no permission (test)"], "permission": None}
+    import contextlib
+    stack = contextlib.ExitStack()
+    stack.enter_context(mock.patch.object(agg, "permission_check", side_effect=fake))
+    if genesis:
+        stack.enter_context(genesis_ok())
+    stack.enter_context(ci_env())
+    if git_ok:
+        stack.enter_context(git_history_ok())
+    return stack
+
+
+def git_history_ok():
+    """Z3 の git の履歴の確かめを合格に置き換える（テストの一時ディレクトリは git のリポジトリでないため）。
+    確かめそのものは test_stage6.GitHistoryTests で、実際の git のリポジトリを使って確かめる。"""
+    from unittest import mock
+    from formal_g2.aggregate import canonical
+    return mock.patch.object(canonical, "git_history_check",
+                             return_value={"status": "ok", "problems": [], "commits": 0})
+
+
+def canonical_previous(out_dir, repo_root, mutate_result=None, mutate_snapshot=None):
+    """1回目の集約の正本の束を、テスト用のリポジトリに保存（stage）し、2回目の --previous-state を返す。
+    mutate_* は束の中身を変えてから manifest を作り直す（前回の結果が違う場合を作るため）。"""
+    import glob
+    from formal_g2.aggregate import canonical
+    bundle = os.path.join(out_dir, "canonical_bundle")
+    mans = glob.glob(os.path.join(bundle, *canonical.AGGREGATIONS_DIR.split("/"), "*", "manifest.json"))
+    assert len(mans) == 1, mans
+    man_path = mans[0]
+    man = json.load(open(man_path, encoding="utf-8"))
+    for key, fn in (("aggregate_result", mutate_result), ("snapshot", mutate_snapshot)):
+        if fn is None:
+            continue
+        p = os.path.join(bundle, *man[key].split("/"))
+        doc = json.load(open(p, encoding="utf-8"))
+        fn(doc)
+        data = canonical._dumps(doc)
+        open(p, "wb").write(data)
+        for e in man["files"]:
+            if e["path"] == man[key]:
+                e.update(size=len(data), sha256=canonical.sha256(data))
+    open(man_path, "wb").write(canonical._dumps(man))
+    # 集約の順番の記録の最後の行も、作り直した manifest に合わせる
+    log_p = os.path.join(bundle, *canonical.AGGREGATION_LOG.split("/"))
+    lines = open(log_p, "rb").read().splitlines(keepends=True)
+    last = json.loads(lines[-1])
+    last["manifest_sha256"] = canonical.sha256(open(man_path, "rb").read())
+    open(log_p, "wb").write(b"".join(lines[:-1]) + canonical._line(last))
+    gp = os.path.join(repo_root, *canonical.GENESIS.split("/"))
+    if not os.path.exists(gp):  # genesis_ok() で始めた鎖：genesis.json もリポジトリに置く
+        os.makedirs(os.path.dirname(gp), exist_ok=True)
+        open(gp, "wb").write(canonical._dumps(genesis_state()["snapshot"]))
+    st = canonical.stage(bundle, repo_root)
+    assert st["status"] == "ok", st
+    rel = os.path.relpath(man_path, bundle).replace(os.sep, "/")
+    return rel, canonical.sha256(open(man_path, "rb").read())
+
+
+def ci_env():
+    """正本の束の由来（commit SHA・集約の run の番号）を、Actions と同じ形にする（テスト用）。"""
+    from unittest import mock
+    env = {"GITHUB_SHA": "a" * 40}
+    if "GITHUB_RUN_ID" not in os.environ:
+        env["GITHUB_RUN_ID"] = "1"
+    return mock.patch.dict(os.environ, env)
+
+
+def genesis_state():
+    from formal_g2.aggregate import canonical
+    g = {"schema_version": 1, "kind": "g2_state_genesis", "state_version_id": "genesis", "h1_active": [],
+         "h2_active": [], "reach": None}
+    return {"status": "ok", "problems": [], "path": canonical.GENESIS, "expected_sha256": canonical.sha256(canonical._dumps(g)),
+            "kind": "genesis", "snapshot": g, "aggregate_result": None, "state_version_id": "genesis",
+            "h1_events": [], "h2_events": [], "resolution_events": [], "h1_events_bytes": b"",
+            "h2_events_bytes": b"", "resolution_events_bytes": b""}
+
+
+def genesis_ok():
+    """Y6 の前回の状態の読み込みを「最初の状態（genesis）で合格」に置き換える（ほかの照合を確かめるテスト用）。
+    Y6 そのものは test_stage6.py で、実際のファイルを使って確かめる。"""
+    from unittest import mock
+    from formal_g2.aggregate import canonical
+    return mock.patch.object(canonical, "load_previous_state", side_effect=lambda *a, **k: genesis_state())
 
 
 class VerifyTests(unittest.TestCase):

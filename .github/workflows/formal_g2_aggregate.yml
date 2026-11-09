@@ -13,7 +13,15 @@
 #   取り、meta.json の api_* に入れる。取り出せない値は空のままにし、集約で不合格にする（fail-closed）。
 # - アクションは40桁のコミット SHA で固定する（checkout v4.4.0、setup-python v5.6.0、upload-artifact v4.6.2）。
 # - 集約側の基準（aggregate_baseline_path）で、集約のコードと Python の版を照合する。gh・jq の版は観測値として記録する。
-# - baseline の登録方式は未決定（本人判断項目2）のため、正式な実行に合格を出すことはない。
+# - 登録の確認は案A（g2_baseline/registered/approvals.json。07h §2.8）。
+# - 段階6（d5）：前回の正本（previous_state_path・previous_state_sha256）を必ず読む（Y6）。出力の
+#   canonical_bundle/ は正本の束で、保存は本人の個別の許可を得た commit で行う（この workflow は commit しない）。
+# - 項目4（2026-11-08 本人決定・11-09 本人許可）：mode formal の実行ごとに、許可ファイル
+#   g2_permissions/<permission_id>.json の履歴（commit の一覧・各 commit の author/committer/署名の検証・
+#   変更の種類と blob・評価の HEAD との compare）を API で取り、permission_evidence.json として集約に渡す。
+#   集約のプログラムは通信せず、渡された履歴とチェックアウトしたファイルだけで照合する。
+#   取得に1つでも失敗すれば fetch_ok=false とし、集約はその実行を許可の無い formal の実行として扱う（fail-closed）。
+#   許可ファイルは本人が GitHub のブラウザ画面で作る。この workflow は許可ファイルを作らない・変えない。
 
 name: formal-g2-aggregate
 
@@ -29,10 +37,6 @@ on:
       last_date:
         description: "対象期間の最後の race_date（YYYYMMDD）"
         required: true
-      permissions_path:
-        description: "開始許可の一覧 JSON のリポジトリ内パス（空なら正式な実行は0件として扱う）"
-        required: false
-        default: ""
       baseline_path:
         description: "評価側の基準 JSON のリポジトリ内パス（空なら M7-3 を照合できず、正式な実行は加算しない）"
         required: false
@@ -41,6 +45,12 @@ on:
         description: "集約側の基準 JSON のリポジトリ内パス（空なら集約側の照合ができず、正式な実行は加算しない）"
         required: false
         default: ""
+      previous_state_path:
+        description: "前回の正本（g2_evidence/_aggregate/aggregations/<id>/manifest.json、最初は g2_evidence/_aggregate/state/snapshots/genesis.json）。Y6：必須"
+        required: true
+      previous_state_sha256:
+        description: "previous_state_path のファイルの SHA-256（Y6：必須。違えば達成の判定全体を保留する）"
+        required: true
 
 permissions:
   contents: read
@@ -58,6 +68,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          # Z3：g2_evidence/ の commit の履歴を手元の git で確かめるため、履歴をすべて取る（通信は checkout だけ）
+          fetch-depth: 0
 
       - name: Check aggregator presence
         id: presence
@@ -86,12 +98,55 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p g2_artifacts
+          # 項目4：許可ファイルの履歴を取る。どこかで失敗すれば 1 を返す（呼び出し側で fetch_ok=false にする）。
+          # $1=permission_id $2=評価の head_sha $3=出力先。通信はここ（gh api）だけで、集約のプログラムは通信しない。
+          fetch_permission_evidence() {
+            local pid="$1" run_head="$2" out="$3" path hr hm sha c cs cmp
+            path="g2_permissions/${pid}.json"
+            [[ "$run_head" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [ "$GITHUB_REF" = "refs/heads/main" ] || return 1  # 集約は main から（main での変更・削除を見落とさない）
+            hr=$(gh api "repos/${REPO}/commits?path=${path}&sha=${run_head}&per_page=100" --jq '[.[].sha]') || return 1
+            hm=$(gh api "repos/${REPO}/commits?path=${path}&sha=${GITHUB_SHA}&per_page=100" --jq '[.[].sha]') || return 1
+            cs="[]"
+            for sha in $(jq -r '(.[0] + .[1]) | unique | .[]' <<<"[$hr,$hm]") ; do
+              [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+              c=$(gh api "repos/${REPO}/commits/${sha}" | jq -c --arg p "$path" \
+                    '{sha:.sha, author_login:(.author.login // null), committer_login:(.committer.login // null),
+                      verified:(.commit.verification.verified // null),
+                      verification_reason:(.commit.verification.reason // null),
+                      committer_date:(.commit.committer.date // null),
+                      files_count:((.files // []) | length),
+                      files:[(.files // [])[] | select(.filename == $p or .previous_filename == $p)
+                             | {filename, status, sha, previous_filename:(.previous_filename // null)}]}') || return 1
+              cs=$(jq -c --argjson c "$c" '. + [$c]' <<<"$cs") || return 1
+            done
+            cmp='{"base":null,"head":null,"status":null}'
+            if [ "$(jq 'length' <<<"$hr")" -eq 1 ]; then
+              sha=$(jq -r '.[0]' <<<"$hr")
+              [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+              cmp=$(gh api "repos/${REPO}/compare/${sha}...${run_head}" \
+                      | jq -c --arg b "$sha" --arg h "$run_head" '{base:$b, head:$h, status:(.status // null)}') \
+                || return 1
+            fi
+            jq -n --arg pid "$pid" --arg path "$path" --argjson hr "$hr" --argjson hm "$hm" \
+                  --argjson commits "$cs" --argjson compare "$cmp" --arg agg_head "$GITHUB_SHA" --arg run_head "$run_head" \
+                  --arg agg_ref "$GITHUB_REF" \
+              '{fetch_ok:true, permission_id:$pid, path:$path, run_head:$run_head, aggregate_head:$agg_head, aggregate_ref:$agg_ref,
+                history_run_head:$hr, history_aggregate_head:$hm, commits:$commits, compare:$compare,
+                history_limits:{endpoint:"GET /repos/{repo}/commits?path=&sha=&per_page=100",
+                                simplification:"git default history simplification (merges may hide side-branch changes)",
+                                follows_renames:false, per_page:100, commit_files_max:300}}' > "$out" \
+              || return 1
+          }
           for rid in $RUN_IDS; do
             case "$rid" in (*[!0-9]*|'') echo "invalid run id: $rid"; exit 1;; esac
             attempt=$(gh api "repos/${REPO}/actions/runs/${rid}" --jq '.run_attempt')
-            gh api "repos/${REPO}/actions/runs/${rid}/artifacts" \
-              --jq '.artifacts[] | select(.name | startswith("g2-")) | select(.name | startswith("g2-aggregate-") | not) | [.id, .name, (.digest // "")] | @tsv' |
-            while IFS=$'\t' read -r aid aname adigest; do
+            arts=$(gh api "repos/${REPO}/actions/runs/${rid}/artifacts?per_page=100" \
+              --jq '.artifacts[] | select(.name | startswith("g2-")) | select(.name | startswith("g2-aggregate-") | not) | [(.id | tostring), .name, (.digest // ""), (.expired // false | tostring), (.expires_at // "")] | join("\u001f")')
+            # 区切りは 0x1F（空白でないので、空の項目が詰まらない。監査 2026-11-09 の指摘5）
+            while IFS=$'\x1f' read -r aid aname adigest aexpired aexpires; do
+              [ -n "$aid" ] || continue
               att="${aname##*-}"
               case "$att" in (*[!0-9]*|'') echo "unexpected artifact name: $aname"; exit 1;; esac
               # 実行情報は attempts の応答（API）から取る。入力の run_id・artifact 名の attempt とは別の項目にする。
@@ -106,7 +161,14 @@ jobs:
               api_event=$(jq -r '.event // ""' <<<"$att_json")
               d="g2_artifacts/${rid}-${att}"
               mkdir -p "$d"
-              gh api "repos/${REPO}/actions/artifacts/${aid}/zip" > "$d/artifact.zip"
+              # P4 4：保持期限切れ・取得の失敗は、それぞれ別の事実として記録する（取得の失敗で集約全体を止めない）
+              artifact_status=downloaded
+              if [ "$aexpired" = "true" ]; then
+                artifact_status=expired
+              elif ! gh api "repos/${REPO}/actions/artifacts/${aid}/zip" > "$d/artifact.zip"; then
+                artifact_status=download_failed
+                rm -f "$d/artifact.zip"
+              fi
               # M7-3：評価ジョブのログ原本を取得する（失敗しても止めず、失敗として記録する）。
               # エラー文は署名付き URL の問い合わせ部分を伏せて1行だけ残す。
               jids=$(gh api "repos/${REPO}/actions/runs/${rid}/attempts/${att}/jobs" \
@@ -147,6 +209,7 @@ jobs:
                     --arg api_head_sha "$api_head_sha" --arg api_head_branch "$api_head_branch" \
                     --arg api_workflow_path "$api_workflow_path" --arg api_repository "$api_repository" \
                     --arg api_event "$api_event" \
+                    --arg artifact_status "$artifact_status" --arg artifact_expires_at "$aexpires" \
                 '{run_id:$run_id, run_attempt:$run_attempt, artifact_name:$name,
                   expected_digest:$digest, run_started_at:$started, latest_attempt:$latest_attempt,
                   job_id:$job_id, job_count:$job_count, log_fetch_ok:$log_ok,
@@ -157,8 +220,36 @@ jobs:
                   log_fetched_at:$fetched_at,
                   api_run_id:$api_run_id, api_run_attempt:$api_run_attempt, api_head_sha:$api_head_sha,
                   api_head_branch:$api_head_branch, api_workflow_path:$api_workflow_path,
-                  api_repository:$api_repository, api_event:$api_event}' \
+                  api_repository:$api_repository, api_event:$api_event,
+                  artifact_status:$artifact_status,
+                  artifact_expires_at:(if $artifact_expires_at == "" then null else $artifact_expires_at end)}' \
                 > "$d/meta.json"
+              # 項目4：mode formal の実行だけ、許可ファイルの履歴を取る（失敗は fetch_ok=false として記録する）。
+              mode=$(unzip -p "$d/artifact.zip" manifest.json 2>/dev/null | jq -r '.run.mode // ""' 2>/dev/null) || mode=""
+              if [ "$mode" = "formal" ]; then
+                pid=$(unzip -p "$d/artifact.zip" manifest.json | jq -r '.run.permission_id // ""' 2>/dev/null) || pid=""
+                if [[ "$pid" =~ ^[A-Za-z0-9._-]{1,100}$ ]] && [ "$pid" != "." ] && [ "$pid" != ".." ] \
+                   && fetch_permission_evidence "$pid" "$api_head_sha" "$d/permission_evidence.json.tmp"; then
+                  mv "$d/permission_evidence.json.tmp" "$d/permission_evidence.json"
+                else
+                  rm -f "$d/permission_evidence.json.tmp"
+                  jq -n --arg pid "$pid" '{fetch_ok:false, permission_id:$pid,
+                                           fetch_errors:["permission history fetch failed"]}' \
+                    > "$d/permission_evidence.json"
+                fi
+              fi
+            done <<<"$arts"
+            # P4 4（07f §6.4・§6.5 の 6）：artifact の無い attempt を黙って落とさず、事実として記録する
+            case "$attempt" in (*[!0-9]*|'') echo "invalid run_attempt for $rid: $attempt"; exit 1;; esac
+            for a in $(seq 1 "$attempt"); do
+              [ -d "g2_artifacts/${rid}-${a}" ] && continue
+              d="g2_artifacts/${rid}-${a}"
+              mkdir -p "$d"
+              started=$(gh api "repos/${REPO}/actions/runs/${rid}/attempts/${a}" --jq '.run_started_at // ""' 2>/dev/null) \
+                || started=""
+              jq -n --arg run_id "$rid" --arg run_attempt "$a" --arg latest_attempt "$attempt" --arg started "$started" \
+                '{run_id:$run_id, run_attempt:$run_attempt, latest_attempt:$latest_attempt, run_started_at:$started,
+                  artifact_name:null, artifact_status:"missing"}' > "$d/meta.json"
             done
           done
 
@@ -168,17 +259,19 @@ jobs:
         env:
           FIRST_DATE: ${{ inputs.first_date }}
           LAST_DATE: ${{ inputs.last_date }}
-          PERMISSIONS_PATH: ${{ inputs.permissions_path }}
           BASELINE_PATH: ${{ inputs.baseline_path }}
           AGGREGATE_BASELINE_PATH: ${{ inputs.aggregate_baseline_path }}
+          PREVIOUS_STATE_PATH: ${{ inputs.previous_state_path }}
+          PREVIOUS_STATE_SHA256: ${{ inputs.previous_state_sha256 }}
         run: |
           # gh・jq の版は観測値として記録する（固定はしない）
           tools=$(jq -n --arg gh "$(gh --version 2>&1 | head -1)" --arg jq "$(jq --version 2>&1)" '{gh:$gh, jq:$jq}')
           args=(--artifacts-dir g2_artifacts --first-date "$FIRST_DATE" --last-date "$LAST_DATE" --out g2_aggregate_out)
           args+=(--tools-json "$tools")
-          if [ -n "$PERMISSIONS_PATH" ]; then args+=(--permissions "$PERMISSIONS_PATH"); fi
           if [ -n "$BASELINE_PATH" ]; then args+=(--baseline "$BASELINE_PATH"); fi
           if [ -n "$AGGREGATE_BASELINE_PATH" ]; then args+=(--aggregate-baseline "$AGGREGATE_BASELINE_PATH"); fi
+          # Y6：前回の正本は必須（空でも渡し、集約は達成の判定全体を保留する）
+          args+=(--previous-state "$PREVIOUS_STATE_PATH" --previous-state-sha256 "$PREVIOUS_STATE_SHA256")
           PYTHONPATH="${GITHUB_WORKSPACE}/rebuild" python -P -B -m formal_g2.aggregate.main "${args[@]}"
 
       - name: Upload aggregate result

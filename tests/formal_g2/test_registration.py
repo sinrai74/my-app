@@ -14,7 +14,7 @@ from io import StringIO
 from unittest import mock
 
 from formal_g2.aggregate import main as agg
-from test_aggregate import BASELINE_RAW, BASELINE_SHA, PERMS, _race, _write_run
+from test_aggregate import BASELINE_RAW, BASELINE_SHA, PERMS, _race, _write_run, permitted_by
 
 EVAL_REL = "g2_baseline/registered/evaluate/baseline_evaluate.json"
 AGG_REL = "g2_baseline/registered/aggregate/baseline_aggregate.json"
@@ -235,10 +235,9 @@ class MainRegistrationTests(unittest.TestCase):
             json.dump(PERMS, f)
         out = os.path.join(tmp, "out")
         buf = StringIO()
-        with mock.patch.object(agg, "_repo_root", return_value=root), redirect_stdout(buf):
+        with mock.patch.object(agg, "_repo_root", return_value=root), permitted_by(), redirect_stdout(buf):
             rc = agg.main(["--artifacts-dir", base, "--first-date", "20990101", "--last-date", "20990101",
-                           "--out", out, "--baseline", eval_path, "--aggregate-baseline", agg_path,
-                           "--permissions", perms])
+                           "--out", out, "--baseline", eval_path, "--aggregate-baseline", agg_path])
         with open(os.path.join(out, "aggregate_result.json"), encoding="utf-8") as f:
             return rc, json.load(f), buf.getvalue()
 

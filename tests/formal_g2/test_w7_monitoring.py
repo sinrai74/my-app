@@ -334,7 +334,7 @@ class AggregateW7Tests(unittest.TestCase):
 
 class AggregateFormalRefAndW7ExitTests(unittest.TestCase):
     def _main(self, tmp, mode="formal", run_overrides=None, races=None):
-        from test_aggregate import BASELINE_RAW, PERMS, _race, _write_run
+        from test_aggregate import BASELINE_RAW, PERMS, _race, _write_run, permitted_by
         base = os.path.join(tmp, "a")
         os.makedirs(base)
         _write_run(base, 1, 1, "20990101", races or [_race("a")], ["a"], mode=mode, run_overrides=run_overrides)
@@ -346,9 +346,9 @@ class AggregateFormalRefAndW7ExitTests(unittest.TestCase):
         out = os.path.join(tmp, "out")
         from contextlib import redirect_stdout
         from io import StringIO
-        with redirect_stdout(StringIO()):
+        with permitted_by(), redirect_stdout(StringIO()):
             rc = agg.main(["--artifacts-dir", base, "--first-date", "20990101", "--last-date", "20990101",
-                           "--out", out, "--baseline", bpath, "--permissions", perms])
+                           "--out", out, "--baseline", bpath])
         with open(os.path.join(out, "aggregate_result.json"), encoding="utf-8") as f:
             return rc, json.load(f)
 
