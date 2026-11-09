@@ -1,0 +1,1 @@
+{"schema_version":1,"permission_id":"G2-20261110-01","race_date":"20261110","window_start":"2026-11-10T00:00:00Z","window_end":"2026-11-11T15:00:00Z","workflow":".github/workflows/formal_g2_evaluate.yml","ref":"refs/heads/main","mode":"formal","approved_on":"2026-11-09","approved_by":"sinrai74","approval_method":"github_web_ui"}
