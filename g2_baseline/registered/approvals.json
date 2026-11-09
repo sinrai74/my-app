@@ -1,0 +1,20 @@
+{
+  "kind": "g2_baseline_registration",
+  "format_version": 1,
+  "entries": [
+    {
+      "type": "evaluate",
+      "path": "g2_baseline/registered/evaluate/baseline_evaluate_9558249_20261108.json",
+      "sha256": "fdecee3cf465eaedbb2cde226c4c33ebf439eb8424367b704446d2c99b0e3400",
+      "approved_on": "2026-11-09",
+      "note": "評価側。候補 baseline_candidate_evaluate_9558249_20261108.json と同じ内容（評価側のファイルは 41b7d65 まで変わっていない）"
+    },
+    {
+      "type": "aggregate",
+      "path": "g2_baseline/registered/aggregate/baseline_aggregate_41b7d65_20261109.json",
+      "sha256": "cb1f36970d9928d8f151481763e6f8b8e748000287554b3a657fd93bd278d66e",
+      "approved_on": "2026-11-09",
+      "note": "集約側。main 41b7d65 の5ファイル"
+    }
+  ]
+}

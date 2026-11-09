@@ -1,0 +1,22 @@
+{
+  "files": {
+    ".github/workflows/formal_g2_aggregate.yml": "27a9805ecffb2b6cce0e23a59af4720500fa835b75c03910f2c7d1cdedf626f5",
+    "rebuild/formal_g2/aggregate/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "rebuild/formal_g2/aggregate/canonical.py": "f57dd24fcd7acddb1889c5dd8423515092b7c5b6a39606a63aa2e5a2b5b578d6",
+    "rebuild/formal_g2/aggregate/fetch_log.py": "724ee6040af77fee9b5bb5a89bc628851a267251f748de8ce3febcd5e14c463b",
+    "rebuild/formal_g2/aggregate/main.py": "4e89924dd481c68e6a5b5d796971b61cc3c02bf5c34d1a8e1ce13bb27fbf666c"
+  },
+  "kind": "aggregate",
+  "python_version": [
+    3,
+    11,
+    9
+  ],
+  "source": {
+    "code_commit": "41b7d65714662e77fba3fef12056d2fe52190052",
+    "python_version_source": "集約 run 42580548154 のジョブログ「Successfully set up CPython (3.11.9)」と workflow の python-version: \"3.11.9\"",
+    "replaces": "baseline_candidate_aggregate_fe2e96a_20261108.json（cf048642…。集約のコードが変わったため使えない）。作業環境の候補 d0bc1ba9… と files は同じ",
+    "status": "登録の対象（登録は本人判断項目2。approvals.json の commit で効く）",
+    "tools_observed_only": "gh・jq の版は観測値として記録するだけで、照合しない（07h §2.3）"
+  }
+}
