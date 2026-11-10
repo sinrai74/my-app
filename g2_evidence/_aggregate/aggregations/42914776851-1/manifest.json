@@ -1,0 +1,64 @@
+{
+  "aggregate_result": "g2_evidence/_aggregate/aggregations/42914776851-1/aggregate_result.json",
+  "aggregate_run": "42914776851-1",
+  "append_only_prefixes": [
+    {
+      "lines": 0,
+      "path": "g2_evidence/_aggregate/events/h1_events.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "lines": 0,
+      "path": "g2_evidence/_aggregate/events/h2_events.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "lines": 1,
+      "path": "g2_evidence/_aggregate/aggregation_log.jsonl",
+      "sha256": "19257498277d640087e00a7ea7631e36d4e06451cf204906d65c8d8b76bf9007"
+    }
+  ],
+  "best_segment": 100,
+  "commit_sha": "61c7048b4304e789d400a3b2784f5d5f3839aaf6",
+  "evaluation_run_dirs": [
+    "g2_evidence/G2-20261110-01/42841748651-1"
+  ],
+  "files": [
+    {
+      "path": "g2_evidence/_aggregate/aggregations/42914776851-1/aggregate_result.json",
+      "sha256": "691c6d91a4b75f1a3b21630da20ef5cef465cf28c351828414394c85fa50c638",
+      "size": 30022
+    },
+    {
+      "path": "g2_evidence/_aggregate/aggregations/42914776851-1/input_manifest.json",
+      "sha256": "bbbb6318468ca79f21f6fa7a72e1a4f93fee3f5e1112eedc3606b5bbf37922e7",
+      "size": 1680
+    },
+    {
+      "path": "g2_evidence/_aggregate/state/snapshots/42914776851-1.json",
+      "sha256": "a9cd42216d44adc548ca90b17478d37f2a84ad06ea73382ff344f8f8216fd9d1",
+      "size": 987
+    }
+  ],
+  "generated_at": "2026-11-10T22:28:16.114134+00:00",
+  "h1_active": [],
+  "h2_active": [],
+  "inputs": "g2_evidence/_aggregate/aggregations/42914776851-1/input_manifest.json",
+  "kind": "g2_aggregation_manifest",
+  "reach": {
+    "aggregate_run_id": "42914776851",
+    "evaluation_run_attempt": "1",
+    "evaluation_run_id": "42841748651",
+    "event_type": "g2_streak_100_reached",
+    "first_race_key": "20261110_21_01",
+    "hundredth_race_closed_at": "2026-11-10 14:52:00",
+    "hundredth_race_key": "20261110_05_10",
+    "race_date": "20261110",
+    "segment_index": 0,
+    "status": "reached_not_yet_formally_achieved",
+    "streak_count": 100
+  },
+  "result_sha256": "691c6d91a4b75f1a3b21630da20ef5cef465cf28c351828414394c85fa50c638",
+  "schema_version": 1,
+  "snapshot": "g2_evidence/_aggregate/state/snapshots/42914776851-1.json"
+}

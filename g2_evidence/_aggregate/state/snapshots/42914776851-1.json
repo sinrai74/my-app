@@ -1,0 +1,29 @@
+{
+  "aggregate_result_sha256": "691c6d91a4b75f1a3b21630da20ef5cef465cf28c351828414394c85fa50c638",
+  "aggregate_run": "42914776851-1",
+  "best_segment": 100,
+  "h1_active": [],
+  "h2_active": [],
+  "kind": "g2_state_snapshot",
+  "previous_state": {
+    "path": "g2_evidence/_aggregate/aggregations/42842112583-1/manifest.json",
+    "sha256": "7d65b45129cfe4cbbc5d573a226f3e5869822ee2bdaec2a9f89fc7652fad26b5",
+    "status": "ok"
+  },
+  "previous_state_version_id": "42842112583-1",
+  "reach": {
+    "aggregate_run_id": "42914776851",
+    "evaluation_run_attempt": "1",
+    "evaluation_run_id": "42841748651",
+    "event_type": "g2_streak_100_reached",
+    "first_race_key": "20261110_21_01",
+    "hundredth_race_closed_at": "2026-11-10 14:52:00",
+    "hundredth_race_key": "20261110_05_10",
+    "race_date": "20261110",
+    "segment_index": 0,
+    "status": "reached_not_yet_formally_achieved",
+    "streak_count": 100
+  },
+  "schema_version": 1,
+  "state_version_id": "42914776851-1"
+}

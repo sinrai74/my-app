@@ -1,0 +1,48 @@
+{
+  "aggregate_baseline": {
+    "path": "g2_baseline/registered/aggregate/baseline_aggregate_41b7d65_20261109.json",
+    "sha256": "cb1f36970d9928d8f151481763e6f8b8e748000287554b3a657fd93bd278d66e"
+  },
+  "evaluate_baseline": {
+    "path": "g2_baseline/registered/evaluate/baseline_evaluate_9558249_20261108.json",
+    "sha256": "fdecee3cf465eaedbb2cde226c4c33ebf439eb8424367b704446d2c99b0e3400"
+  },
+  "evaluation_runs": [
+    {
+      "artifact_sha256": "2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8",
+      "baseline": {
+        "path": "g2_baseline/registered/evaluate/baseline_evaluate_9558249_20261108.json",
+        "sha256": "fdecee3cf465eaedbb2cde226c4c33ebf439eb8424367b704446d2c99b0e3400"
+      },
+      "canonical_in_bundle": "already_saved",
+      "classification": "first_formal",
+      "dir": "g2_evidence/G2-20261110-01/42841748651-1",
+      "fetch": {
+        "artifact_expires_at": "2027-02-08T15:11:25Z",
+        "latest_attempt": "1",
+        "log_fetch_error": null,
+        "log_fetch_ok": true,
+        "log_fetched_at": "2026-11-10T22:28:13Z"
+      },
+      "problems": [],
+      "run": "42841748651-1",
+      "verified": true
+    }
+  ],
+  "first_date": "20261110",
+  "kind": "g2_aggregation_inputs",
+  "last_date": "20261110",
+  "previous_state": {
+    "path": "g2_evidence/_aggregate/aggregations/42842112583-1/manifest.json",
+    "sha256": "7d65b45129cfe4cbbc5d573a226f3e5869822ee2bdaec2a9f89fc7652fad26b5",
+    "status": "ok"
+  },
+  "runs": [
+    {
+      "artifact_sha256": "2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8",
+      "run_attempt": "1",
+      "run_id": "42841748651"
+    }
+  ],
+  "schema_version": 1
+}
