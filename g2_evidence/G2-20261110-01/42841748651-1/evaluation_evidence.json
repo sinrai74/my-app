@@ -1,0 +1,24 @@
+{
+  "artifact": {
+    "digest": "sha256:2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8",
+    "name": "g2-20261110-42841748651-1",
+    "sha256": "2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8",
+    "status": "downloaded"
+  },
+  "evaluation_run_id": "42841748651",
+  "head_sha": "9a79974b97c3f96bc496d642f158fac3bd2194ec",
+  "kind": "g2_evaluation_evidence",
+  "mode": "formal",
+  "permission_id": "G2-20261110-01",
+  "provenance": {
+    "classification_verification_baseline_and_fetch_time": "recorded per aggregation in aggregations/<id>/input_manifest.json",
+    "source": "GitHub Actions artifact and job log fetched by the aggregate workflow"
+  },
+  "race_date": "20261110",
+  "ref": "refs/heads/main",
+  "run_attempt": "1",
+  "run_finished_at": "2026-11-11T00:12:08.504820+09:00",
+  "run_started_at": "2026-11-10T15:11:24Z",
+  "schema_version": 1,
+  "workflow": ".github/workflows/formal_g2_evaluate.yml"
+}

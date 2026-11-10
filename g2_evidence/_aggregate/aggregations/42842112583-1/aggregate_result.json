@@ -1,0 +1,1115 @@
+{
+ "achievement_holds": [],
+ "achievement_readiness": {
+  "blocking": [
+   "canonical save not verified for the reached segment"
+  ],
+  "note": "even when ready, the formal achievement record is written by a person after this aggregation's canonical bundle is committed (d5)",
+  "ready_for_human_record": false
+ },
+ "after_reach": {
+  "added_not_counted": 56,
+  "items": 56
+ },
+ "aggregate_baseline": {
+  "diffs": [],
+  "path": "g2_baseline/registered/aggregate/baseline_aggregate_41b7d65_20261109.json",
+  "sha256": "cb1f36970d9928d8f151481763e6f8b8e748000287554b3a657fd93bd278d66e",
+  "status": "ok"
+ },
+ "aggregate_environment": {
+  "github_run_attempt": "1",
+  "github_run_id": "42842112583",
+  "github_sha": "9a79974b97c3f96bc496d642f158fac3bd2194ec",
+  "python_version": [
+   3,
+   11,
+   9
+  ],
+  "tools": {
+   "gh": "gh version 2.103.3 (2026-10-26)",
+   "jq": "jq-1.7"
+  }
+ },
+ "aggregator_version": {
+  ".github/workflows/formal_g2_aggregate.yml": "27a9805ecffb2b6cce0e23a59af4720500fa835b75c03910f2c7d1cdedf626f5",
+  "rebuild/formal_g2/aggregate/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "rebuild/formal_g2/aggregate/canonical.py": "f57dd24fcd7acddb1889c5dd8423515092b7c5b6a39606a63aa2e5a2b5b578d6",
+  "rebuild/formal_g2/aggregate/fetch_log.py": "724ee6040af77fee9b5bb5a89bc628851a267251f748de8ce3febcd5e14c463b",
+  "rebuild/formal_g2/aggregate/main.py": "4e89924dd481c68e6a5b5d796971b61cc3c02bf5c34d1a8e1ce13bb27fbf666c"
+ },
+ "baseline": {
+  "path": "g2_baseline/registered/evaluate/baseline_evaluate_9558249_20261108.json",
+  "read_error": null,
+  "runner_image": {
+   "image": "ubuntu-24.04"
+  },
+  "sha256": "fdecee3cf465eaedbb2cde226c4c33ebf439eb8424367b704446d2c99b0e3400"
+ },
+ "baseline_failures": [],
+ "best_segment": 100,
+ "canonical_save": {
+  "note": "save is done by a separate, individually permitted commit (d5); a failed or missing save is recorded separately from aggregation failures",
+  "reached_segment_runs": [
+   {
+    "dir": "g2_evidence/G2-20261110-01/42841748651-1",
+    "problems": [
+     "FileNotFoundError: g2_evidence/G2-20261110-01/42841748651-1/manifest.json"
+    ],
+    "run": "42841748651-1",
+    "status": "not_saved"
+   }
+  ]
+ },
+ "corrections_applied": {},
+ "days": [
+  {
+   "aggregate_baseline_check": "ok",
+   "baseline_identity_check": "ok",
+   "class": "normal",
+   "condition5_check": "ok",
+   "eval_fetch_check": "ok",
+   "eval_process_env_check": "ok",
+   "eval_token_input_check": "ok",
+   "eval_token_permissions_check": "ok",
+   "fan_check": {
+    "changes_between_races": [],
+    "empty_cache_at": [],
+    "fan_files": [
+     "fan2604.txt"
+    ],
+    "incomplete": [],
+    "incomplete_count": 0,
+    "reasons": [],
+    "snapshots": 468,
+    "within_race_changes": [],
+    "zero_file_cache_at": []
+   },
+   "ignored_runs": [],
+   "race_closed_at_check": "ok",
+   "race_date": "20261110",
+   "ref_check": "ok",
+   "registration_check": "ok",
+   "run_metadata_check": "ok",
+   "runner_image_check": "ok",
+   "selected_run": {
+    "api_event": "workflow_dispatch",
+    "api_head_branch": "main",
+    "api_head_sha": "9a79974b97c3f96bc496d642f158fac3bd2194ec",
+    "api_repository": "sinrai74/my-app",
+    "api_run_attempt": "1",
+    "api_run_id": "42841748651",
+    "api_workflow_path": ".github/workflows/formal_g2_evaluate.yml",
+    "artifact_expires_at": "2027-02-08T15:11:25Z",
+    "artifact_name": "g2-20261110-42841748651-1",
+    "artifact_status": "downloaded",
+    "expected_digest": "sha256:2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8",
+    "job_count": 1,
+    "job_id": "129918519630",
+    "latest_attempt": "1",
+    "log_bytes": 57724,
+    "log_fetch_error": null,
+    "log_fetch_ok": true,
+    "log_fetched_at": "2026-11-10T15:13:49Z",
+    "log_file": "job.log",
+    "log_sha256": "d7d2940d5504f22636ac4ba5a93e0d3f1e23676898ab117e6452abf8b4d9ecf7",
+    "run_attempt": "1",
+    "run_id": "42841748651",
+    "run_started_at": "2026-11-10T15:11:24Z"
+   },
+   "w7_check": "ok"
+  }
+ ],
+ "doubts": [],
+ "evaluation_code_loaded": [],
+ "exit_status": {
+  "code": 0,
+  "input_order_causes": [],
+  "input_order_failed": false,
+  "verification_causes": {
+   "baseline_failures": 0,
+   "baseline_read_error": null,
+   "permission_violations": 0,
+   "procedure_violations_recorded": 0,
+   "verification_failed_runs": []
+  },
+  "verification_failed": false
+ },
+ "formal_judgment": {
+  "expected_eval_token_permissions": [
+   "Metadata: read"
+  ],
+  "note": "baseline の登録は案A（07h §2.8、2026-11-08 に本人が採用）：g2_baseline/registered/approvals.json の承認記録（種類・パス・SHA-256・承認日）と、使った基準のパス・内容の SHA-256 を照合する。登録を確認できなければ、正式な実行に合格を出さない。候補のファイルが置かれているだけでは登録とみなさない。",
+  "registration_verified": true
+ },
+ "g2_status": "reached_100_unconfirmed",
+ "generated_at": "2026-11-10T15:13:53.363057+00:00",
+ "git_history_check": {
+  "commits": 1,
+  "problems": [],
+  "status": "ok"
+ },
+ "h1_events_new": [],
+ "h2_events_new": [],
+ "input_identity": {
+  "first_date": "20261110",
+  "last_date": "20261110",
+  "runs": [
+   {
+    "artifact_sha256": "2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8",
+    "run_attempt": "1",
+    "run_id": "42841748651"
+   }
+  ]
+ },
+ "input_order_failures": [],
+ "p4_holds": {
+  "H1": [],
+  "H1_event_ids": [],
+  "H2": [],
+  "carried_from_previous": {
+   "H1": [],
+   "H2": [],
+   "problems": []
+  },
+  "note": "H1: streaks containing these races are not used for the achievement judgment until an approved correction record (P4 11/12). H2: the whole G2 achievement judgment is held until an approved closing record. Neither is released automatically, and neither sets a formal record to 0.",
+  "resolved": {
+   "H1": [],
+   "H2": []
+  }
+ },
+ "permission_single_use_scope": {
+  "checked_within": "input run_ids only",
+  "not_guaranteed": "formal evaluation runs that were not given to this aggregate (they are not listed or checked)",
+  "run_ids_checked": [
+   "42841748651"
+  ]
+ },
+ "permission_violations": [],
+ "previous_state": {
+  "expected_sha256": "9b462191b23d746ae24bb656eef0936b321d92ab5eaa003d79fd44d3548c7d2f",
+  "kind": "genesis",
+  "path": "g2_evidence/_aggregate/state/snapshots/genesis.json",
+  "problems": [],
+  "state_version_id": "genesis",
+  "status": "ok"
+ },
+ "reach": {
+  "aggregate_run_id": "42842112583",
+  "evaluation_run_attempt": "1",
+  "evaluation_run_id": "42841748651",
+  "event_type": "g2_streak_100_reached",
+  "first_race_key": "20261110_21_01",
+  "hundredth_race_closed_at": "2026-11-10 14:52:00",
+  "hundredth_race_key": "20261110_05_10",
+  "race_date": "20261110",
+  "segment_index": 0,
+  "status": "reached_not_yet_formally_achieved",
+  "streak_count": 100
+ },
+ "reaggregation": null,
+ "record_facts": [],
+ "registration": {
+  "entries": {
+   "aggregate": {
+    "approved_on": "2026-11-09",
+    "path": "g2_baseline/registered/aggregate/baseline_aggregate_41b7d65_20261109.json",
+    "sha256": "cb1f36970d9928d8f151481763e6f8b8e748000287554b3a657fd93bd278d66e"
+   },
+   "evaluate": {
+    "approved_on": "2026-11-09",
+    "path": "g2_baseline/registered/evaluate/baseline_evaluate_9558249_20261108.json",
+    "sha256": "fdecee3cf465eaedbb2cde226c4c33ebf439eb8424367b704446d2c99b0e3400"
+   }
+  },
+  "problems": [],
+  "registry": "g2_baseline/registered/approvals.json",
+  "registry_sha256": "585fe1627199706f882dae5ed07fe39219302eb27d59335808bdb32d63f02357",
+  "status": "ok"
+ },
+ "release_availability_note": "release_storage_available=false は x_release_storage.is_available() が False だった（GITHUB_TOKEN・GITHUB_REPOSITORY が無い）ことを示すだけで、外部との通信が無かったことの証明ではない。通信は評価側の監査フック（Python の範囲）で別に記録したもので、C 拡張から直接の通信は観測していない。評価側の artifact にはこの注記が無い（評価側は変更していない）。",
+ "resolutions": [],
+ "runs": [
+  {
+   "artifact_sha256": "2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8",
+   "condition5": {
+    "checks": {
+     "program_sha256": {
+      "absent": [],
+      "absent_count": 0,
+      "matched": 156,
+      "mismatched": [],
+      "mismatched_count": 0,
+      "not_in_programs": []
+     },
+     "raw_sha256": true,
+     "targets": true,
+     "targets_sha256": true
+    },
+    "problems": [],
+    "status": "ok"
+   },
+   "dir": "42841748651-1",
+   "eval_fetch": [],
+   "eval_log": {
+    "fetch": {
+     "credentials_check_count": 1,
+     "head_count": 1,
+     "heads": [
+      "9a79974b97c3f96bc496d642f158fac3bd2194ec"
+     ]
+    },
+    "token_inputs": {
+     "lines": [],
+     "ok": true
+    },
+    "token_permissions": {
+     "display": [
+      "Metadata: read"
+     ],
+     "problem": null
+    }
+   },
+   "eval_process_env": [],
+   "eval_token_permissions": [],
+   "job_log": {
+    "bytes": 57724,
+    "eval_log": {
+     "fetch": {
+      "credentials_check_count": 1,
+      "head_count": 1,
+      "heads": [
+       "9a79974b97c3f96bc496d642f158fac3bd2194ec"
+      ]
+     },
+     "token_inputs": {
+      "lines": [],
+      "ok": true
+     },
+     "token_permissions": {
+      "display": [
+       "Metadata: read"
+      ],
+      "problem": null
+     }
+    },
+    "fetched_at": "2026-11-10T15:13:49Z",
+    "file": "job.log",
+    "job_id": "129918519630",
+    "ok": true,
+    "parse": {
+     "group_lines": [
+      16,
+      21
+     ],
+     "lines": {
+      "Image": 17,
+      "Version": 18
+     },
+     "problems": []
+    },
+    "problems": [],
+    "runner_image": {
+     "image": "ubuntu-24.04",
+     "version": "20261101.360.1"
+    },
+    "sha256": "d7d2940d5504f22636ac4ba5a93e0d3f1e23676898ab117e6452abf8b4d9ecf7"
+   },
+   "meta": {
+    "api_event": "workflow_dispatch",
+    "api_head_branch": "main",
+    "api_head_sha": "9a79974b97c3f96bc496d642f158fac3bd2194ec",
+    "api_repository": "sinrai74/my-app",
+    "api_run_attempt": "1",
+    "api_run_id": "42841748651",
+    "api_workflow_path": ".github/workflows/formal_g2_evaluate.yml",
+    "artifact_expires_at": "2027-02-08T15:11:25Z",
+    "artifact_name": "g2-20261110-42841748651-1",
+    "artifact_status": "downloaded",
+    "expected_digest": "sha256:2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8",
+    "job_count": 1,
+    "job_id": "129918519630",
+    "latest_attempt": "1",
+    "log_bytes": 57724,
+    "log_fetch_error": null,
+    "log_fetch_ok": true,
+    "log_fetched_at": "2026-11-10T15:13:49Z",
+    "log_file": "job.log",
+    "log_sha256": "d7d2940d5504f22636ac4ba5a93e0d3f1e23676898ab117e6452abf8b4d9ecf7",
+    "run_attempt": "1",
+    "run_id": "42841748651",
+    "run_started_at": "2026-11-10T15:11:24Z"
+   },
+   "permission_check": {
+    "author": "sinrai74",
+    "blob_sha": "74d3f4cd4956c9501d1b93317a64f192d2d6eaaf",
+    "commit_sha": "9461f9627c33a60a5ed0eb24b1b2b84dfff66926",
+    "commit_time": "2026-11-09T13:05:50Z",
+    "committer": "web-flow",
+    "conditions": {
+     "10_in_run_head": true,
+     "11_blob_matches": true,
+     "12_matches_run": true,
+     "1_file_exists": true,
+     "2_name_matches_id": true,
+     "3_format_ok": true,
+     "4_added_once": true,
+     "5_not_changed_after": true,
+     "6_author": true,
+     "7_committer": true,
+     "8_signature_verified": true,
+     "9_committed_before_run": true
+    },
+    "history_limits": {
+     "commit_files_max": 300,
+     "endpoint": "GET /repos/{repo}/commits?path=&sha=&per_page=100",
+     "follows_renames": false,
+     "per_page": 100,
+     "simplification": "git default history simplification (merges may hide side-branch changes)"
+    },
+    "path": "g2_permissions/G2-20261110-01.json",
+    "permission": {
+     "permission_id": "G2-20261110-01",
+     "race_date": "20261110",
+     "window_end": "2026-11-11T15:00:00Z",
+     "window_start": "2026-11-10T00:00:00Z"
+    },
+    "permission_id": "G2-20261110-01",
+    "problems": [],
+    "run_started_at": "2026-11-10T15:11:24Z",
+    "status": "ok",
+    "verification_reason": "valid",
+    "verified": true
+   },
+   "problems": [],
+   "ref": {
+    "github_ref": "refs/heads/main",
+    "github_workflow_ref": "sinrai74/my-app/.github/workflows/formal_g2_evaluate.yml@refs/heads/main",
+    "mode": "formal"
+   },
+   "release_and_network": {
+    "monitoring_limitations": {
+     "c_extension_direct_calls": "unverified",
+     "c_extension_direct_side_effects": "unverified",
+     "threads_started_before_observation": "unverified"
+    },
+    "network_events_observed": {
+     "count": 2,
+     "details": [
+      "('boatraceopenapi.github.io', 443)",
+      "(<socket.socket fd=4, family=2, type=1, proto=6, laddr=('0.0.0.0', 0)>, ('185.199.108.153', 443))"
+     ]
+    },
+    "note": "release_storage_available=false は x_release_storage.is_available() が False だった（GITHUB_TOKEN・GITHUB_REPOSITORY が無い）ことを示すだけで、外部との通信が無かったことの証明ではない。通信は評価側の監査フック（Python の範囲）で別に記録したもので、C 拡張から直接の通信は観測していない。評価側の artifact にはこの注記が無い（評価側は変更していない）。",
+    "release_storage_available": false
+   },
+   "run_metadata": {
+    "api_fields_present": true,
+    "ok": true,
+    "problems": [],
+    "recorded": {
+     "api": {
+      "api_event": "workflow_dispatch",
+      "api_head_branch": "main",
+      "api_head_sha": "9a79974b97c3f96bc496d642f158fac3bd2194ec",
+      "api_repository": "sinrai74/my-app",
+      "api_run_attempt": "1",
+      "api_run_id": "42841748651",
+      "api_workflow_path": ".github/workflows/formal_g2_evaluate.yml",
+      "job_count": 1,
+      "job_id": "129918519630",
+      "latest_attempt": "1",
+      "log_bytes": 57724,
+      "log_fetched_at": "2026-11-10T15:13:49Z",
+      "log_sha256": "d7d2940d5504f22636ac4ba5a93e0d3f1e23676898ab117e6452abf8b4d9ecf7",
+      "run_attempt": "1",
+      "run_id": "42841748651",
+      "run_started_at": "2026-11-10T15:11:24Z"
+     },
+     "run_json": {
+      "finished_at": "2026-11-11T00:12:08.504820+09:00",
+      "github_ref": "refs/heads/main",
+      "github_run_attempt": "1",
+      "github_run_id": "42841748651",
+      "github_sha": "9a79974b97c3f96bc496d642f158fac3bd2194ec",
+      "github_workflow_ref": "sinrai74/my-app/.github/workflows/formal_g2_evaluate.yml@refs/heads/main",
+      "started_at": "2026-11-11T00:11:49.271472+09:00"
+     }
+    }
+   },
+   "runner_image": {
+    "env_observed": {
+     "ImageOS": "ubuntu24",
+     "ImageVersion": "20261101.360.1",
+     "identified": true,
+     "source": "process environment (observation only)",
+     "unavailable": []
+    },
+    "env_version_differs_from_log": false,
+    "log": {
+     "image": "ubuntu-24.04",
+     "version": "20261101.360.1"
+    }
+   },
+   "verified": true,
+   "w7_check": []
+  }
+ ],
+ "segments": [
+  {
+   "count": 100,
+   "ended_by": "reached_100",
+   "hundredth": "20261110_05_10",
+   "start": "20261110_21_01"
+  }
+ ],
+ "sequence": [
+  {
+   "eval_id": "20261110_21_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_21_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_21_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_21_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_21_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_21_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_21_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_21_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_21_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_21_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_21_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_21_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_10_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_01",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_17_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_11_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_02",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_05_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_04_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_08_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_09_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_14_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_22_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_03",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_04",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_05",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_06",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_07",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_08",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_09",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_10",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_11",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_07_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_19_12",
+   "state": "added"
+  },
+  {
+   "eval_id": "20261110_12_12",
+   "state": "added"
+  }
+ ],
+ "stage5": {
+  "comparisons": [],
+  "doubts": [],
+  "events": [],
+  "evidence_insufficient": [],
+  "not_implemented": [
+   "P4 10: defects found later in a formal record (needs a record format)",
+   "P4 10: judgment C 7(6) condition (needs a decision on how to detect it)",
+   "H1/H2 release by an approved correction / closing record (P4 11/12; format undecided)"
+  ],
+  "run_classification": [
+   {
+    "first_formal": "42841748651-1",
+    "investigation": [],
+    "race_date": "20261110",
+    "second_formal": [],
+    "undetermined": []
+   }
+  ]
+ },
+ "subsequent_run_differences": [],
+ "unattributed_unavailable_runs": [],
+ "verification_failed_runs": []
+}

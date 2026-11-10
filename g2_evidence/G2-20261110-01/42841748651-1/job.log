@@ -1,0 +1,582 @@
+﻿2026-11-10T15:11:28.9177209Z Current runner version: '2.338.2'
+2026-11-10T15:11:28.9198978Z ##[group]Runner Image Provisioner
+2026-11-10T15:11:28.9199843Z Hosted Compute Agent
+2026-11-10T15:11:28.9200435Z Version: 20261028.624
+2026-11-10T15:11:28.9201026Z Commit: 54898b74c23fde5556c9b3c3a2290865feef0dfe
+2026-11-10T15:11:28.9201658Z Build Date: 2026-10-28T21:51:42Z
+2026-11-10T15:11:28.9202228Z Worker ID: {456ef575-323d-4ebe-826a-ce50c5a60896}
+2026-11-10T15:11:28.9202901Z Region: westus2
+2026-11-10T15:11:28.9203410Z Cloud: Azure
+2026-11-10T15:11:28.9203911Z ##[endgroup]
+2026-11-10T15:11:28.9205066Z ##[group]Operating System
+2026-11-10T15:11:28.9205614Z Ubuntu
+2026-11-10T15:11:28.9206146Z 24.04.5
+2026-11-10T15:11:28.9206677Z LTS
+2026-11-10T15:11:28.9207161Z ##[endgroup]
+2026-11-10T15:11:28.9207828Z ##[group]Runner Image
+2026-11-10T15:11:28.9208459Z Image: ubuntu-24.04
+2026-11-10T15:11:28.9209004Z Version: 20261101.360.1
+2026-11-10T15:11:28.9210119Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261101.360/images/ubuntu/Ubuntu2404-Readme.md
+2026-11-10T15:11:28.9211750Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261101.360
+2026-11-10T15:11:28.9212542Z ##[endgroup]
+2026-11-10T15:11:28.9213497Z ##[group]GITHUB_TOKEN Permissions
+2026-11-10T15:11:28.9215312Z Metadata: read
+2026-11-10T15:11:28.9215921Z ##[endgroup]
+2026-11-10T15:11:28.9217880Z Secret source: Actions
+2026-11-10T15:11:28.9218742Z Cache mode: write
+2026-11-10T15:11:28.9219373Z Prepare workflow directory
+2026-11-10T15:11:28.9482568Z Prepare all required actions
+2026-11-10T15:11:28.9521805Z Getting action download info
+2026-11-10T15:11:29.2786582Z Download action repository 'actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065' (SHA:a26af69be951a213d495a4c3e4e4022e16d87065)
+2026-11-10T15:11:29.5270345Z Download action repository 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+2026-11-10T15:11:29.7843855Z Complete job name: evaluate
+2026-11-10T15:11:29.8471821Z ##[group]Run set -euo pipefail
+2026-11-10T15:11:29.8472394Z [36;1mset -euo pipefail[0m
+2026-11-10T15:11:29.8472819Z [36;1mgit init -q .[0m
+2026-11-10T15:11:29.8473604Z [36;1mgit -c credential.helper= -c protocol.version=2 fetch --no-tags --depth=1 "https://github.com/${REPO}.git" "${SHA}"[0m
+2026-11-10T15:11:29.8474581Z [36;1mgit -c advice.detachedHead=false checkout -q --detach FETCH_HEAD[0m
+2026-11-10T15:11:29.8475182Z [36;1mhead="$(git rev-parse HEAD)"[0m
+2026-11-10T15:11:29.8475877Z [36;1mif [ "${head}" != "${SHA}" ]; then echo "fetched HEAD ${head} does not match GITHUB_SHA ${SHA}"; exit 1; fi[0m
+2026-11-10T15:11:29.8476767Z [36;1mif [ -n "$(git status --porcelain)" ]; then echo "working tree is not clean"; exit 1; fi[0m
+2026-11-10T15:11:29.8477974Z [36;1mcreds="$(git config --show-origin --get-regexp '^(http\..*\.extraheader|http\.extraheader|credential\..*|url\..*\.insteadof)$' || true)"[0m
+2026-11-10T15:11:29.8479031Z [36;1mif [ -n "${creds}" ]; then echo "credential settings are present"; exit 1; fi[0m
+2026-11-10T15:11:29.8479777Z [36;1mif [ -e "${HOME}/.git-credentials" ] || [ -n "${GIT_ASKPASS:-}" ]; then[0m
+2026-11-10T15:11:29.8480399Z [36;1m  echo "credential material is present"; exit 1[0m
+2026-11-10T15:11:29.8480878Z [36;1mfi[0m
+2026-11-10T15:11:29.8481478Z [36;1mif env | grep -qiE '^[^=]*token[^=]*='; then echo "token-like environment variable is present"; exit 1; fi[0m
+2026-11-10T15:11:29.8482181Z [36;1mecho "g2_credentials_check=none"[0m
+2026-11-10T15:11:29.8482639Z [36;1mecho "g2_fetch_head=${head}"[0m
+2026-11-10T15:11:29.8503631Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-11-10T15:11:29.8504673Z env:
+2026-11-10T15:11:29.8505037Z   REPO: sinrai74/my-app
+2026-11-10T15:11:29.8505467Z   SHA: 9a79974b97c3f96bc496d642f158fac3bd2194ec
+2026-11-10T15:11:29.8505947Z   GIT_TERMINAL_PROMPT: 0
+2026-11-10T15:11:29.8506328Z ##[endgroup]
+2026-11-10T15:11:31.2144145Z From https://github.com/sinrai74/my-app
+2026-11-10T15:11:31.2145401Z  * branch            9a79974b97c3f96bc496d642f158fac3bd2194ec -> FETCH_HEAD
+2026-11-10T15:11:31.3427724Z g2_credentials_check=none
+2026-11-10T15:11:31.3429026Z g2_fetch_head=9a79974b97c3f96bc496d642f158fac3bd2194ec
+2026-11-10T15:11:31.3545060Z ##[group]Run if [ -f rebuild/formal_g2/evaluate_main.py ] && [ -f requirements-g2.lock ]; then
+2026-11-10T15:11:31.3547460Z [36;1mif [ -f rebuild/formal_g2/evaluate_main.py ] && [ -f requirements-g2.lock ]; then[0m
+2026-11-10T15:11:31.3549522Z [36;1m  echo "present=true" >> "$GITHUB_OUTPUT"[0m
+2026-11-10T15:11:31.3550786Z [36;1melse[0m
+2026-11-10T15:11:31.3551813Z [36;1m  echo "present=false" >> "$GITHUB_OUTPUT"[0m
+2026-11-10T15:11:31.3553288Z [36;1m  echo "G2 scripts are not on this ref; nothing to do."[0m
+2026-11-10T15:11:31.3554630Z [36;1mfi[0m
+2026-11-10T15:11:31.3573777Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-11-10T15:11:31.3575074Z ##[endgroup]
+2026-11-10T15:11:31.3820545Z ##[group]Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+2026-11-10T15:11:31.3822248Z with:
+2026-11-10T15:11:31.3823023Z   python-version: 3.11.9
+2026-11-10T15:11:31.3823968Z   check-latest: false
+2026-11-10T15:11:31.3824807Z   update-environment: true
+2026-11-10T15:11:31.3825679Z   allow-prereleases: false
+2026-11-10T15:11:31.3826543Z   freethreaded: false
+2026-11-10T15:11:31.3827332Z ##[endgroup]
+2026-11-10T15:11:31.6235514Z ##[group]Installed versions
+2026-11-10T15:11:31.6237138Z Version 3.11.9 was not found in the local cache
+2026-11-10T15:11:31.6374680Z (node:2023) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-10T15:11:31.6375368Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-10T15:11:32.0243171Z Version 3.11.9 is available for downloading
+2026-11-10T15:11:32.0244508Z Download from "https://github.com/actions/python-versions/releases/download/3.11.9-9947079978/python-3.11.9-linux-24.04-x64.tar.gz"
+2026-11-10T15:11:32.6351754Z Extract downloaded archive
+2026-11-10T15:11:32.6464216Z [command]/usr/bin/tar xz --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/0adc1f47-bbae-4014-8ab1-c781cd16ea93 -f /home/runner/work/_temp/cdb0f4a9-0bec-4bb0-8977-416fd76bd94d
+2026-11-10T15:11:34.3763087Z Execute installation script
+2026-11-10T15:11:34.3861904Z Check if Python hostedtoolcache folder exist...
+2026-11-10T15:11:34.3862564Z Create Python 3.11.9 folder
+2026-11-10T15:11:34.3873333Z Copy Python binaries to hostedtoolcache folder
+2026-11-10T15:11:34.7759552Z Create additional symlinks (Required for the UsePythonVersion Azure Pipelines task and the setup-python GitHub Action)
+2026-11-10T15:11:34.7796319Z Upgrading pip...
+2026-11-10T15:11:36.7167331Z Looking in links: /tmp/tmpb16hjobl
+2026-11-10T15:11:36.7174098Z Requirement already satisfied: setuptools in /opt/hostedtoolcache/Python/3.11.9/x64/lib/python3.11/site-packages (65.5.0)
+2026-11-10T15:11:36.7180483Z Requirement already satisfied: pip in /opt/hostedtoolcache/Python/3.11.9/x64/lib/python3.11/site-packages (24.0)
+2026-11-10T15:11:37.7889627Z Collecting pip
+2026-11-10T15:11:37.8345119Z Downloading pip-26.3-py3-none-any.whl.metadata (4.6 kB)
+2026-11-10T15:11:37.8450539Z Downloading pip-26.3-py3-none-any.whl (2.0 MB)
+2026-11-10T15:11:37.9427894Z ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.0/2.0 MB 20.4 MB/s eta 0:00:00
+2026-11-10T15:11:37.9428476Z 
+2026-11-10T15:11:37.9731836Z Installing collected packages: pip
+2026-11-10T15:11:37.9738632Z Attempting uninstall: pip
+2026-11-10T15:11:37.9750220Z Found existing installation: pip 24.0
+2026-11-10T15:11:38.0026397Z Uninstalling pip-24.0:
+2026-11-10T15:11:38.0073190Z Successfully uninstalled pip-24.0
+2026-11-10T15:11:38.7794475Z Successfully installed pip-26.3
+2026-11-10T15:11:38.8460663Z Create complete file
+2026-11-10T15:11:38.8508472Z Successfully set up CPython (3.11.9)
+2026-11-10T15:11:38.8509961Z ##[endgroup]
+2026-11-10T15:11:38.8729560Z ##[group]Run python -m pip install --no-deps "pip==24.2" "setuptools==75.1.0" "wheel==0.44.0"
+2026-11-10T15:11:38.8730289Z [36;1mpython -m pip install --no-deps "pip==24.2" "setuptools==75.1.0" "wheel==0.44.0"[0m
+2026-11-10T15:11:38.8730688Z [36;1mpython -m pip install --no-deps -r requirements-g2.lock[0m
+2026-11-10T15:11:38.8751409Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-11-10T15:11:38.8751710Z env:
+2026-11-10T15:11:38.8751925Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:11:38.8752287Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.9/x64/lib/pkgconfig
+2026-11-10T15:11:38.8752653Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:11:38.8752957Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:11:38.8753270Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:11:38.8753564Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.9/x64/lib
+2026-11-10T15:11:38.8753884Z ##[endgroup]
+2026-11-10T15:11:39.1218717Z Collecting pip==24.2
+2026-11-10T15:11:39.1753045Z   Downloading pip-24.2-py3-none-any.whl.metadata (3.6 kB)
+2026-11-10T15:11:39.8288453Z Collecting setuptools==75.1.0
+2026-11-10T15:11:39.8360159Z   Downloading setuptools-75.1.0-py3-none-any.whl.metadata (6.9 kB)
+2026-11-10T15:11:39.8566691Z Collecting wheel==0.44.0
+2026-11-10T15:11:39.8647984Z   Downloading wheel-0.44.0-py3-none-any.whl.metadata (2.3 kB)
+2026-11-10T15:11:39.8747280Z Downloading pip-24.2-py3-none-any.whl (1.8 MB)
+2026-11-10T15:11:39.9480377Z    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.8/1.8 MB 29.2 MB/s  0:00:00
+2026-11-10T15:11:39.9548983Z Downloading setuptools-75.1.0-py3-none-any.whl (1.2 MB)
+2026-11-10T15:11:39.9915535Z    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 33.2 MB/s  0:00:00
+2026-11-10T15:11:40.0003641Z Downloading wheel-0.44.0-py3-none-any.whl (67 kB)
+2026-11-10T15:11:40.0387492Z Installing collected packages: wheel, setuptools, pip
+2026-11-10T15:11:40.0884888Z   Attempting uninstall: setuptools
+2026-11-10T15:11:40.0896191Z     Found existing installation: setuptools 65.5.0
+2026-11-10T15:11:40.1020578Z     Uninstalling setuptools-65.5.0:
+2026-11-10T15:11:40.1097861Z       Successfully uninstalled setuptools-65.5.0
+2026-11-10T15:11:40.6855766Z   Attempting uninstall: pip
+2026-11-10T15:11:40.6867213Z     Found existing installation: pip 26.3
+2026-11-10T15:11:40.7116908Z     Uninstalling pip-26.3:
+2026-11-10T15:11:40.7166500Z       Successfully uninstalled pip-26.3
+2026-11-10T15:11:41.4057980Z 
+2026-11-10T15:11:41.4065552Z Successfully installed pip-24.2 setuptools-75.1.0 wheel-0.44.0
+2026-11-10T15:11:41.7886295Z Collecting requests==2.32.3 (from -r requirements-g2.lock (line 10))
+2026-11-10T15:11:41.8220979Z   Downloading requests-2.32.3-py3-none-any.whl.metadata (4.6 kB)
+2026-11-10T15:11:41.9565541Z Collecting charset-normalizer==3.4.0 (from -r requirements-g2.lock (line 11))
+2026-11-10T15:11:41.9634726Z   Downloading charset_normalizer-3.4.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (34 kB)
+2026-11-10T15:11:41.9941309Z Collecting idna==3.10 (from -r requirements-g2.lock (line 12))
+2026-11-10T15:11:42.0014652Z   Downloading idna-3.10-py3-none-any.whl.metadata (10 kB)
+2026-11-10T15:11:42.0357406Z Collecting urllib3==2.2.3 (from -r requirements-g2.lock (line 13))
+2026-11-10T15:11:42.0425087Z   Downloading urllib3-2.2.3-py3-none-any.whl.metadata (6.5 kB)
+2026-11-10T15:11:42.0637051Z Collecting certifi==2024.8.30 (from -r requirements-g2.lock (line 14))
+2026-11-10T15:11:42.0701875Z   Downloading certifi-2024.8.30-py3-none-any.whl.metadata (2.2 kB)
+2026-11-10T15:11:42.0879568Z Collecting beautifulsoup4==4.12.3 (from -r requirements-g2.lock (line 15))
+2026-11-10T15:11:42.0948338Z   Downloading beautifulsoup4-4.12.3-py3-none-any.whl.metadata (3.8 kB)
+2026-11-10T15:11:42.1311094Z Collecting soupsieve==2.6 (from -r requirements-g2.lock (line 16))
+2026-11-10T15:11:42.1375955Z   Downloading soupsieve-2.6-py3-none-any.whl.metadata (4.6 kB)
+2026-11-10T15:11:42.3206827Z Collecting numpy==2.1.3 (from -r requirements-g2.lock (line 17))
+2026-11-10T15:11:42.3275818Z   Downloading numpy-2.1.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (62 kB)
+2026-11-10T15:11:42.4756519Z Collecting pandas==2.2.3 (from -r requirements-g2.lock (line 18))
+2026-11-10T15:11:42.4824043Z   Downloading pandas-2.2.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (89 kB)
+2026-11-10T15:11:42.5266710Z Collecting python-dateutil==2.9.0.post0 (from -r requirements-g2.lock (line 19))
+2026-11-10T15:11:42.5331556Z   Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+2026-11-10T15:11:42.5700756Z Collecting pytz==2024.2 (from -r requirements-g2.lock (line 20))
+2026-11-10T15:11:42.5766246Z   Downloading pytz-2024.2-py2.py3-none-any.whl.metadata (22 kB)
+2026-11-10T15:11:42.5924489Z Collecting six==1.16.0 (from -r requirements-g2.lock (line 21))
+2026-11-10T15:11:42.5987158Z   Downloading six-1.16.0-py2.py3-none-any.whl.metadata (1.8 kB)
+2026-11-10T15:11:42.6155816Z Collecting tzdata==2024.2 (from -r requirements-g2.lock (line 22))
+2026-11-10T15:11:42.6220201Z   Downloading tzdata-2024.2-py2.py3-none-any.whl.metadata (1.4 kB)
+2026-11-10T15:11:42.6337438Z Requirement already satisfied: pip==24.2 in /opt/hostedtoolcache/Python/3.11.9/x64/lib/python3.11/site-packages (from -r requirements-g2.lock (line 25)) (24.2)
+2026-11-10T15:11:42.6341035Z Requirement already satisfied: setuptools==75.1.0 in /opt/hostedtoolcache/Python/3.11.9/x64/lib/python3.11/site-packages (from -r requirements-g2.lock (line 26)) (75.1.0)
+2026-11-10T15:11:42.6343968Z Requirement already satisfied: wheel==0.44.0 in /opt/hostedtoolcache/Python/3.11.9/x64/lib/python3.11/site-packages (from -r requirements-g2.lock (line 27)) (0.44.0)
+2026-11-10T15:11:42.6455510Z Downloading requests-2.32.3-py3-none-any.whl (64 kB)
+2026-11-10T15:11:42.6554664Z Downloading charset_normalizer-3.4.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (142 kB)
+2026-11-10T15:11:42.6647414Z Downloading idna-3.10-py3-none-any.whl (70 kB)
+2026-11-10T15:11:42.6726409Z Downloading urllib3-2.2.3-py3-none-any.whl (126 kB)
+2026-11-10T15:11:42.6810439Z Downloading certifi-2024.8.30-py3-none-any.whl (167 kB)
+2026-11-10T15:11:42.6906460Z Downloading beautifulsoup4-4.12.3-py3-none-any.whl (147 kB)
+2026-11-10T15:11:42.7033082Z Downloading soupsieve-2.6-py3-none-any.whl (36 kB)
+2026-11-10T15:11:42.7132064Z Downloading numpy-2.1.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (16.3 MB)
+2026-11-10T15:11:42.8956595Z    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 16.3/16.3 MB 89.6 MB/s eta 0:00:00
+2026-11-10T15:11:42.9023599Z Downloading pandas-2.2.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (13.1 MB)
+2026-11-10T15:11:43.0197291Z    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 13.1/13.1 MB 112.2 MB/s eta 0:00:00
+2026-11-10T15:11:43.0270444Z Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+2026-11-10T15:11:43.0370410Z Downloading pytz-2024.2-py2.py3-none-any.whl (508 kB)
+2026-11-10T15:11:43.0489926Z Downloading six-1.16.0-py2.py3-none-any.whl (11 kB)
+2026-11-10T15:11:43.0572267Z Downloading tzdata-2024.2-py2.py3-none-any.whl (346 kB)
+2026-11-10T15:11:43.1019622Z Installing collected packages: pytz, urllib3, tzdata, soupsieve, six, requests, python-dateutil, pandas, numpy, idna, charset-normalizer, certifi, beautifulsoup4
+2026-11-10T15:11:48.9065736Z Successfully installed beautifulsoup4-4.12.3 certifi-2024.8.30 charset-normalizer-3.4.0 idna-3.10 numpy-2.1.3 pandas-2.2.3 python-dateutil-2.9.0.post0 pytz-2024.2 requests-2.32.3 six-1.16.0 soupsieve-2.6 tzdata-2024.2 urllib3-2.2.3
+2026-11-10T15:11:49.0074048Z 
+2026-11-10T15:11:49.0074735Z [notice] A new release of pip is available: 24.2 -> 26.3
+2026-11-10T15:11:49.0075133Z [notice] To update, run: pip install --upgrade pip
+2026-11-10T15:11:49.1577757Z ##[group]Run args=(--race-date "$RACE_DATE" --mode "$MODE" --out g2_out)
+2026-11-10T15:11:49.1578177Z [36;1margs=(--race-date "$RACE_DATE" --mode "$MODE" --out g2_out)[0m
+2026-11-10T15:11:49.1578555Z [36;1mif [ -n "$PERMISSION_ID" ]; then args+=(--permission-id "$PERMISSION_ID"); fi[0m
+2026-11-10T15:11:49.1578958Z [36;1mif [ -n "$BASELINE_PATH" ]; then args+=(--baseline "$BASELINE_PATH"); fi[0m
+2026-11-10T15:11:49.1579640Z [36;1mPYTHONPATH="${GITHUB_WORKSPACE}/rebuild:${GITHUB_WORKSPACE}" \[0m
+2026-11-10T15:11:49.1579994Z [36;1m  python -P -B -m formal_g2.evaluate_main "${args[@]}"[0m
+2026-11-10T15:11:49.1598283Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-11-10T15:11:49.1598546Z env:
+2026-11-10T15:11:49.1598757Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:11:49.1599084Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.9/x64/lib/pkgconfig
+2026-11-10T15:11:49.1599444Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:11:49.1599727Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:11:49.1600007Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:11:49.1600298Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.9/x64/lib
+2026-11-10T15:11:49.1600553Z   RACE_DATE: 20261110
+2026-11-10T15:11:49.1600730Z   MODE: formal
+2026-11-10T15:11:49.1600908Z   PERMISSION_ID: G2-20261110-01
+2026-11-10T15:11:49.1601222Z   BASELINE_PATH: g2_baseline/registered/evaluate/baseline_evaluate_9558249_20261108.json
+2026-11-10T15:11:49.1601545Z ##[endgroup]
+2026-11-10T15:11:50.1562796Z 2026-11-10 15:11:50 [INFO] [DEBUG release_storage] is_available: GITHUB_TOKEN存在=False GITHUB_REPOSITORY存在=True → 結果=False
+2026-11-10T15:11:50.3267051Z 2026-11-10 15:11:50 [INFO] [DEBUG release_storage] is_available: GITHUB_TOKEN存在=False GITHUB_REPOSITORY存在=True → 結果=False
+2026-11-10T15:11:50.3268476Z 2026-11-10 15:11:50 [INFO] [release_storage] GITHUB_TOKEN/GITHUB_REPOSITORY未設定のためスキップ: motor_history.csv
+2026-11-10T15:11:51.5428839Z 2026-11-10 15:11:51 [INFO] [venue] 24場の統計を算出（元データmotor_history.csv件）
+2026-11-10T15:11:51.8251266Z 2026-11-10 15:11:51 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=1
+2026-11-10T15:11:52.0483169Z 2026-11-10 15:11:52 [INFO] [fan] fan2604.txt: 1643選手ロード
+2026-11-10T15:11:52.0485479Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch end count=6 elapsed=0.224s
+2026-11-10T15:11:52.1520421Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=1
+2026-11-10T15:11:52.1528848Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:52.2553765Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=2
+2026-11-10T15:11:52.2562354Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:52.3607277Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=2
+2026-11-10T15:11:52.3615276Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:52.4649623Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=3
+2026-11-10T15:11:52.4658250Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:52.5682560Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=3
+2026-11-10T15:11:52.5690840Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:52.6727189Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=4
+2026-11-10T15:11:52.6735452Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:52.7769732Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=4
+2026-11-10T15:11:52.7777753Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:52.8809830Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=1
+2026-11-10T15:11:52.8819664Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:52.9854490Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=5
+2026-11-10T15:11:52.9863776Z 2026-11-10 15:11:52 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:53.0890110Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=1
+2026-11-10T15:11:53.0899241Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:53.1928686Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=1
+2026-11-10T15:11:53.1937740Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:53.2972025Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=1
+2026-11-10T15:11:53.2980576Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:53.4023590Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=1
+2026-11-10T15:11:53.4032625Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:53.5073913Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=5
+2026-11-10T15:11:53.5083022Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:53.6119758Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=2
+2026-11-10T15:11:53.6128851Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:53.7160772Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=1
+2026-11-10T15:11:53.7169711Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:53.8192658Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=1
+2026-11-10T15:11:53.8201621Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:53.9228950Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=1
+2026-11-10T15:11:53.9238191Z 2026-11-10 15:11:53 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:54.0272893Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=6
+2026-11-10T15:11:54.0281798Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:54.1324794Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=2
+2026-11-10T15:11:54.1334092Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:54.2368632Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=2
+2026-11-10T15:11:54.2377137Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:54.3404333Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=2
+2026-11-10T15:11:54.3413103Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:54.4449594Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=2
+2026-11-10T15:11:54.4458158Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:54.5488330Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=6
+2026-11-10T15:11:54.5496803Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:54.6529288Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=3
+2026-11-10T15:11:54.6538509Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:54.7575327Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=2
+2026-11-10T15:11:54.7584611Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:54.8617994Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=2
+2026-11-10T15:11:54.8627012Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:54.9672788Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=2
+2026-11-10T15:11:54.9681519Z 2026-11-10 15:11:54 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:55.0712424Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=3
+2026-11-10T15:11:55.0721531Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:55.1755627Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=7
+2026-11-10T15:11:55.1764781Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:55.2796500Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=3
+2026-11-10T15:11:55.2805367Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:55.3840342Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=3
+2026-11-10T15:11:55.3849581Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:55.4888534Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=3
+2026-11-10T15:11:55.4897058Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:55.5930410Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=4
+2026-11-10T15:11:55.5939706Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:55.6968808Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=7
+2026-11-10T15:11:55.6977724Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:55.8010678Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=3
+2026-11-10T15:11:55.8020127Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:55.9054850Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=3
+2026-11-10T15:11:55.9064229Z 2026-11-10 15:11:55 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:56.0098091Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=3
+2026-11-10T15:11:56.0106290Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:56.1140970Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=4
+2026-11-10T15:11:56.1150297Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:56.2180186Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=8
+2026-11-10T15:11:56.2189687Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:56.3216284Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=4
+2026-11-10T15:11:56.3225032Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:56.4258763Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=4
+2026-11-10T15:11:56.4267492Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:56.5291757Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=4
+2026-11-10T15:11:56.5300563Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:56.6330248Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=5
+2026-11-10T15:11:56.6339705Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:56.7371183Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=8
+2026-11-10T15:11:56.7380141Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:56.8418071Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=4
+2026-11-10T15:11:56.8427278Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:56.9461537Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=4
+2026-11-10T15:11:56.9470516Z 2026-11-10 15:11:56 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:57.0515402Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=4
+2026-11-10T15:11:57.0526214Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:57.1561403Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=5
+2026-11-10T15:11:57.1570495Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:57.2603716Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=9
+2026-11-10T15:11:57.2612974Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:57.3642670Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=5
+2026-11-10T15:11:57.3651518Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:57.4703406Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=5
+2026-11-10T15:11:57.4712309Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:57.5758818Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=5
+2026-11-10T15:11:57.5768072Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:57.6810654Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=6
+2026-11-10T15:11:57.6819539Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:57.7849456Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=9
+2026-11-10T15:11:57.7858491Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:57.8896191Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=5
+2026-11-10T15:11:57.8905530Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:57.9941503Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=5
+2026-11-10T15:11:57.9950230Z 2026-11-10 15:11:57 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:58.0976953Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=5
+2026-11-10T15:11:58.0986347Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:58.2029957Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=6
+2026-11-10T15:11:58.2038623Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:58.3068831Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=6
+2026-11-10T15:11:58.3077495Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:58.4114891Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=10
+2026-11-10T15:11:58.4124307Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:58.5166956Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=6
+2026-11-10T15:11:58.5175787Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:58.6210043Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=6
+2026-11-10T15:11:58.6218923Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:58.7243833Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=7
+2026-11-10T15:11:58.7253055Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:58.8281958Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=6
+2026-11-10T15:11:58.8291405Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:58.9326167Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=6
+2026-11-10T15:11:58.9334861Z 2026-11-10 15:11:58 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:59.0382647Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=10
+2026-11-10T15:11:59.0391691Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:59.1420312Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=6
+2026-11-10T15:11:59.1429812Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:59.2463080Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=7
+2026-11-10T15:11:59.2472554Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:59.3504055Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=7
+2026-11-10T15:11:59.3512951Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:59.4557092Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=7
+2026-11-10T15:11:59.4566015Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:59.5777699Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=8
+2026-11-10T15:11:59.5786454Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:59.6829072Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=7
+2026-11-10T15:11:59.6838105Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:59.7868562Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=11
+2026-11-10T15:11:59.7877960Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:59.8911088Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=7
+2026-11-10T15:11:59.8920722Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:11:59.9985375Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=7
+2026-11-10T15:11:59.9994328Z 2026-11-10 15:11:59 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:00.1031601Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=7
+2026-11-10T15:12:00.1041221Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:00.2075260Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=8
+2026-11-10T15:12:00.2084355Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:00.3119254Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=11
+2026-11-10T15:12:00.3128317Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:00.4154768Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=8
+2026-11-10T15:12:00.4163664Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:00.5196468Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=9
+2026-11-10T15:12:00.5205615Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:00.6240771Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=8
+2026-11-10T15:12:00.6250074Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:00.7278308Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=8
+2026-11-10T15:12:00.7287168Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:00.8315193Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=8
+2026-11-10T15:12:00.8324137Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:00.9354890Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=8
+2026-11-10T15:12:00.9363331Z 2026-11-10 15:12:00 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:01.0414033Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch start date=20261110 venue=21 race=12
+2026-11-10T15:12:01.0423492Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:01.1463078Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=9
+2026-11-10T15:12:01.1472435Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:01.2512623Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=8
+2026-11-10T15:12:01.2522089Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:01.3557737Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=10
+2026-11-10T15:12:01.3566751Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:01.4615140Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=9
+2026-11-10T15:12:01.4624136Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:01.5671770Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch start date=20261110 venue=10 race=12
+2026-11-10T15:12:01.5680974Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:01.6727268Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=9
+2026-11-10T15:12:01.6735958Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:01.7783257Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=9
+2026-11-10T15:12:01.7792167Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:01.8835276Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=9
+2026-11-10T15:12:01.8845214Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:01.9892827Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=9
+2026-11-10T15:12:01.9901836Z 2026-11-10 15:12:01 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:02.0949033Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=10
+2026-11-10T15:12:02.0958494Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:02.2004538Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=9
+2026-11-10T15:12:02.2013985Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:02.3062105Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=11
+2026-11-10T15:12:02.3071239Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:02.4115151Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=10
+2026-11-10T15:12:02.4124271Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:02.5194220Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=10
+2026-11-10T15:12:02.5203439Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:02.6234817Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=10
+2026-11-10T15:12:02.6243754Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:02.7285695Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=10
+2026-11-10T15:12:02.7294515Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:02.8328617Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=10
+2026-11-10T15:12:02.8337485Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:02.9365782Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=11
+2026-11-10T15:12:02.9374446Z 2026-11-10 15:12:02 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:03.0408355Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=1
+2026-11-10T15:12:03.0417356Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:03.1462433Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=1
+2026-11-10T15:12:03.1471695Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:03.2509407Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=1
+2026-11-10T15:12:03.2518869Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:03.3555156Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=11
+2026-11-10T15:12:03.3563853Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:03.4597436Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=10
+2026-11-10T15:12:03.4606509Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:03.5649200Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=11
+2026-11-10T15:12:03.5656810Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:03.6690165Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=11
+2026-11-10T15:12:03.6698494Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:03.7725465Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch start date=20261110 venue=17 race=12
+2026-11-10T15:12:03.7733911Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:03.8768127Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=11
+2026-11-10T15:12:03.8777071Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:03.9809850Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=11
+2026-11-10T15:12:03.9818952Z 2026-11-10 15:12:03 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:04.0854312Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=2
+2026-11-10T15:12:04.0863284Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:04.1899558Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=2
+2026-11-10T15:12:04.1908534Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:04.2942717Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch start date=20261110 venue=11 race=12
+2026-11-10T15:12:04.2951864Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:04.3994600Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=2
+2026-11-10T15:12:04.4003916Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:04.5037147Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=11
+2026-11-10T15:12:04.5046516Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:04.6077061Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch start date=20261110 venue=5 race=12
+2026-11-10T15:12:04.6085412Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:04.7118958Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch start date=20261110 venue=4 race=12
+2026-11-10T15:12:04.7127142Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:04.8170310Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch start date=20261110 venue=8 race=12
+2026-11-10T15:12:04.8179248Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:04.9215148Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=3
+2026-11-10T15:12:04.9223303Z 2026-11-10 15:12:04 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:05.0261348Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch start date=20261110 venue=9 race=12
+2026-11-10T15:12:05.0269606Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:05.1299341Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=3
+2026-11-10T15:12:05.1308620Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:05.2351538Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch start date=20261110 venue=14 race=12
+2026-11-10T15:12:05.2360766Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:05.3394416Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch start date=20261110 venue=22 race=12
+2026-11-10T15:12:05.3403676Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:05.4448344Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=3
+2026-11-10T15:12:05.4457489Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:05.5497759Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=4
+2026-11-10T15:12:05.5506304Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:05.6556145Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=4
+2026-11-10T15:12:05.6565794Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:05.7610877Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=4
+2026-11-10T15:12:05.7620201Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:05.8670675Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=5
+2026-11-10T15:12:05.8679719Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:05.9720909Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=5
+2026-11-10T15:12:05.9730283Z 2026-11-10 15:12:05 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:06.0776069Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=5
+2026-11-10T15:12:06.0785349Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:06.1831177Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=6
+2026-11-10T15:12:06.1839933Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:06.2875185Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=6
+2026-11-10T15:12:06.2884504Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:06.3915951Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=6
+2026-11-10T15:12:06.3925976Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:06.4959515Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=7
+2026-11-10T15:12:06.4968618Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:06.6006889Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=7
+2026-11-10T15:12:06.6016315Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:06.7062179Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=7
+2026-11-10T15:12:06.7071277Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:06.8110801Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=8
+2026-11-10T15:12:06.8119763Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:06.9184953Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=8
+2026-11-10T15:12:06.9194177Z 2026-11-10 15:12:06 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:07.0263282Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=8
+2026-11-10T15:12:07.0272514Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:07.1323815Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=9
+2026-11-10T15:12:07.1332969Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:07.2385579Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=9
+2026-11-10T15:12:07.2394920Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:07.3659484Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=9
+2026-11-10T15:12:07.3670112Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch end count=6 elapsed=0.002s
+2026-11-10T15:12:07.4735294Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=10
+2026-11-10T15:12:07.4744706Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:07.5795704Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=10
+2026-11-10T15:12:07.5805013Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:07.6851452Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=10
+2026-11-10T15:12:07.6860930Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:07.7908666Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=11
+2026-11-10T15:12:07.7917903Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:07.8973618Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=11
+2026-11-10T15:12:07.8977703Z 2026-11-10 15:12:07 [INFO] BoatsProvider fetch end count=6 elapsed=0.002s
+2026-11-10T15:12:08.0019379Z 2026-11-10 15:12:08 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=11
+2026-11-10T15:12:08.0028706Z 2026-11-10 15:12:08 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:08.1074466Z 2026-11-10 15:12:08 [INFO] BoatsProvider fetch start date=20261110 venue=7 race=12
+2026-11-10T15:12:08.1083696Z 2026-11-10 15:12:08 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:08.2122492Z 2026-11-10 15:12:08 [INFO] BoatsProvider fetch start date=20261110 venue=19 race=12
+2026-11-10T15:12:08.2132009Z 2026-11-10 15:12:08 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:08.3180663Z 2026-11-10 15:12:08 [INFO] BoatsProvider fetch start date=20261110 venue=12 race=12
+2026-11-10T15:12:08.3189731Z 2026-11-10 15:12:08 [INFO] BoatsProvider fetch end count=6 elapsed=0.001s
+2026-11-10T15:12:08.5810201Z G2 summary: status=completed stop_ref=None races_written=156
+2026-11-10T15:12:08.5811207Z G2 W7: ok=True forbidden_total=0 by_category={'A_buyscore': 0, 'B_ml_and_legacy_fetch': 0, 'C_notify': 0, 'D_release_write': 0} import_phase={} unresolved=0 hook_violations=0 thread_starts=0 problems=[]
+2026-11-10T15:12:08.5812134Z G2 13-2: {'races': 156, 'd13_2_all_true': 156, 'diff_zero': 156, 'w7_ok': 156}
+2026-11-10T15:12:08.5813313Z G2 baseline_identity: sha256=fdecee3cf465eaedbb2cde226c4c33ebf439eb8424367b704446d2c99b0e3400 at_end=fdecee3cf465eaedbb2cde226c4c33ebf439eb8424367b704446d2c99b0e3400 unchanged=True read_error=no baseline_diffs=[]
+2026-11-10T15:12:08.5814526Z G2 env image (observation only): ImageOS=ubuntu24 ImageVersion=20261101.360.1
+2026-11-10T15:12:08.6744199Z ##[group]Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+2026-11-10T15:12:08.6744532Z with:
+2026-11-10T15:12:08.6744708Z   name: g2-20261110-42841748651-1
+2026-11-10T15:12:08.6744916Z   path: g2_out/
+2026-11-10T15:12:08.6745083Z   retention-days: 90
+2026-11-10T15:12:08.6745265Z   if-no-files-found: error
+2026-11-10T15:12:08.6745458Z   compression-level: 6
+2026-11-10T15:12:08.6745639Z   overwrite: false
+2026-11-10T15:12:08.6745822Z   include-hidden-files: false
+2026-11-10T15:12:08.6746014Z env:
+2026-11-10T15:12:08.6746222Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:12:08.6746552Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.9/x64/lib/pkgconfig
+2026-11-10T15:12:08.6747067Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:12:08.6747360Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:12:08.6747778Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:12:08.6748142Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.9/x64/lib
+2026-11-10T15:12:08.6748398Z ##[endgroup]
+2026-11-10T15:12:08.8185788Z (node:2167) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-10T15:12:08.8187074Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-10T15:12:08.8235983Z With the provided path, there will be 4 files uploaded
+2026-11-10T15:12:08.8248118Z Artifact name is valid!
+2026-11-10T15:12:08.8249030Z Root directory input is valid!
+2026-11-10T15:12:09.2083776Z Beginning upload of artifact content to blob storage
+2026-11-10T15:12:09.2621529Z (node:2167) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-11-10T15:12:09.8301239Z Uploaded bytes 240198
+2026-11-10T15:12:09.9081321Z Finished uploading artifact content to blob storage!
+2026-11-10T15:12:09.9082131Z SHA256 digest of uploaded artifact zip is 2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8
+2026-11-10T15:12:09.9082788Z Finalizing artifact upload
+2026-11-10T15:12:10.3766800Z Artifact g2-20261110-42841748651-1.zip successfully finalized. Artifact ID 13776512530
+2026-11-10T15:12:10.3767695Z Artifact g2-20261110-42841748651-1 has been successfully uploaded! Final size is 240198 bytes. Artifact ID is 13776512530
+2026-11-10T15:12:10.3773706Z Artifact download URL: https://github.com/sinrai74/my-app/actions/runs/42841748651/artifacts/13776512530
+2026-11-10T15:12:10.3915568Z ##[group]Run echo "artifact_id=${ARTIFACT_ID}"
+2026-11-10T15:12:10.3915885Z [36;1mecho "artifact_id=${ARTIFACT_ID}"[0m
+2026-11-10T15:12:10.3916124Z [36;1mecho "artifact_digest=${DIGEST}"[0m
+2026-11-10T15:12:10.3935098Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-11-10T15:12:10.3935379Z env:
+2026-11-10T15:12:10.3935613Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:12:10.3935953Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.9/x64/lib/pkgconfig
+2026-11-10T15:12:10.3936286Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:12:10.3936583Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:12:10.3936898Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.9/x64
+2026-11-10T15:12:10.3937195Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.9/x64/lib
+2026-11-10T15:12:10.3937718Z   DIGEST: 2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8
+2026-11-10T15:12:10.3938079Z   ARTIFACT_ID: 13776512530
+2026-11-10T15:12:10.3938264Z ##[endgroup]
+2026-11-10T15:12:10.3976753Z artifact_id=13776512530
+2026-11-10T15:12:10.3977281Z artifact_digest=2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8
+2026-11-10T15:12:10.4041778Z Post job cleanup.
+2026-11-10T15:12:10.5073341Z (node:2180) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-10T15:12:10.5074240Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-10T15:12:10.5189983Z Cleaning up orphan processes
+2026-11-10T15:12:10.5531803Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065, actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

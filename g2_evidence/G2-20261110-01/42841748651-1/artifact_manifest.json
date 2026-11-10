@@ -1,0 +1,28 @@
+{
+  "artifact_sha256": "2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8",
+  "artifact_size": 240198,
+  "files": [
+    {
+      "path": "manifest.json",
+      "sha256": "eb2b009e55e5643f7ba18dc270f6af196d5956d288f90922f7b8976d658e00f6",
+      "size": 6416
+    },
+    {
+      "path": "programs_raw.json",
+      "sha256": "3cbd439c41a8d44bdd43da5a4d9f352f07b857778ef5926066440be83a0e5561",
+      "size": 716064
+    },
+    {
+      "path": "races.jsonl",
+      "sha256": "c7fd81a6053a1e298f492ed181305973a93cefbc347108e3f81527c316926816",
+      "size": 2635750
+    },
+    {
+      "path": "run.json",
+      "sha256": "d27c327104e489bcb05d8a6a85d08d63d79ed22460d4e3c691bee5f630f10337",
+      "size": 55815
+    }
+  ],
+  "readable": true,
+  "schema_version": 1
+}

@@ -1,0 +1,34 @@
+{
+  "dir": "g2_evidence/G2-20261110-01/42841748651-1",
+  "evaluation_run_id": "42841748651",
+  "files": [
+    {
+      "path": "g2_evidence/G2-20261110-01/42841748651-1/artifact.zip",
+      "sha256": "2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8",
+      "size": 240198
+    },
+    {
+      "path": "g2_evidence/G2-20261110-01/42841748651-1/artifact_manifest.json",
+      "sha256": "a976c9f95670188b144d4ad74f0bf4c119f71d3befa7ae4d54b0cfb733651d2d",
+      "size": 770
+    },
+    {
+      "path": "g2_evidence/G2-20261110-01/42841748651-1/evaluation_evidence.json",
+      "sha256": "71b42b1caf2a55ae5025905ce2fb2375d8a860a4837253d8bb18859c97df4747",
+      "size": 948
+    },
+    {
+      "path": "g2_evidence/G2-20261110-01/42841748651-1/job.log",
+      "sha256": "d7d2940d5504f22636ac4ba5a93e0d3f1e23676898ab117e6452abf8b4d9ecf7",
+      "size": 57724
+    },
+    {
+      "path": "g2_evidence/G2-20261110-01/42841748651-1/source_meta.json",
+      "sha256": "b50af4cb9d651cb112b523f6fea6b294217a986cb127b290a7030d99e25d52e9",
+      "size": 741
+    }
+  ],
+  "kind": "g2_evaluation_manifest",
+  "run_attempt": "1",
+  "schema_version": 1
+}

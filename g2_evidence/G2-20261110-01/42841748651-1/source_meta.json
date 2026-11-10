@@ -1,0 +1,20 @@
+{
+  "api_event": "workflow_dispatch",
+  "api_head_branch": "main",
+  "api_head_sha": "9a79974b97c3f96bc496d642f158fac3bd2194ec",
+  "api_repository": "sinrai74/my-app",
+  "api_run_attempt": "1",
+  "api_run_id": "42841748651",
+  "api_workflow_path": ".github/workflows/formal_g2_evaluate.yml",
+  "artifact_name": "g2-20261110-42841748651-1",
+  "artifact_status": "downloaded",
+  "expected_digest": "sha256:2221a49b3220be6e11da4e0eaa079082611a38ce7c65b9f323cdcb7a910a95f8",
+  "job_count": 1,
+  "job_id": "129918519630",
+  "log_bytes": 57724,
+  "log_fetch_ok": true,
+  "log_sha256": "d7d2940d5504f22636ac4ba5a93e0d3f1e23676898ab117e6452abf8b4d9ecf7",
+  "run_attempt": "1",
+  "run_id": "42841748651",
+  "run_started_at": "2026-11-10T15:11:24Z"
+}
