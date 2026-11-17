@@ -1314,5 +1314,22 @@ class RunShCgroupDetectTests(unittest.TestCase):
         self.assertEqual(self._run_awk(prog, mi), "")
 
 
+class RunShFinderPathTests(unittest.TestCase):
+    """run.sh の finder は g3diag（補助グループなし）が実行するため、ワークスペース(SELF_DIR)ではなく
+    root 所有・go+rX の BASE/src の写しから実行しなければならない（rc=126 Permission denied の回帰防止）。"""
+
+    def _src(self):
+        return (S.REBUILD_DIR / "actions/g3_diagnostic_run.sh").read_text(encoding="utf-8")
+
+    def test_finders_run_from_base_src(self):
+        src = self._src()
+        self.assertIn('SOCK_FINDER="$BASE/src/rebuild/actions/g3_find_writable_sockets.sh"', src)
+        self.assertIn('WRITABLE_FINDER="$BASE/src/rebuild/actions/g3_find_writable_paths.sh"', src)
+
+    def test_base_src_is_group_other_readable(self):
+        # BASE/src を go+rX にしている（finder を g3diag が読めるための前提）
+        self.assertIn("chmod -R u+rwX,go+rX,go-w \"$BASE/src\"", self._src())
+
+
 if __name__ == "__main__":
     unittest.main()

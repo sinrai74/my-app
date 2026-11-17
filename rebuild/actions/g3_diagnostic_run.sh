@@ -195,6 +195,11 @@ PUB="$BASE/evidence/public"
 tar -C "$WS" --exclude=./.git -cf - . | tar -C "$BASE/src" -xf -
 chown -R root:root "$BASE/src" "$BASE/evidence"
 chmod -R u+rwX,go+rX,go-w "$BASE/src"
+# finder は追跡される側（g3diag・補助グループなし）が bash で実行する。ワークスペース（/home/runner/...）は
+# g3diag が辿れず "Permission denied"（rc=126）になるため、root 所有・go+rX にした BASE/src の写しを使う
+# （設計意図「finder は root の持ち物」。SELF_DIR 版は存在確認のみに使う）。
+SOCK_FINDER="$BASE/src/rebuild/actions/g3_find_writable_sockets.sh"
+WRITABLE_FINDER="$BASE/src/rebuild/actions/g3_find_writable_paths.sh"
 # 出力のフォルダだけを専用の利用者に渡す（src・evidence は root のまま。追跡される側はここにだけ書ける）
 chown "$DUID:$DGID" "$BASE/out"
 RUNHOME="/tmp/g3diag/home"   # 名前空間の中の tmpfs の下（F-07）
