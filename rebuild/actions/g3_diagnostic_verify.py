@@ -9,6 +9,9 @@ root が `python -I -P -B <BASE/src の写し>/rebuild/actions/g3_diagnostic_ver
 - strace の前提：`strace -f -qq -yy -s 256 -e trace=%network,execve,execveat,<名前空間などの呼び出し> -o <file>`。
 - 合格の条件（ok）：
   1. 通信の呼び出しが、AF_UNIX・AF_NETLINK のソケット以外で0件。種類を判定できない呼び出しも不合格。
+     ただし非ローカルの「失敗した bind」（送信元アドレス割当の失敗。例：netns 下で EADDRNOTAVAIL）は、
+     データ授受も listen も成立せず通信にならないため、network_bind_failed に記録するが合否には含めない
+     （connect・send 系・listen・accept・成功 bind・結果不明は従来どおり不合格）。
   2. AF_UNIX の connect の成功が0件（パス・抽象を問わない）。失敗した宛先は一覧に記録する。
   3. AF_UNIX の bind・listen・accept・accept4 の成功が0件（再監査 F-06。パス・抽象を問わない。socketpair は認める）。
   4. AF_UNIX の宛先へ送る sendto・sendmsg・sendmmsg が0件（E-05）。
@@ -70,7 +73,8 @@ LIMITS = ["processes outside the tracer (if any) are not recorded by strace",
           "the raw strace log stays in a root-only folder on the runner; only the redacted copy and both "
           "sha256 values leave the runner"]
 JUDGEMENT_KEYS = ("ok", "lines", "calls", "network_local_count", "python_seen")
-JUDGEMENT_LISTS = ("network_non_local", "network_unknown_family", "unix_connect_succeeded", "unix_server_succeeded",
+JUDGEMENT_LISTS = ("network_non_local", "network_unknown_family", "network_bind_failed",
+                   "unix_connect_succeeded", "unix_server_succeeded",
                    "unix_send_to_path", "unix_connect_failed", "exec_allowed", "exec_not_allowed", "exec_unresolved",
                    "namespace_calls", "clone_flags_rejected", "io_uring_calls")
 
@@ -130,6 +134,7 @@ def analyze(lines: Iterable[str], allow_exec: Sequence[str]) -> dict[str, Any]:
     calls, unresolved = _join_lines(lines)
     net_bad: list[str] = []
     net_unknown: list[str] = []
+    net_bind_failed: list[str] = []
     unix_connect_ok: list[str] = []
     unix_server_ok: list[str] = []
     unix_send_to_path: list[str] = []
@@ -160,7 +165,13 @@ def analyze(lines: Iterable[str], allow_exec: Sequence[str]) -> dict[str, Any]:
             if local is None:
                 net_unknown.append(line)
             elif not local:
-                net_bad.append(line)
+                # 非ローカルの「失敗した bind」（送信元アドレス割当の失敗。例：netns 下で EADDRNOTAVAIL）は
+                # データ授受も listen も成立せず、通信にはならない。観測として記録するが合否には含めない。
+                # connect・send*・listen・accept・成功 bind・結果不明は従来どおり違反（net_bad）として扱う。
+                if name == "bind" and _succeeded(ret) is False:
+                    net_bind_failed.append(line)
+                else:
+                    net_bad.append(line)
             else:
                 net_local += 1
                 is_unix = (fam is not None and fam.group(1) in UNIX_FAMILIES) or \
@@ -203,6 +214,7 @@ def analyze(lines: Iterable[str], allow_exec: Sequence[str]) -> dict[str, Any]:
           and not ns_calls and not clone_bad and not uring)
     return {"lines": len(lines), "calls": len(calls),
             "network_non_local": net_bad, "network_unknown_family": net_unknown,
+            "network_bind_failed": net_bind_failed,
             "network_local_count": net_local, "unix_connect_succeeded": unix_connect_ok,
             "unix_server_succeeded": unix_server_ok, "unix_send_to_path": unix_send_to_path,
             "unix_connect_failed": sorted(set(unix_connect_failed)),
@@ -600,6 +612,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _write(a.out_dir / "strace_summary.json", json.dumps(summary, ensure_ascii=False, indent=1, default=str))
     print(json.dumps({"ok": summary["ok"], "integrity_ok": integrity["ok"], "lines": summary["lines"],
                       "network_non_local": len(summary["network_non_local"]),
+                      "network_bind_failed": len(summary.get("network_bind_failed") or []),
                       "network_unknown_family": len(summary["network_unknown_family"]),
                       "unix_connect_succeeded": len(summary["unix_connect_succeeded"]),
                       "unix_server_succeeded": len(summary["unix_server_succeeded"]),

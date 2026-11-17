@@ -902,7 +902,10 @@ class RunScriptStaticTests(unittest.TestCase):
     def test_cgroup_precheck(self):                                   # F-02（C1〜C6）
         self.assertIn('"$FLOCK" -n "$LOCKFD" || die', self.code)       # C6：flock を最初から持つ
         self.assertIn('exec {LOCKFD}>/run/g3diag.lock', self.code)
-        self.assertIn('awk \'$3=="cgroup2"{print $2; exit}\' /proc/self/mountinfo', self.code)  # C1
+        # C1：mountinfo を正しく解析して cgroup2 のマウント点を得る（フィールド3は maj:min ではなく、
+        # セパレータ "-" の次がファイルシステム型。旧実装の `$3=="cgroup2"` は常に空になる誤り）
+        self.assertIn('if($i=="-"){if($(i+1)=="cgroup2"){print $5; exit}', self.code)  # C1
+        self.assertIn('[ -n "$CG2ROOT" ] && [ -d "$CG2ROOT" ] || die "cgroup v2 is not available (C1)"', self.code)
         self.assertIn('mkdir "$CG" 2>/dev/null || die "cannot create run cgroup (C2)"', self.code)  # C2
         self.assertIn('[ -e "$CG/cgroup.kill" ] && [ -e "$CG/cgroup.events" ]', self.code)      # C3
         self.assertIn('echo 1 > "$CGTEST/cgroup.kill"', self.code)                              # C4
@@ -1335,6 +1338,34 @@ class RunShFinderPathTests(unittest.TestCase):
         src = self._src()
         self.assertIn('PYPREFIX="$(cd "$(dirname "$PY")/.." 2>/dev/null && pwd || true)"', src)
         self.assertIn('chmod -R go-w "$PYPREFIX"', src)
+
+
+class VerifyNetworkClassifyTests(unittest.TestCase):
+    """verify.analyze のネットワーク分類：非ローカルの『失敗した bind』は通信違反に数えず（network_bind_failed に記録）、
+    connect・send・成功 bind・結果不明は従来どおり違反（network_non_local）として扱う（流出経路は検出継続）。"""
+
+    FAILBIND = ('7    bind(3<TCPv6:[1]>, {sa_family=AF_INET6, sin6_port=htons(0), '
+                'inet_pton(AF_INET6, "::", &sin6_addr), sin6_scope_id=0}, 28) = -1 EADDRNOTAVAIL')
+    OKBIND = '7    bind(3<TCP:[1]>, {sa_family=AF_INET, sin_port=htons(0), sin_addr=inet_addr("0.0.0.0")}, 16) = 0'
+    CONNECT = ('7    connect(3<TCP:[2]>, {sa_family=AF_INET, sin_port=htons(443), '
+               'sin_addr=inet_addr("1.2.3.4")}, 16) = -1 ECONNREFUSED')
+    SENDTO = ('7    sendto(3<UDP:[3]>, "x", 1, 0, {sa_family=AF_INET, sin_port=htons(53), '
+              'sin_addr=inet_addr("1.2.3.4")}, 16) = 1')
+
+    def _n(self, line):
+        return V.analyze([line], [])
+
+    def test_failed_nonlocal_bind_is_not_violation(self):
+        r = self._n(self.FAILBIND)
+        self.assertEqual(len(r["network_non_local"]), 0)
+        self.assertEqual(len(r["network_bind_failed"]), 1)
+
+    def test_connect_send_and_successful_bind_still_violations(self):
+        self.assertEqual(len(self._n(self.CONNECT)["network_non_local"]), 1)
+        self.assertEqual(len(self._n(self.SENDTO)["network_non_local"]), 1)
+        self.assertEqual(len(self._n(self.OKBIND)["network_non_local"]), 1)
+        # 成功 bind・connect・send は network_bind_failed には入らない
+        self.assertEqual(len(self._n(self.OKBIND)["network_bind_failed"]), 0)
 
 
 if __name__ == "__main__":
