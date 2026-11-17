@@ -1330,6 +1330,12 @@ class RunShFinderPathTests(unittest.TestCase):
         # BASE/src を go+rX にしている（finder を g3diag が読めるための前提）
         self.assertIn("chmod -R u+rwX,go+rX,go-w \"$BASE/src\"", self._src())
 
+    def test_python_prefix_stripped_of_group_other_write(self):
+        # world-writable な toolcache の Python 実行環境から go-w を剥がす（g3diag が lib に書けないように）
+        src = self._src()
+        self.assertIn('PYPREFIX="$(cd "$(dirname "$PY")/.." 2>/dev/null && pwd || true)"', src)
+        self.assertIn('chmod -R go-w "$PYPREFIX"', src)
+
 
 if __name__ == "__main__":
     unittest.main()

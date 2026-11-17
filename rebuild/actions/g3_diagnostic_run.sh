@@ -200,6 +200,11 @@ chmod -R u+rwX,go+rX,go-w "$BASE/src"
 # （設計意図「finder は root の持ち物」。SELF_DIR 版は存在確認のみに使う）。
 SOCK_FINDER="$BASE/src/rebuild/actions/g3_find_writable_sockets.sh"
 WRITABLE_FINDER="$BASE/src/rebuild/actions/g3_find_writable_paths.sh"
+# R-2：GitHub-hosted の Python toolcache は world-writable（-rw-rw-rw- runner:runner）のため、追跡される側
+#   g3diag が Python ライブラリに書けてしまう。実行環境を root 所有の go-w にそろえる（BASE/src と同じ扱い。
+#   ランナーは使い捨てなので toolcache への chmod は安全。診断の Python は -B 実行で pyc を書かない）。
+PYPREFIX="$(cd "$(dirname "$PY")/.." 2>/dev/null && pwd || true)"
+if [ -n "$PYPREFIX" ] && [ -d "$PYPREFIX/lib" ]; then chmod -R go-w "$PYPREFIX" 2>/dev/null || true; fi
 # 出力のフォルダだけを専用の利用者に渡す（src・evidence は root のまま。追跡される側はここにだけ書ける）
 chown "$DUID:$DGID" "$BASE/out"
 RUNHOME="/tmp/g3diag/home"   # 名前空間の中の tmpfs の下（F-07）
