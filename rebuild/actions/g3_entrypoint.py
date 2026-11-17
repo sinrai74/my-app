@@ -35,6 +35,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from core.engine import Ver4Engine, _grade_to_number
 from core.exceptions import ValidationError
 from core.g3_assess import assess_with_input, build_input_context
+from core.g3_compare import DEFAULT_COMPARE_POLICY, compare_four_items
 from core.ml_bonus import apply_ml_bonus
 from core.upset import UpsetResult, calculate_upset_score
 from models.evaluation import RaceEvaluation
@@ -287,8 +288,11 @@ def evaluate_race_g3(
         "legacy": None,
         "comparison": None,
         "match": None,
-        # 第3版 §12 の8・9：比較方法は未決定。match は == による仮の表示で、判定の定義ではない
+        # 第3版 §12 の8・9：比較方法は == による仮の表示（後方互換のため残す。判定の定義ではない）
         "match_note": "provisional_equality_not_a_judgment_rule",
+        # 段階4-2（GPT最終判断 2026-11-18・doc 17）：権威ある判定は judgment／race_judge
+        "judgment": None,
+        "race_judge": None,
     }
     cond = rec["conditions"]
 
@@ -621,5 +625,19 @@ def evaluate_race_g3(
         {"item": "investment_type", "rebuild": rebuild.investment_type,
          "legacy": rec["legacy"]["investment_type_recomputed"]},
     ]
+    # 段階4-2：権威ある判定（GPT最終判断 2026-11-18・doc 17 §1③, §2-1, §2-3）。
+    # skip_reason は発生層を区別し同層のみ比較。数値は本人承認の既定（丸め済み値に厳密==）。
+    rec["judgment"] = compare_four_items(
+        rebuild_buyscore=rebuild.buyscore, legacy_buyscore=legacy_c.get("buyscore"),
+        rebuild_kelly=rebuild.kelly_fraction, legacy_kelly=legacy_c.get("kelly"),
+        rebuild_investment_type=rebuild.investment_type,
+        legacy_investment_type=rec["legacy"]["investment_type_recomputed"],
+        rebuild_skip_reason=rebuild.skip_reason,
+        legacy_passthrough=ret.get("passthrough"),
+        legacy_passthrough_reason=ret.get("passthrough_reason"),
+        legacy_capital_reason=ret.get("capital_reason"),
+        policy=DEFAULT_COMPARE_POLICY,
+    )
+    rec["race_judge"] = rec["judgment"]["race_judge"]
     rec["outcome"] = OUTCOME_COMPARED
     return rec
