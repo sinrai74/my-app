@@ -1,0 +1,175 @@
+# 正式G3（B案）段階3：調査用の診断（正式G3 ではない。連続数・合否は判定しない）
+#
+# - 起動は workflow_dispatch だけ（schedule・push などは持たない）。
+# - permissions: {}。どのステップにも GITHUB_TOKEN・secrets を渡さない。actions/checkout は使わず、
+#   公開リポジトリから匿名で取得する（formal_g2_evaluate.yml と同じ方式）。setup-python は token: "" を明示する。
+# - 取得の段（ネットワークあり）と診断の段（ネットワークなし）を分ける。
+#   取得の段：出走表とオッズを取得してファイルにする。Legacy の評価は呼ばない。
+#   診断の段：sudo unshare --net（OS のネットワークの分離）の中で、実行の利用者に戻してから、strace の下で動かす。
+#            Python の境界（shadow.g3_isolation）は多層の防御として残す（再監査 B-02：フックは完全な境界ではない）。
+# - 検査の段：strace の記録を検査し（AF_UNIX 以外の通信0件、起動したプログラムは python と lscpu だけ）、
+#   各レースの記録に結果を入れる。
+# - 出力は artifact だけ（Release・Cache・commit をしない）。アクションは40桁のコミット SHA で固定する。
+# - 作業フォルダには freeze 版の設定（da6a4eda…）だけを置く。hit_record.csv は置かない（本人の判断 2026-11-13）。
+# - ML は requirements-ml.txt の版（scikit-learn 1.5.2・lightgbm 4.5.0。本人の判断 2026-11-13）。
+#   依存はすべて requirements-g3-diagnostic.lock で版を固定して --no-deps で入れる（再監査 C-13）。
+# - strace：-yy でソケットの種類を出し、%network・execve・execveat を記録する（再監査 C-01・C-02）。
+#   診断の段は rebuild/actions/g3_diagnostic_run.sh（root）が組み立てる（再監査 D-04・E-01〜E-03）：
+#   追跡される側は専用の利用者（自分のグループだけ）で、root が持つ写しを読むだけ。strace は root で動かし、
+#   記録と出力の SHA-256 を root が書く。strace の限界（CLONE_UNTRACED・io_uring）は記録に残す。
+
+name: g3-stage3-diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      race_date:
+        description: "対象の race_date（YYYYMMDD）"
+        required: true
+      only:
+        description: "対象を絞る eval_id のカンマ区切り（空なら全レース）"
+        required: false
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: g3-stage3-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Fetch source anonymously
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init -q .
+          git -c credential.helper= -c protocol.version=2 fetch --no-tags --depth=1 "https://github.com/${REPO}.git" "${SHA}"
+          git -c advice.detachedHead=false checkout -q --detach FETCH_HEAD
+          head="$(git rev-parse HEAD)"
+          if [ "${head}" != "${SHA}" ]; then echo "fetched HEAD ${head} does not match GITHUB_SHA ${SHA}"; exit 1; fi
+          if [ -n "$(git status --porcelain)" ]; then echo "working tree is not clean"; exit 1; fi
+          creds="$(git config --show-origin --get-regexp '^(http\..*\.extraheader|http\.extraheader|credential\..*|url\..*\.insteadof)$' || true)"
+          if [ -n "${creds}" ]; then echo "credential settings are present"; exit 1; fi
+          if [ -e "${HOME}/.git-credentials" ] || [ -n "${GIT_ASKPASS:-}" ]; then
+            echo "credential material is present"; exit 1
+          fi
+          if env | grep -qiE '^[^=]*token[^=]*='; then echo "token-like environment variable is present"; exit 1; fi
+          echo "g3_credentials_check=none"
+          echo "g3_fetch_head=${head}"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11.9"
+          token: ""
+
+      - name: Install dependencies and strace
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps "pip==24.2" "setuptools==75.1.0" "wheel==0.44.0"
+          python -m pip install --no-deps -r requirements-g3-diagnostic.lock
+          python -m pip check
+          python -m pip freeze > pip_freeze.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq strace
+          strace -V | head -1
+
+      - name: Fetch inputs (network)
+        shell: bash
+        env:
+          RACE_DATE: ${{ inputs.race_date }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+          mkdir -p g3_out
+          cp pip_freeze.txt g3_out/
+          PYTHONPATH="${GITHUB_WORKSPACE}/rebuild:${GITHUB_WORKSPACE}" \
+            python -P -B -m actions.g3_diagnostic_fetch --race-date "$RACE_DATE" --out g3_in --only "$ONLY"
+          cp -r g3_in g3_out/inputs
+
+      - name: Diagnose (no network)
+        shell: bash
+        env:
+          RACE_DATE: ${{ inputs.race_date }}
+          ONLY: ${{ inputs.only }}
+          G3_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          PY="$(command -v python)"
+          # F-03：runner が GitHub の使い捨ての VM であることを確かめ、種類を台本に渡す（github-hosted のときだけ sysctl を変える）
+          [ "${RUNNER_ENVIRONMENT}" = "github-hosted" ] || { echo "not a github-hosted runner: ${RUNNER_ENVIRONMENT}"; exit 1; }
+          # F-01〜F-10：root の台本が、cgroup・専用の利用者・root の持つ写しと証拠・unshare(net,pid,mount)・strace を組み立てる
+          # LD_LIBRARY_PATH は sudo が必ず外すので、引数で渡す
+          sudo bash "${GITHUB_WORKSPACE}/rebuild/actions/g3_diagnostic_run.sh" \
+            "${GITHUB_WORKSPACE}" /opt/g3diag "$PY" "$RACE_DATE" "$ONLY" "$G3_RUN_ID" "github-hosted" "${LD_LIBRARY_PATH:-}"
+
+      - name: Verify strace evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY="$(command -v python)"
+          LSCPU="$(command -v lscpu)"
+          SETPRIV="$(command -v setpriv)"
+          ENVBIN="$(command -v env)"
+          B=/opt/g3diag
+          # F-05・F-10：検査は root の持つ写し（BASE/src）のコードを -I で動かす（PYTHONPATH を外す）。生の strace は root 専用の
+          # evidence から読み、外には伏せ字の写しと要約だけを出す。状態・sysctl・SHA-256・一覧が ok でなければ out を開かない。
+          sudo "$PY" -I -P -B "$B/src/rebuild/actions/g3_diagnostic_verify.py" \
+            --strace "$B/evidence/strace.txt" \
+            --records "$B/out/records.jsonl" --summary "$B/out/summary.json" \
+            --status-file "$B/evidence/public/status.txt" --sysctl-file "$B/evidence/public/sysctl.txt" \
+            --expect-strace-sha256-file "$B/evidence/public/strace.sha256" --expect-out-list "$B/evidence/public/out.list" \
+            --allow-exec "$SETPRIV" --allow-exec "$ENVBIN" --allow-exec "$PY" --allow-exec "$LSCPU" \
+            --out-dir g3_out
+          sudo chown -R "$(id -u):$(id -g)" g3_out
+
+      - name: Collect evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p g3_out/run g3_out/public
+          # 写すのは、通常のファイルだけを root が写した BASE/collect（state=ok のときだけ作られる）と、外に出してよい証拠だけ。
+          # 生の strace（BASE/evidence/strace.txt）は含めない（F-10）。シンボリックリンクはたどらない（F-01）。
+          if sudo test -d /opt/g3diag/collect; then sudo cp -r -P /opt/g3diag/collect/. g3_out/run/ || true; fi
+          sudo cp -r -P /opt/g3diag/evidence/public/. g3_out/public/ || true
+          sudo chown -R "$(id -u):$(id -g)" g3_out
+          # F-01：集めたものに、通常のファイル・フォルダ以外（リンク・ソケットなど）が無いこと
+          if find g3_out -mindepth 1 ! -type f ! -type d | grep -q .; then
+            echo "collected tree contains non-regular entries"; find g3_out -mindepth 1 ! -type f ! -type d; exit 1
+          fi
+          # F-01・F-08：集めた run を、root の一覧（collect.list）ともう一度照合する
+          if [ -f g3_out/public/collect.list ] && [ -d g3_out/run ]; then
+            python -I -P -B rebuild/actions/g3_diagnostic_collect.py check g3_out/run g3_out/public/collect.list
+          fi
+
+      - name: Upload evidence
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: g3-diag-${{ inputs.race_date }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: g3_out/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Record artifact digest
+        if: always()
+        shell: bash
+        env:
+          DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          echo "artifact_id=${ARTIFACT_ID}"
+          echo "artifact_digest=${DIGEST}"
