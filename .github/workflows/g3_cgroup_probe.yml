@@ -1,0 +1,29 @@
+# cgroup 事実確認のみ（診断本体・実データ・ネットワーク分離なし）。run.sh の C1〜C3 前提が
+# GitHub-hosted ランナーで満たせるかを一度だけ観測する。workflow_dispatch 専用・permissions: {}。
+name: g3-cgroup-probe
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: cgroup facts
+        run: |
+          set +e
+          echo "## RUNNER_ENVIRONMENT=$RUNNER_ENVIRONMENT"
+          echo "## uname: $(uname -a)"
+          echo "## stat -fc %T /sys/fs/cgroup:"; stat -fc '%T' /sys/fs/cgroup
+          echo "## self mountinfo cgroup lines:"; grep -E 'cgroup' /proc/self/mountinfo
+          echo "## /proc/self/cgroup:"; cat /proc/self/cgroup
+          echo "## ls /sys/fs/cgroup (head 40):"; ls /sys/fs/cgroup 2>&1 | head -40
+          echo "## ===== under sudo (as run.sh runs) ====="
+          sudo awk '$3=="cgroup2"{print "C1 cgroup2 mount =",$2}' /proc/self/mountinfo
+          echo "## sudo /proc/self/cgroup:"; sudo cat /proc/self/cgroup
+          sudo sh -c 'echo "cgroup.controllers:"; cat /sys/fs/cgroup/cgroup.controllers 2>&1; echo "cgroup.subtree_control:"; cat /sys/fs/cgroup/cgroup.subtree_control 2>&1'
+          echo "## C2/C3: root が子 cgroup を作れるか／cgroup.kill があるか:"
+          sudo sh -c 'mkdir /sys/fs/cgroup/g3probe 2>&1 && echo MKDIR_OK && ls -1 /sys/fs/cgroup/g3probe/ | grep -E "cgroup.(kill|events)" && rmdir /sys/fs/cgroup/g3probe 2>&1 && echo CLEANUP_OK || echo MKDIR_OR_KILL_FAIL'
+          echo "## DONE"
