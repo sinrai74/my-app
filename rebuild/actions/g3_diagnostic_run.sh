@@ -328,11 +328,6 @@ try: sys.exit(0 if json.load(sys.stdin).get("ok") is True else 1)
 except Exception: sys.exit(1)'; then
     STATE="unclassified_output"
     log "unclassified output detected before collect (no collect; verify must fail)"
-    # 一時デバッグ（原因特定用）：problems の経路・ラベルのみを出す（レコードの値は出さない＝F-10 安全）。特定後に削除する。
-    printf '%s' "$SCAN_JSON" | "$PY" -I -P -B -c 'import sys, json
-try: ps = (json.load(sys.stdin).get("problems") or [])
-except Exception: ps = ["<unparsable_or_empty_scan_json>"]
-for p in ps[:300]: print("G3SCANPROB " + str(p))' || true
   fi
   # 警告：summary:unknown_keys_present が実在するときだけ固定文言（キー名・値・problems は出さない）
   if printf '%s' "$SCAN_JSON" | "$PY" -I -P -B -c 'import sys, json
