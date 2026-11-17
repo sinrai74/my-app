@@ -1,0 +1,23 @@
+195   execve("/opt/g3py/bin/python", ["python3", "-I", "/tmp/g3fix/gen.py", "local", "/tmp/g3fix"], 0x7ffc57bdd0b8 /* 246 vars */) = 0
+195   socketpair(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0, [3<UNIX-STREAM:[319->320]>, 4<UNIX-STREAM:[320->319]>]) = 0
+195   getsockname(3<UNIX-STREAM:[319->320]>, {sa_family=AF_UNIX}, [128 => 2]) = 0
+195   getsockname(4<UNIX-STREAM:[320->319]>, {sa_family=AF_UNIX}, [128 => 2]) = 0
+195   sendto(3<UNIX-STREAM:[319->320]>, "x", 1, 0, NULL, 0) = 1
+195   recvfrom(4<UNIX-STREAM:[320->319]>, "x", 1, 0, NULL, NULL) = 1
+195   socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0) = 5<UNIX-STREAM:[321]>
+195   bind(5<UNIX-STREAM:[321]>, {sa_family=AF_UNIX, sun_path="/tmp/g3fix/tmp5of4b0kd/s.sock"}, 105) = 0
+195   listen(5<UNIX-STREAM:[321,"/tmp/g3fix/tmp5of4b0kd/s.sock"]>, 1) = 0
+195   socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0) = 6<UNIX-STREAM:[322]>
+195   connect(6<UNIX-STREAM:[322]>, {sa_family=AF_UNIX, sun_path="/tmp/g3fix/tmp5of4b0kd/s.sock"}, 105) = 0
+195   sendto(6<UNIX-STREAM:[322]>, "y", 1, 0, NULL, 0) = 1
+195   socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0) = 7<UNIX-STREAM:[323]>
+195   getsockname(7<UNIX-STREAM:[323]>, {sa_family=AF_UNIX}, [110 => 2]) = 0
+195   getpeername(7<UNIX-STREAM:[323]>, 0x7ffe795b7c48, [110]) = -1 ENOTCONN (Transport endpoint is not connected)
+195   getsockname(3<UNIX-STREAM:[319->320]>, {sa_family=AF_UNIX}, [110 => 2]) = 0
+195   getpeername(3<UNIX-STREAM:[319->320]>, {sa_family=AF_UNIX}, [110 => 2]) = 0
+195   getsockname(4<UNIX-STREAM:[320->319]>, {sa_family=AF_UNIX}, [110 => 2]) = 0
+195   getpeername(4<UNIX-STREAM:[320->319]>, {sa_family=AF_UNIX}, [110 => 2]) = 0
+195   getsockname(5<UNIX-STREAM:[321,"/tmp/g3fix/tmp5of4b0kd/s.sock"]>, {sa_family=AF_UNIX, sun_path="/tmp/g3fix/tmp5of4b0kd/s.sock"}, [110 => 105]) = 0
+195   getpeername(5<UNIX-STREAM:[321,"/tmp/g3fix/tmp5of4b0kd/s.sock"]>, 0x7ffe795b7fe8, [110]) = -1 ENOTCONN (Transport endpoint is not connected)
+195   getsockname(6<UNIX-STREAM:[322]>, {sa_family=AF_UNIX}, [110 => 2]) = 0
+195   getpeername(6<UNIX-STREAM:[322]>, {sa_family=AF_UNIX, sun_path="/tmp/g3fix/tmp5of4b0kd/s.sock"}, [110 => 105]) = 0

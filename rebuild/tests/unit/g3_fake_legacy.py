@@ -6,13 +6,45 @@ apply_buyscore は Legacy と同じ形（引数名 candidates・context、局所
 
 from __future__ import annotations
 
+import os
+import socket
+
 import x_buyscore as L
 
 FAKE_CFG: dict = {}
 MODE = {"raise": False, "zero_amount_top": False, "call_twice": False, "ctx_upset_offset": 0.0,
         "force_exhibition_true": False, "alter_return_unc": False, "raise_outside": False,
         "no_cfg": False, "dup_combo": False, "ctx_match_offset": 0.0, "approx_false": False,
-        "alter_return_prob": False, "extra_ctx_key": False, "legacy_kelly_offset": 0.0}
+        "alter_return_prob": False, "extra_ctx_key": False, "legacy_kelly_offset": 0.0,
+        # N-01：Legacy の側の想定外の経路の模擬（境界が止めて記録すること）
+        "net_attempt": False, "os_system": False, "write_outside": False,
+        "modify_config": False}
+
+
+def _side_effects():
+    """Legacy のコードが例外を握りつぶす形（except Exception）で、想定外の操作を試みる。"""
+    if MODE["modify_config"]:
+        # 作業フォルダの設定のファイルを、中身（JSON の値）を変えずに書き直す（SHA-256 だけが変わる）
+        with open("buyscore_config.json", "rb") as fh:
+            data = fh.read()
+        with open("buyscore_config.json", "wb") as fh:
+            fh.write(data + b"\n")
+    if MODE["net_attempt"]:
+        try:
+            socket.create_connection(("127.0.0.1", 9), timeout=0.2).close()
+        except OSError:
+            pass
+    if MODE["os_system"]:
+        try:
+            os.system("git push https://example.invalid/none.git main")
+        except OSError:
+            pass
+    if MODE["write_outside"]:
+        try:
+            with open(os.path.join(os.path.dirname(os.getcwd()), "g3_fake_outside_write.txt"), "w") as fh:
+                fh.write("x")
+        except OSError:
+            pass
 
 
 def apply_buyscore(candidates, context, venue="", race="", date=""):
@@ -53,6 +85,7 @@ def evaluate_bets(patterns, ml_probs, odds_map, bankroll=10000, target_lanes=Non
     """Legacy `_evaluate_bets` の最小の偽物（候補は patterns["combos"] から作る）。"""
     if MODE["raise_outside"]:
         raise KeyError("fake evaluate_bets failure")
+    _side_effects()
     top = []
     combos = list(patterns.get("combos", []))
     if MODE["dup_combo"] and combos:

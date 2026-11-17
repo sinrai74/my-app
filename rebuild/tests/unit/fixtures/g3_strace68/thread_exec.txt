@@ -1,0 +1,4 @@
+233   execve("/opt/g3py/bin/python", ["python3", "-I", "/tmp/g3fix/gen.py", "thread_exec", "/tmp/g3fix"], 0x7ffcef49a518 /* 246 vars */) = 0
+234   execve("/bin/true", ["true"], 0x30fc2eb0 /* 247 vars */ <pid changed to 233 ...>
+233   +++ superseded by execve in pid 234 +++
+233   <... execve resumed>)             = 0

@@ -1,0 +1,29 @@
+# 正式G3 段階3 の診断（.github/workflows/g3_diagnostic.yml）の依存。requirements.txt と requirements-ml.txt から
+# 2026-11-14 に Python 3.11 の環境で解決した版を固定する（--no-deps で入れる）。
+beautifulsoup4==4.15.0
+blinker==1.9.0
+certifi==2026.10.23
+charset-normalizer==3.5.2
+click==8.5.1
+cloudpickle==3.1.2
+Flask==3.1.3
+flask-cors==6.0.5
+gunicorn==27.0.1
+idna==3.20
+itsdangerous==2.2.0
+Jinja2==3.1.6
+joblib==1.6.0
+lightgbm==4.5.0
+MarkupSafe==3.0.4
+numpy==2.4.6
+pandas==3.1.1
+python-dateutil==4.0.0
+requests==2.34.2
+scikit-learn==1.5.2
+scipy==1.17.1
+soupsieve==4.1
+threadpoolctl==3.8.0
+typing_extensions==4.16.0
+tzdata==2026.6
+urllib3==2.8.0
+Werkzeug==3.1.9

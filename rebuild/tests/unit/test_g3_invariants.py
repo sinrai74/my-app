@@ -12,10 +12,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 BASELINE = REPO / "g2_baseline/registered/evaluate/baseline_evaluate_9558249_20261108.json"
 NEW_MODULES = ("models.g3_input", "core.ml_bonus", "core.g3_assess", "shadow.g3_capture",
-               "actions.g3_entrypoint")
+               "shadow.g3_isolation", "actions.g3_entrypoint", "actions.g3_diagnostic_entry",
+               "actions.g3_diagnostic_fetch", "actions.g3_diagnostic_verify")
 UNCHANGED_OUTSIDE_42 = ("rebuild/actions/shadow_entrypoint.py", "rebuild/actions/production_entrypoint.py",
                         "rebuild/shadow/prediction_provider.py", "rebuild/pipelines/buy_pipeline.py",
-                        "rebuild/actions/flags.py")
+                        "rebuild/actions/flags.py",
+                        # N-01：Legacy は変更しない（境界は外から差し替えるだけ）
+                        "notify_arashi.py", "x_buyscore.py", "x_release_storage.py", "x_asahi_scoring.py",
+                        "x_venue_stats.py", "rebuild/core/engine.py")
 
 
 def _sha(p: Path) -> str:
@@ -31,7 +35,7 @@ class G2BaselineTests(unittest.TestCase):
 
     def test_g2_no_42_file_imports_new_modules(self):
         code = json.loads(BASELINE.read_text(encoding="utf-8"))["code"]
-        pat = re.compile(r"\b(g3_input|ml_bonus|g3_assess|g3_capture|g3_entrypoint)\b")
+        pat = re.compile(r"\b(g3_input|ml_bonus|g3_assess|g3_capture|g3_isolation|g3_entrypoint|g3_diagnostic_entry|g3_diagnostic_fetch|g3_diagnostic_verify)\b")
         hits = [p for p in code if p.endswith(".py") and pat.search((REPO / p).read_text(encoding="utf-8"))]
         self.assertEqual(hits, [])
 

@@ -1,0 +1,7 @@
+201   execve("/opt/g3py/bin/python", ["python3", "-I", "/tmp/g3fix/gen.py", "inet", "/tmp/g3fix"], 0x7ffc92181ba8 /* 246 vars */) = 0
+201   socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC, IPPROTO_TCP) = 3<TCP:[1950]>
+201   connect(3<TCP:[1950]>, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("1.1.1.1")}, 16) = -1 ENETUNREACH (Network is unreachable)
+201   socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC, IPPROTO_IP) = 3<TCP:[1951]>
+201   listen(3<TCP:[1951]>, 1)          = 0
+201   getsockname(3<TCP:[0.0.0.0:37669]>, {sa_family=AF_INET, sin_port=htons(37669), sin_addr=inet_addr("0.0.0.0")}, [16]) = 0
+201   getpeername(3<TCP:[0.0.0.0:37669]>, 0x7ffdf2b107f8, [16]) = -1 ENOTCONN (Transport endpoint is not connected)

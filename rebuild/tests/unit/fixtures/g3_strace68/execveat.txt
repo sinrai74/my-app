@@ -1,0 +1,3 @@
+240   execve("/opt/g3py/bin/python", ["python3", "-I", "/tmp/g3fix/gen.py", "execveat", "/tmp/g3fix"], 0x7fff795ea358 /* 246 vars */) = 0
+241   execveat(3</usr/bin>, "true", ["true"], 0x7faed7994b20 /* 0 vars */, 0) = 0
+240   --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=241, si_uid=0, si_status=0, si_utime=0, si_stime=0} ---

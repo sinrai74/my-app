@@ -10,15 +10,12 @@
        - Rebuild は、Legacy が apply_buyscore の中で読み込んだ設定（cfg）で評価している
   （未確認として残すもの：ML 加点が起きる購入のレース。Legacy の boats の実物の組み立てが要るため、本テストでは扱わない）
 
-- ネットワークを使わない。GITHUB_TOKEN が設定されていれば実行しない（Release に触れないため）。
-- 一時フォルダを作業ディレクトリにして実行する（Legacy が設定・ログ・成績をローカルに読み書きするため）。
+- N-01：偽のトークンを環境に置き、evaluate_race_g3 の境界（freeze 版の設定だけを置く）の中で実行する。
 """
 
 from __future__ import annotations
 
 import itertools
-import os
-import tempfile
 import unittest
 
 from actions import g3_entrypoint as G
@@ -39,23 +36,29 @@ def _upset():
                        danger_score=10.0, danger_breakdown={}, venue_name=None)
 
 
-@unittest.skipIf(os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"),
-                 "token present: skip to avoid touching Release")
 class RealPurchaseFlowTests(unittest.TestCase):
     def test_p1_purchase_flow_real_legacy(self):
-        cwd = os.getcwd()
-        tmp = tempfile.mkdtemp(prefix="g3_buy_")
-        os.chdir(tmp)
-        try:
-            import notify_arashi as N  # Legacy（読み込むだけ）
-            ev = S.evaluation(upset_score=UPSET, win_probs=ML_PROBS)
+        import notify_arashi as N  # Legacy（読み込むだけ）
+        ev = S.evaluation(upset_score=UPSET, win_probs=ML_PROBS)
+        with S.fake_token_env():
             rec = G.evaluate_race_g3(
                 evaluation=ev, upset=_upset(), legacy_boats=[], odds_map=ODDS,
                 weather=N.WeatherInfo(), buy_config={"_version": "unused"},
                 evaluate_bets=N._evaluate_bets, generate_patterns=N._generate_patterns,
+                isolation_factory=S.iso_factory(),
             )
-        finally:
-            os.chdir(cwd)
+        iso = rec["isolation"]
+        self.assertTrue(iso["verified"], iso)
+        self.assertEqual(iso["network_attempts_observed"], 0)
+        self.assertEqual(iso["blocked_event_count"], 0)
+        self.assertIn("GITHUB_TOKEN", iso["env_removed_names"])
+        fns = [(c["function"], c["args"][:1]) for c in iso["release_calls"]]
+        self.assertIn(("download_file", ["buyscore_config.json"]), fns)
+        self.assertIn(("download_file", ["hit_record.csv"]), fns)
+        self.assertIn(("upload_file", ["buyscore_log.jsonl"]), fns)  # 購入の学習用ログのアップロードも止まった
+        self.assertEqual(rec["config"]["source"], "workdir_file")
+        self.assertEqual(rec["config"]["source_detail"]["source_file_sha256"], S.CONFIG_SHA256)
+        self.assertIs(rec["config"]["matches_freeze"], True)
 
         self.assertEqual(rec["outcome"], G.OUTCOME_COMPARED, rec)
         self.assertTrue(all(v["ok"] for v in rec["conditions"].values()), rec["conditions"])

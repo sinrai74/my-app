@@ -8,11 +8,15 @@ import os
 import random
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Optional
+from unittest import mock
 
 from models.evaluation import FeatureSet, Prediction, RaceEvaluation
 
-GOLDEN_DIR = Path("tests/regression/golden_buyscore")
+REBUILD_DIR = Path(__file__).resolve().parents[2]
+REPO_DIR = REBUILD_DIR.parent
+# 絶対パス（N-01 の境界は作業ディレクトリを一時フォルダに変えるため）
+GOLDEN_DIR = REBUILD_DIR / "tests/regression/golden_buyscore"
 MANIFEST = GOLDEN_DIR / "manifest.json"
 CONFIG_FIXTURE = GOLDEN_DIR / "buyscore_config_freeze.json"
 CONFIG_SHA256 = "da6a4edaf8220aa52ed3e4577c23ff443509512a971d0ba322079eb4c4cd6f1d"
@@ -24,6 +28,31 @@ N_RANDOM = 10000
 LEGACY_RACE_TYPES = ("4カド型", "イン逃げ型", "1残り荒れ型", "大荒れ型", "モンスター型", "混戦型")
 BUYSCORE_RACE_TYPES = ("本命戦", "混戦", "超混戦", "荒れ戦")
 RACE_TYPES = LEGACY_RACE_TYPES + BUYSCORE_RACE_TYPES + ("",)
+
+
+# N-01：トークンがある環境の試験用。実在しないリポジトリ名と、偽のトークン（値に意味は無い）。
+# 実際のトークンが環境にあっても、試験の間はこの値で上書きされ、境界の中では外される。
+FAKE_TOKEN_ENV = {
+    "GITHUB_TOKEN": "ghp_G3FAKE0000000000000000000000000000",
+    "GH_TOKEN": "gho_G3FAKE0000000000000000000000000000",
+    "GITHUB_REPOSITORY": "g3-invalid-owner/g3-invalid-repo",
+}
+
+
+def fake_token_env():
+    return mock.patch.dict(os.environ, FAKE_TOKEN_ENV)
+
+
+def config_bytes(cfg: Mapping[str, Any]) -> bytes:
+    return json.dumps(cfg, ensure_ascii=False).encode("utf-8")
+
+
+def iso_factory(seeds: Optional[Mapping[str, Any]] = None):
+    """既定は freeze 版の設定（golden の固定ファイル）だけを作業フォルダに置く境界。"""
+    from shadow.g3_isolation import G3Isolation
+
+    use = {"buyscore_config.json": CONFIG_FIXTURE} if seeds is None else dict(seeds)
+    return lambda: G3Isolation(use)
 
 
 def load_freeze_config() -> dict:

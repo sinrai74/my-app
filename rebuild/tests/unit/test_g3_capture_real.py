@@ -1,27 +1,24 @@
 """正式G3（B案）：実際の Legacy `_evaluate_bets` を固定の合成入力で呼んだときの写し取り（04 T12・T13、08 §4 R4）。
 
-- ネットワークを使わない。GITHUB_TOKEN が設定されていれば実行しない（Release に触れないため）。
-- 一時フォルダを作業ディレクトリにして実行する（Legacy がログ・設定をローカルに読み書きするため）。
+- N-01：偽のトークンを環境に置いたうえで、shadow.g3_isolation の境界の中で実行する。
+  Release の関数は差し替えられ、ネットワーク・外部コマンド・外への書き込みは止まる（止めた記録が0件であることも確かめる）。
+- 作業ディレクトリは境界が作る一時フォルダ（freeze 版の設定だけを置く）。
 """
 
 from __future__ import annotations
 
 import itertools
-import os
-import tempfile
 import unittest
 
 from shadow.g3_capture import STATUS_CAPTURED, ApplyBuyscoreCapture
+from shadow.g3_isolation import G3Isolation
+from tests.unit import g3_support as S
 
 
-@unittest.skipIf(os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"),
-                 "token present: skip to avoid touching Release")
 class RealEvaluateBetsCaptureTests(unittest.TestCase):
     def test_t12_t13_real_evaluate_bets(self):
-        cwd = os.getcwd()
-        tmp = tempfile.mkdtemp(prefix="g3_real_")
-        os.chdir(tmp)
-        try:
+        with S.fake_token_env(), G3Isolation({"buyscore_config.json": S.CONFIG_FIXTURE}) as iso:
+            self.assertTrue(iso.established, iso.errors)
             import notify_arashi as N  # Legacy（読み込むだけ）
             patterns = N._generate_patterns([2, 3], 5.0)
             ml_probs = {1: 0.45, 2: 0.25, 3: 0.12, 4: 0.08, 5: 0.06, 6: 0.04}
@@ -40,8 +37,14 @@ class RealEvaluateBetsCaptureTests(unittest.TestCase):
                 boats=None, upset_score=5.0, odds_dropped=[], weather=N.WeatherInfo(),
                 venue_num=12, race_number=5, race_date="20261110", venue_name="住之江",
             )
-        finally:
-            os.chdir(cwd)
+        summary = iso.summary()
+        self.assertTrue(summary["verified"], summary)
+        self.assertEqual(summary["blocked_event_count"], 0, summary["blocked_events"])
+        # 実際の Legacy が Release に触れようとした経路（2回の _evaluate_bets 分）は、すべて差し替えで止まった
+        self.assertGreaterEqual(len(iso.release_calls_of("download_file", "buyscore_config.json")), 2)
+        self.assertGreaterEqual(len(iso.release_calls_of("download_file", "hit_record.csv")), 2)
+        self.assertGreaterEqual(len(iso.release_calls_of("upload_file", "buyscore_log.jsonl")), 1)
+        self.assertTrue(all(c["blocked"] for c in summary["release_calls"]))
         self.assertTrue(result, "no candidates were produced by the synthetic input")
         self.assertEqual(cap.status, STATUS_CAPTURED, cap.errors)
         self.assertEqual(sorted(cap.call_context), sorted(
