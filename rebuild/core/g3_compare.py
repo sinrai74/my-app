@@ -172,6 +172,16 @@ def compare_four_items(
         "items": items,
         "race_judge": judge_race(items),
         "skip_layer": {"legacy": legacy_layer, "rebuild": _rebuild_skip_layer(rebuild_skip_reason)},
+        # ③ 記録（GPT確定）：元の文字列・発生層・比較結果を残す
+        "skip_detail": {
+            "legacy_layer": legacy_layer,
+            "rebuild_layer": _rebuild_skip_layer(rebuild_skip_reason),
+            "legacy_reason": legacy_passthrough_reason,
+            # 監査 B-b：capital/zero 層のとき元の資金管理理由も残す（③「元文字列記録」の厳格化）
+            "legacy_capital_reason": legacy_capital_reason,
+            "rebuild_reason": rebuild_skip_reason,
+            "result": sr,
+        },
         "compare_policy_set": policy_set,
     }
 
