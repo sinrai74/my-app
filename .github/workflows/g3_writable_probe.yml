@@ -1,0 +1,40 @@
+# 書込可パスの出所調査のみ（診断本体なし）。run.sh:220 の writable scan が hits=25980 で exit 92 になった原因を、
+# 専用ユーザー相当（uid 1999・補助グループなし・no-new-privs）で走査対象ごとに洗い出す。workflow_dispatch 専用。
+name: g3-writable-probe
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11.9'
+          token: ''
+      - name: writable facts as a dedicated-style user
+        run: |
+          set +e
+          PYLIB="$(python -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')"
+          DYN="$(python -c 'import sysconfig,os; print(os.path.join(sysconfig.get_path("stdlib"),"lib-dynload"))')"
+          SP="$(python -c 'import site; print(site.getsitepackages()[0])')"
+          echo "## PYLIB=$PYLIB"; echo "## SP=$SP"; echo "## DYN=$DYN"
+          echo "## perms of key dirs:"
+          stat -c 'DIR %A %U:%G %n' /opt/hostedtoolcache "$(dirname "$PYLIB")" "$PYLIB" "$SP" 2>/dev/null
+          sudo groupadd -g 1999 g3probe 2>/dev/null; sudo useradd -u 1999 -g 1999 -M -s /usr/sbin/nologin g3probe 2>/dev/null
+          RUN(){ sudo setpriv --reuid=1999 --regid=1999 --clear-groups --no-new-privs "$@"; }
+          for root in "$GITHUB_WORKSPACE" "$PYLIB" "$DYN" "$SP"; do
+            echo "## ROOT $root"
+            echo "  writable_count=$(RUN find "$root" -writable 2>/dev/null | wc -l)"
+            echo "  denied_count=$(RUN find "$root" 2>&1 >/dev/null | grep -c 'Permission denied')"
+            echo "  sample_writable:"; RUN find "$root" -writable 2>/dev/null | head -4 | sed 's/^/    /'
+          done
+          echo "## sample writable file perm/owner in SP:"
+          f="$(RUN find "$SP" -writable -type f 2>/dev/null | head -1)"
+          [ -n "$f" ] && stat -c '%A %U:%G %n' "$f"
+          echo "## is toolcache world-writable up the chain?"
+          namei -l "$SP" 2>/dev/null | head -20
+          echo "## DONE"
