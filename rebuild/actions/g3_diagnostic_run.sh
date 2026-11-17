@@ -52,7 +52,7 @@ exec {LOCKFD}>/run/g3diag.lock
 "$FLOCK" -n "$LOCKFD" || die "another g3 diagnostic run holds the lock" 97
 
 # ---- 1. cgroup v2 の事前の確認（C1〜C5）。満たせなければ診断を始めない（uid へ切り替えない）
-CG2ROOT="$(awk '$3=="cgroup2"{print $2; exit}' /proc/self/mountinfo || true)"
+CG2ROOT="$(awk '{for(i=7;i<=NF;i++) if($i=="-"){if($(i+1)=="cgroup2"){print $5; exit} else break}}' /proc/self/mountinfo || true)"
 [ -n "$CG2ROOT" ] && [ -d "$CG2ROOT" ] || die "cgroup v2 is not available (C1)" 97
 MYCG="$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup || true)"
 [ -n "$MYCG" ] || die "cannot read own cgroup (C1)" 97
