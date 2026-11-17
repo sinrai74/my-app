@@ -1286,5 +1286,33 @@ class RealChildTests(unittest.TestCase):
         self.assertEqual(_U(_R(rec)), [], "real record must be detector-clean (F-10)")
 
 
+class RunShCgroupDetectTests(unittest.TestCase):
+    """run.sh の C1 cgroup2 検出（CG2ROOT）が /proc/self/mountinfo を正しく解析することを保証（C1 回帰防止）。
+    mountinfo のフィールド3は maj:min で、fstype は '-' 区切りの後ろ。run.sh 内の実 awk 式を抽出して検証する。"""
+
+    def _cg2_awk(self):
+        import re
+        src = (S.REBUILD_DIR / "actions/g3_diagnostic_run.sh").read_text(encoding="utf-8")
+        m = re.search(r"CG2ROOT=\"\$\(awk '([^']*)' /proc/self/mountinfo", src)
+        self.assertIsNotNone(m, "run.sh の CG2ROOT awk 行が見つからない")
+        return m.group(1)
+
+    def _run_awk(self, prog, mountinfo):
+        import subprocess
+        return subprocess.run(["awk", prog], input=mountinfo, capture_output=True, text=True).stdout.strip()
+
+    def test_detects_cgroup2_mount(self):
+        prog = self._cg2_awk()
+        mi = ("38 28 0:32 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime shared:10 "
+              "- cgroup2 cgroup2 rw,nsdelegate,memory_recursiveprot\n")
+        self.assertEqual(self._run_awk(prog, mi), "/sys/fs/cgroup")
+
+    def test_empty_when_no_cgroup2(self):
+        prog = self._cg2_awk()
+        mi = ("23 28 0:21 / /sys/fs/cgroup/devices rw,nosuid shared:9 - cgroup cgroup rw,devices\n"
+              "24 28 0:22 / /proc rw,nosuid - proc proc rw\n")
+        self.assertEqual(self._run_awk(prog, mi), "")
+
+
 if __name__ == "__main__":
     unittest.main()
