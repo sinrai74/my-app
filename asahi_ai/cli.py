@@ -21,11 +21,16 @@ from . import archive, build, fetch, parse_b, parse_k, store
 
 def _summary(t: build.DayTables, extra: dict | None = None) -> str:
     levels = {}
+    samples = {}
     for c in t.checks:
         levels.setdefault(c["level"], {}).setdefault(c["check"], 0)
         levels[c["level"]][c["check"]] += 1
+        sm = samples.setdefault(c["check"], [])
+        if len(sm) < 3:  # 各検査の例を3件まで（原因の確認用）
+            sm.append({"target": c["target"], "detail": c["detail"], "expected": c["expected"], "actual": c["actual"]})
     return "DAY " + json.dumps({"date": t.date, "verdict": t.day_verdict, "counts": t.counts,
-                                "checks": levels, **(extra or {})}, ensure_ascii=False)
+                                "checks": levels, "samples": samples, **(extra or {})},
+                               ensure_ascii=False, default=str)
 
 
 def process(d: dt.date, b_bytes: bytes | None, k_bytes: bytes | None,
