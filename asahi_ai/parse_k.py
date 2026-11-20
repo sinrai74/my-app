@@ -42,6 +42,7 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
     bet = None
     header_date_ok = None
     header_text = ""
+    block_head: list[str] = []
     in_summary = False
     md_ok = None
     seen_race = False
@@ -50,6 +51,7 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
         if m:
             venue = m.group(1).decode()
             race, bet, header_date_ok, in_summary, header_text, md_ok, seen_race = None, None, None, False, "", None, False
+            block_head = []
             if venue not in VENUE_CODES or venue in out.venues:
                 out.issues.append({"level": "stop", "check": "k_venue_code", "venue": venue, "line": lineno})
             out.venues.append(venue)
@@ -61,7 +63,7 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
                                    "detail": header_text})
             elif venue is not None and header_date_ok is not True:
                 out.issues.append({"level": "stop", "check": "k_header_date", "venue": venue,
-                                   "detail": f"見出しの日付が無い、または対象日と違う: {header_text!r}"})
+                                   "detail": {"header": header_text, "block_head": block_head}})
             venue = None
             continue
         if venue is None:
@@ -126,6 +128,8 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
         s = raw.decode("cp932", errors="replace").replace("　", " ")
         if not s.strip():
             continue
+        if len(block_head) < 8:
+            block_head.append(s.rstrip()[:80])
         if RE_SUMMARY_HEAD.match(s):
             in_summary = True
             continue
@@ -155,7 +159,10 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
         if in_summary and not seen_race and re.match(r"^\s{9,}\d{1,2}R\s", s):
             # 払戻の要約の表（最初のレースの見出しより前）。中止・不成立の行もここに来る
             ms = RE_SUMMARY.match(s)
-            if ms:
+            mcan = RE_CANCEL.match(s)
+            if mcan:  # 要約の表の「1R  中 止」：中止と明記されたレース
+                out.cancelled[f"{date:%Y%m%d}{venue}{int(mcan.group(1)):02d}"] = s.strip()
+            elif ms:
                 rid = f"{date:%Y%m%d}{venue}{int(ms.group(1)):02d}"
                 out.summary_trifecta[rid] = (ms.group(2), int(ms.group(3)))
             continue

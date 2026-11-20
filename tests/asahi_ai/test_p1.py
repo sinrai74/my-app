@@ -206,6 +206,7 @@ class TestParseK(unittest.TestCase):
         p = parse_k.parse_k(raw[:i] + extra + raw[i:], D)
         self.assertEqual([x for x in p.issues if x["level"] == "stop"], [])
         self.assertEqual(p.summary_trifecta.get("202301010904"), ("1-2-3", 700))
+        self.assertEqual(p.cancelled, {"202301010903": "3R  中 止"})  # 要約の表の中止も記録する
 
     def test_late_start_without_course_ok(self):
         racers = synth.std_k_racers()

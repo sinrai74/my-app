@@ -43,12 +43,14 @@ def parse_b(txt: bytes, date: dt.date) -> BParse:
     meet_final = False
     header_date_ok = None
     header_text = ""
+    block_head: list[str] = []
     md_ok = None
     for lineno, raw in enumerate(txt.split(b"\r\n"), 1):
         m = re.fullmatch(rb"(\d{2})BBGN", raw)
         if m:
             venue = m.group(1).decode()
             race, meet_day, meet_final, header_date_ok, header_text, md_ok = None, None, False, None, "", None
+            block_head = []
             if venue not in VENUE_CODES or venue in out.venues:
                 out.issues.append({"level": "stop", "check": "b_venue_code", "venue": venue, "line": lineno})
             out.venues.append(venue)
@@ -59,7 +61,7 @@ def parse_b(txt: bytes, date: dt.date) -> BParse:
                                    "detail": header_text})
             elif venue is not None and header_date_ok is not True:
                 out.issues.append({"level": "stop", "check": "b_header_date", "venue": venue,
-                                   "detail": f"見出しの日付が無い、または対象日と違う: {header_text!r}"})
+                                   "detail": {"header": header_text, "block_head": block_head}})
             venue = None
             continue
         if venue is None:
@@ -108,6 +110,8 @@ def parse_b(txt: bytes, date: dt.date) -> BParse:
             out.entries.append(entry)
             continue
         s = raw.decode("cp932", errors="replace")
+        if s.strip() and len(block_head) < 8:
+            block_head.append(s.rstrip()[:80])
         mr = RE_RACE.match(s)
         if mr:
             no = int(mr.group(1).translate(ZEN2HAN))

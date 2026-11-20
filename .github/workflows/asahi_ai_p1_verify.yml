@@ -34,8 +34,11 @@ jobs:
         with:
           python-version: "3.11.9"
 
+      - name: Install dependencies
+        run: python -m pip install --quiet -r asahi_ai/requirements.txt
+
       - name: Unit tests
         run: python -B -m unittest discover -s tests/asahi_ai -t . -v
 
-      - name: Fetch and build (46 days)
+      - name: Fetch and build (verify_days)
         run: python -B -u -m asahi_ai.cli fetch-build --dates-file asahi_ai/verify_days.txt --out p1_out || echo "EXIT=$?"
