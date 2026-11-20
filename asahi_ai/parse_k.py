@@ -14,7 +14,8 @@ RE_COND = re.compile(r"^(\S+)\s+風\s+(\S+)\s+(\d+)m\s+波\s+(\d+)cm\s*$")
 RE_DATE = re.compile(r"(\d{4})/\s*(\d{1,2})/\s*(\d{1,2})")
 RE_BET = re.compile(r"^\s{8}(単勝|複勝|２連単|２連複|拡連複|３連単|３連複)\s+(.*)$")
 RE_BET_CONT = re.compile(r"^\s{17}(\d-\d.*)$")
-RE_PAY_ITEM = re.compile(r"(特払い|返還|不成立|\d(?:-\d){0,2})\s+(\d+)(?:\s+人気\s+(\d+))?")
+RE_PAY_ITEM = re.compile(r"(特払い|返還|\d(?:-\d){0,2})\s+(\d+)(?:\s+人気\s+(\d+))?|(不成立)")
+RE_CANCEL = re.compile(r"^\s+(\d{1,2})R\s+中\s*止\s*$")
 RE_SUMMARY = re.compile(r"^\s+(\d{1,2})R\s+(\d-\d-\d|\S+)\s+(\d+)\s+")
 RE_SUMMARY_HEAD = re.compile(r"^\s+\[払戻金\]")
 
@@ -22,6 +23,7 @@ RE_SUMMARY_HEAD = re.compile(r"^\s+\[払戻金\]")
 @dataclass
 class KParse:
     races: list[dict] = field(default_factory=list)      # K にあったレース（race_id・気象・決まり手）
+    cancelled: dict = field(default_factory=dict)        # race_id → K の原文（「NR  中 止」）
     results: list[dict] = field(default_factory=list)
     payouts: list[dict] = field(default_factory=list)
     summary_trifecta: dict = field(default_factory=dict)  # race_id → (組合せ, 金額)。要約の表から
@@ -39,6 +41,7 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
     venue = race = None
     bet = None
     header_date_ok = None
+    header_text = ""
     in_summary = False
     for lineno, raw in enumerate(txt.split(b"\r\n"), 1):
         m = re.fullmatch(rb"(\d{2})KBGN", raw)
@@ -52,7 +55,7 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
         if re.fullmatch(rb"\d{2}KEND", raw):
             if venue is not None and header_date_ok is not True:
                 out.issues.append({"level": "stop", "check": "k_header_date", "venue": venue,
-                                   "detail": "見出しの日付が無い、または対象日と違う"})
+                                   "detail": f"見出しの日付が無い、または対象日と違う: {header_text!r}"})
             venue = None
             continue
         if venue is None:
@@ -109,8 +112,8 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
                 bad.append("motor_boat")
             if bad:
                 out.issues.append({"level": "quarantined", "check": "k_value", "venue": venue,
-                                   "race_id": race["race_id"], "lane": row["lane"], "detail": bad,
-                                   "raw": raw.decode("cp932", errors="replace")})
+                                   "race_id": race["race_id"], "lane": row["lane"],
+                                   "detail": {"fields": bad, "raw": raw.decode("cp932", errors="replace")}})
             out.results.append(row)
             continue
         s = raw.decode("cp932", errors="replace").replace("　", " ")
@@ -135,6 +138,7 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
                 "wind_speed_m": int(cond.group(3)) if cond else None,
                 "wave_cm": int(cond.group(4)) if cond else None,
                 "winning_technique": None,
+                "race_void": False,
             }
             if not cond:
                 out.issues.append({"level": "warn", "check": "k_conditions", "venue": venue,
@@ -148,6 +152,12 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
                 out.summary_trifecta[rid] = (ms.group(2), int(ms.group(3)))
                 continue
             in_summary = False
+        mcan = RE_CANCEL.match(s)
+        if mcan:  # 「1R  中 止」：K に中止と明記されたレース
+            rid = f"{date:%Y%m%d}{venue}{int(mcan.group(1)):02d}"
+            out.cancelled[rid] = s.strip()
+            race, bet = None, None
+            continue
         if re.match(r"^\s+\d{1,2}R\s", s):  # レースの見出しの形なのに読めない → 列の定義が変わった恐れ
             out.issues.append({"level": "stop", "check": "k_race_header", "venue": venue, "line": lineno,
                                "detail": s.strip()[:80]})
@@ -157,6 +167,11 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
             md = RE_DATE.search(s)
             if md:
                 header_date_ok = tuple(int(md.group(i)) for i in (1, 2, 3)) == (date.year, date.month, date.day)
+                header_text = s.strip()[:80]
+            continue
+        if s.strip() == "レース不成立":
+            race["race_void"] = True
+            bet = None
             continue
         if "ﾚｰｽﾀｲﾑ" in s:
             tail = s.split("ﾚｰｽﾀｲﾑ", 1)[1].strip()
@@ -177,7 +192,11 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
             if not items or rest:
                 out.issues.append({"level": "quarantined", "check": "k_payout_line", "venue": venue,
                                    "race_id": race["race_id"], "detail": s.strip()})
-            for combo, amount, pop in items:
+            for combo, amount, pop, void in items:
+                if void:  # 「拡連複   不成立」：その券種は不成立（金額なし）
+                    out.payouts.append({"race_id": race["race_id"], "bet_type": bet, "combination": "",
+                                        "payout_yen": None, "popularity": None, "payout_kind": "不成立"})
+                    continue
                 kind = "hit" if combo[0].isdigit() else combo
                 out.payouts.append({
                     "race_id": race["race_id"], "bet_type": bet,

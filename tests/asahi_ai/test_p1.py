@@ -244,6 +244,29 @@ class TestBuild(unittest.TestCase):
         t = self.day([(1, synth.std_b_racers()), (1, synth.std_b_racers())], [self.kr(1)])
         self.assertIn("stop", levels(t.checks, "b_race_duplicate_key"))
 
+    def test_cancelled_race_from_k_text(self):
+        b = parse_b.parse_b(synth.b_file(races=[(1, synth.std_b_racers()), (2, synth.std_b_racers())]), D)
+        k = parse_k.parse_k(synth.k_file(races=[self.kr(1)], tail=["   2R  中 止"]), D)
+        t = build.build_day(D, b, k)
+        st = {r["race_no"]: (r["race_status"], r["status_evidence"]) for r in t.races}
+        self.assertEqual(st[2], ("cancelled", "K: 2R  中 止"))
+        self.assertEqual(t.day_verdict, "ok")
+
+    def test_void_race_and_void_payouts(self):
+        racers = synth.std_k_racers(codes={3: "S0", 4: "S0", 5: "S0", 6: "00"})
+        pays = ["        単勝     1          110  ", "        拡連複   不成立", "        ３連複   不成立"]
+        raw = synth.k_file(races=[(1, racers + ["レース不成立".encode("cp932")], pays, COND, "")])
+        k = parse_k.parse_k(raw, D)
+        self.assertTrue(k.races[0]["race_void"])
+        self.assertEqual([(p["bet_type"], p["payout_kind"], p["payout_yen"]) for p in k.payouts][1:],
+                         [("wide", "不成立", None), ("trio", "不成立", None)])
+        b = parse_b.parse_b(synth.b_file(races=[(1, synth.std_b_racers())]), D)
+        t = build.build_day(D, b, k)
+        self.assertEqual(t.races[0]["race_status"], "void")
+        self.assertEqual(levels(t.checks, "k_payout_line"), [])
+        self.assertEqual(levels(t.checks, "k_technique_missing"), [])
+        self.assertEqual(levels(t.checks, "k_unknown_code"), ["quarantined"])  # 00 はそのまま隔離
+
     def test_missing_b_source(self):
         k = parse_k.parse_k(synth.k_file(races=[self.kr(1)]), D)
         t = build.build_day(D, None, k)

@@ -42,11 +42,12 @@ def parse_b(txt: bytes, date: dt.date) -> BParse:
     meet_day = None
     meet_final = False
     header_date_ok = None
+    header_text = ""
     for lineno, raw in enumerate(txt.split(b"\r\n"), 1):
         m = re.fullmatch(rb"(\d{2})BBGN", raw)
         if m:
             venue = m.group(1).decode()
-            race, meet_day, meet_final, header_date_ok = None, None, False, None
+            race, meet_day, meet_final, header_date_ok, header_text = None, None, False, None, ""
             if venue not in VENUE_CODES or venue in out.venues:
                 out.issues.append({"level": "stop", "check": "b_venue_code", "venue": venue, "line": lineno})
             out.venues.append(venue)
@@ -54,7 +55,7 @@ def parse_b(txt: bytes, date: dt.date) -> BParse:
         if re.fullmatch(rb"\d{2}BEND", raw):
             if venue is not None and header_date_ok is not True:
                 out.issues.append({"level": "stop", "check": "b_header_date", "venue": venue,
-                                   "detail": "見出しの日付が無い、または対象日と違う"})
+                                   "detail": f"見出しの日付が無い、または対象日と違う: {header_text!r}"})
             venue = None
             continue
         if venue is None:
@@ -129,6 +130,7 @@ def parse_b(txt: bytes, date: dt.date) -> BParse:
             if md:  # 「第　４日          ２０２３年　１月　１日」の行
                 y, mo, d = (int(md.group(i).translate(ZEN2HAN)) for i in (1, 2, 3))
                 header_date_ok = (y, mo, d) == (date.year, date.month, date.day)
+                header_text = s.strip()[:80]
                 mday = RE_DAY.search(s)
                 if mday:
                     meet_day = (int(mday.group(1).translate(ZEN2HAN)) if mday.group(1)

@@ -62,7 +62,7 @@ def b_file(venue="09", venue_name="津", year=2023, month=1, day=1, day_label="�
     return b"\r\n".join(lines)
 
 
-def k_file(venue="09", venue_name="津", year=2023, month=1, day=1, races=None, summary=None) -> bytes:
+def k_file(venue="09", venue_name="津", year=2023, month=1, day=1, races=None, summary=None, tail=()) -> bytes:
     """races: [(race_no, racer_lines, payout_lines(str), cond_str, technique), ...]"""
     lines = [b"STARTK", f"{venue}KBGN".encode()]
     lines.append(f"{venue_name}［成績］      {month}/{day:>2}      試験杯  第 4日".encode("cp932"))
@@ -81,6 +81,7 @@ def k_file(venue="09", venue_name="津", year=2023, month=1, day=1, races=None, 
         lines.append(b"")
         lines.extend(p.encode("cp932") for p in pays)
         lines += [b"", b""]
+    lines.extend(x.encode("cp932") for x in tail)
     lines += [f"{venue}KEND".encode(), b"FINALK", b""]
     return b"\r\n".join(lines)
 

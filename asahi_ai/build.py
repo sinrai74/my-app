@@ -80,13 +80,15 @@ def build_day(date: dt.date, b: BParse | None, k: KParse | None,
     quarantined = {c["target"].split("-")[0] for c in checks if c["level"] == "quarantined" and c["target"]}
 
     # レースごとの件数・照合
-    for rid in sorted(set(b_races) | set(k_races)):
+    for rid in sorted(set(b_races) | set(k_races) | set(k.cancelled if k else {})):
         if rid in b_races and len(b_ent[rid]) != 6:
             _check(checks, ds, "quarantined", "b_race_not6", "race", rid, expected=6, actual=len(b_ent[rid]))
             quarantined.add(rid)
         if rid in k_races and len(k_res[rid]) != 6:
             _check(checks, ds, "quarantined", "k_race_not6", "race", rid, expected=6, actual=len(k_res[rid]))
             quarantined.add(rid)
+        if k is not None and rid in k.cancelled and rid not in b_races:
+            _check(checks, ds, "stop", "k_cancelled_not_in_b", "race", rid)
         if b is not None and rid in k_races and rid not in b_races:
             _check(checks, ds, "stop", "k_race_not_in_b", "race", rid)
         if rid in b_races and rid in k_races:
@@ -97,7 +99,7 @@ def build_day(date: dt.date, b: BParse | None, k: KParse | None,
                 if r["racer_no"] != e["racer_no"] or r["motor_no"] != e["motor_no"]:
                     _check(checks, ds, "stop", "bk_entry_mismatch", "entry", f"{rid}-{lane}",
                            detail={"b": [e["racer_no"], e["motor_no"]], "k": [r["racer_no"], r["motor_no"]]})
-        if rid in k_races and not k_races[rid]["winning_technique"]:
+        if rid in k_races and not k_races[rid]["winning_technique"] and not k_races[rid].get("race_void"):
             _check(checks, ds, "warn", "k_technique_missing", "race", rid)
 
     # 払戻と着順の整合（3連単）。同着・特払い・3着までが揃わないときは照合しない（warn）
@@ -125,13 +127,18 @@ def build_day(date: dt.date, b: BParse | None, k: KParse | None,
 
     # races（B が正。状態を付ける）
     for rid, r in sorted(b_races.items()):
-        if rid in k_races:
+        evidence = None
+        if rid in k_races and k_races[rid].get("race_void"):
+            status, evidence = "void", "K: レース不成立"
+        elif rid in k_races:
             status = "completed"
         elif k is None:
             status = "source_unavailable"
+        elif rid in k.cancelled:
+            status, evidence = "cancelled", f"K: {k.cancelled[rid]}"
         else:
             status = "result_missing"
-        t.races.append({**r, "race_status": status, "quarantined": rid in quarantined,
+        t.races.append({**r, "race_status": status, "status_evidence": evidence, "quarantined": rid in quarantined,
                         "b_file_id": b_file_id, "k_file_id": k_file_id if rid in k_races else None})
     if b is None:  # B が無い日は K だけのレースを記録（予測には使えない）
         for rid, r in sorted(k_races.items()):
