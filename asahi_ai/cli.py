@@ -147,6 +147,12 @@ def backfill(args) -> int:
             failed.append(d.isoformat())
             print("DAY " + json.dumps({"date": d.isoformat(), "verdict": "fetch_failed", "fetch": st}), flush=True)
             continue
+        jst_today = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)).date()
+        if "not_found" in st.values() and (jst_today - d).days <= 3:
+            # 最近の日は、公開前の可能性がある。済み扱いにせず、次の実行で取り直す
+            failed.append(d.isoformat())
+            print("DAY " + json.dumps({"date": d.isoformat(), "verdict": "not_yet", "fetch": st}), flush=True)
+            continue
         if all(v == "not_found" for v in st.values()):
             store.write_no_files(data, d.isoformat())
             print("DAY " + json.dumps({"date": d.isoformat(), "verdict": "no_files"}), flush=True)
