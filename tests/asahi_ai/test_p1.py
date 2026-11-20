@@ -352,5 +352,44 @@ class TestFetch(unittest.TestCase):
         self.assertEqual(calls[0], "http://www1.mbrace.or.jp/od2/B/202301/b230101.lzh")
 
 
+class TestBackfill(unittest.TestCase):
+    def test_skips_done_days_and_retries_failed(self):
+        import io
+        from contextlib import redirect_stdout
+        from asahi_ai import cli, store
+        body_b = synth.b_file(races=[(1, synth.std_b_racers())])
+        body_k = synth.k_file(races=[(1, synth.std_k_racers(), synth.std_pays(), COND, "逃げ")])
+        calls = []
+
+        def opener(url, timeout):
+            calls.append(url)
+            if "230102" in url:
+                raise urllib.error.HTTPError(url, 404, "nf", {}, None)
+            if "230103" in url and len([c for c in calls if "230103" in c]) <= 2:
+                raise ConnectionResetError("x")
+            return 200, b"LZH:" + url.encode()
+
+        def fake_extract(data):
+            name = data.decode().rsplit("/", 1)[1]
+            return archive.Member(name, "-lh5-", body_b if "/b2" in data.decode() else
+                                  body_k.replace(b"2023/ 1/ 1", f"2023/ 1/{int(name[5:7]):>2}".encode()), 0, 0)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(archive, "extract_single", side_effect=fake_extract), \
+                mock.patch.object(fetch, "_default_opener", opener):
+            args = ["backfill", "--start", "2023-01-01", "--end", "2023-01-03", "--data", tmp, "--interval", "0"]
+            out = io.StringIO()
+            with redirect_stdout(out):
+                cli.main(args)
+            self.assertTrue(store.checks_path(tmp, "2023-01-01").exists())
+            self.assertTrue(store.checks_path(tmp, "2023-01-02").exists())   # 開催なし（404）は済み扱い
+            self.assertFalse(store.checks_path(tmp, "2023-01-03").exists())  # 取得失敗は次回に取り直す
+            self.assertIn('"remaining": 1', out.getvalue())
+            calls.clear()
+            with redirect_stdout(io.StringIO()):
+                cli.main(args)
+            self.assertTrue(all("230103" in c for c in calls))              # 済んだ日は取りに行かない
+
+
 if __name__ == "__main__":
     unittest.main()

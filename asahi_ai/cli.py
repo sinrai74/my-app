@@ -68,7 +68,17 @@ def main(argv=None) -> int:
     f.add_argument("--dates-file", help="1行に1日（YYYY-MM-DD）。--start/--end の代わり")
     f.add_argument("--out", required=True)
     f.add_argument("--interval", type=float, default=fetch.INTERVAL)
+    bf = sub.add_parser("backfill", help="原本の取り込み（未処理の日だけ。表は作らず、原本・manifest・検査を保存）")
+    bf.add_argument("--start", required=True)
+    bf.add_argument("--end", required=True)
+    bf.add_argument("--data", required=True, help="データリポジトリの作業ツリー")
+    bf.add_argument("--max-days", type=int, default=60)
+    bf.add_argument("--deadline-epoch", type=float, default=None, help="この時刻（UNIX 秒）を過ぎたら新しい日を始めない")
+    bf.add_argument("--interval", type=float, default=fetch.INTERVAL)
     args = ap.parse_args(argv)
+
+    if args.cmd == "backfill":
+        return backfill(args)
 
     out = Path(args.out)
     if args.cmd == "build-local":
@@ -108,6 +118,50 @@ def main(argv=None) -> int:
                   flush=True)
             worst = max(worst, 2 if t.day_verdict == "stop" else 0)
     return worst
+
+
+def backfill(args) -> int:
+    """未処理の日（checks/<年>/<日>.jsonl が無い日）を古い順に max-days 日まで処理する。
+
+    - 取得に失敗した日は checks を書かない（次の実行で取り直す）。
+    - 原本の内容が前回と違えば RawConflict で止まる（上書きしない）。
+    - 標準出力の最後に "BACKFILL {...}"（処理した日数・残り・stop の日）を出す。
+    """
+    import time
+
+    data = Path(args.data)
+    a0, a1 = dt.date.fromisoformat(args.start), dt.date.fromisoformat(args.end)
+    todo = [a0 + dt.timedelta(days=i) for i in range((a1 - a0).days + 1)]
+    todo = [d for d in todo if not store.checks_path(data, d.isoformat()).exists()]
+    fe = fetch.Fetcher(data / "raw", interval=args.interval)
+    done, stops, failed = 0, [], []
+    for d in todo[: args.max_days]:
+        if args.deadline_epoch and time.time() > args.deadline_epoch:
+            break
+        recs, raw = {}, {}
+        for kind in ("B", "K"):
+            recs[kind], raw[kind] = fe.get(kind, d)
+            store.append_manifest(data, recs[kind])
+        st = {k: recs[k]["capture_status"] for k in recs}
+        if "fetch_failed" in st.values():
+            failed.append(d.isoformat())
+            print("DAY " + json.dumps({"date": d.isoformat(), "verdict": "fetch_failed", "fetch": st}), flush=True)
+            continue
+        if all(v == "not_found" for v in st.values()):
+            store.write_no_files(data, d.isoformat())
+            print("DAY " + json.dumps({"date": d.isoformat(), "verdict": "no_files"}), flush=True)
+            done += 1
+            continue
+        t = process(d, raw["B"], raw["K"], recs["B"]["lzh_sha256"], recs["K"]["lzh_sha256"])
+        store.write_day(data, t, tables=False)
+        if t.day_verdict == "stop":
+            stops.append(d.isoformat())
+        print(_summary(t, {"fetch": st}), flush=True)
+        done += 1
+    remaining = len(todo) - done
+    print("BACKFILL " + json.dumps({"done": done, "remaining": remaining, "stop_days": stops,
+                                    "fetch_failed": failed}), flush=True)
+    return 0
 
 
 if __name__ == "__main__":

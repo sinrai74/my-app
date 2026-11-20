@@ -30,12 +30,17 @@ def _write_csv(path: Path, rows: list[dict]):
     tmp.replace(path)
 
 
-def write_day(out: Path, t: DayTables):
+def checks_path(out: Path, date: str) -> Path:
+    return Path(out) / "checks" / date[:4] / f"{date}.jsonl"
+
+
+def write_day(out: Path, t: DayTables, tables: bool = True):
     out = Path(out)
     y = t.date[:4]
-    for name in TABLES:
-        _write_csv(out / "tables" / name / y / f"{t.date}.csv", getattr(t, name))
-    cp = out / "checks" / y / f"{t.date}.jsonl"
+    if tables:
+        for name in TABLES:
+            _write_csv(out / "tables" / name / y / f"{t.date}.csv", getattr(t, name))
+    cp = checks_path(out, t.date)
     cp.parent.mkdir(parents=True, exist_ok=True)
     with cp.open("w", encoding="utf-8") as f:
         f.write(json.dumps({"date": t.date, "day_verdict": t.day_verdict, "counts": t.counts},
@@ -49,3 +54,9 @@ def append_manifest(out: Path, rec: dict):
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def write_no_files(out: Path, date: str):
+    cp = checks_path(out, date)
+    cp.parent.mkdir(parents=True, exist_ok=True)
+    cp.write_text(json.dumps({"date": date, "day_verdict": "no_files", "counts": {}}) + "\n", encoding="utf-8")
