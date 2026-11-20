@@ -115,6 +115,15 @@ class TestParseB(unittest.TestCase):
         self.assertIn(("b_race_header", "stop"), [(i["check"], i["level"]) for i in p.issues])
         self.assertTrue(all(e["race_id"].endswith("02") for e in p.entries))  # 前のレースに混ぜない
 
+    def test_year_line_missing_falls_back_to_month_day(self):
+        raw = synth.b_file(races=[(1, synth.std_b_racers())])
+        lines = raw.split(b"\r\n")
+        lines = [l for l in lines if "２０２３年".encode("cp932") not in l]
+        p = parse_b.parse_b(b"\r\n".join(lines), D)
+        self.assertEqual([(i["check"], i["level"]) for i in p.issues], [("b_header_year_missing", "warn")])
+        p2 = parse_b.parse_b(b"\r\n".join(lines), dt.date(2023, 1, 2))
+        self.assertIn(("b_header_date", "stop"), [(i["check"], i["level"]) for i in p2.issues])
+
     def test_bad_value_quarantined(self):
         racers = synth.std_b_racers()
         racers[0] = synth.b_racer(1, racer_no="4001", cls="Z9")
@@ -185,6 +194,31 @@ class TestParseK(unittest.TestCase):
         raw = raw.replace("   第 4日          2023".encode("cp932"), "   初 日          2023".encode("cp932"))
         p = parse_k.parse_k(raw, D)
         self.assertEqual(p.issues, [])
+
+    def test_summary_with_void_and_cancel_rows(self):
+        raw = synth.k_file(races=[(1, synth.std_k_racers(), synth.std_pays(), COND, "逃げ")],
+                           summary=[(1, "1-2-3", 600)])
+        extra = ("\r\n           2R  不成立           不成立           不成立         不成立"
+                 "\r\n           3R  中 止"
+                 "\r\n           4R  1-2-3     700    1-2-3     100    1-2     100    1-2     100").encode("cp932")
+        anchor = "  1-2     100    1-2     100".encode("cp932")
+        i = raw.index(anchor) + len(anchor)
+        p = parse_k.parse_k(raw[:i] + extra + raw[i:], D)
+        self.assertEqual([x for x in p.issues if x["level"] == "stop"], [])
+        self.assertEqual(p.summary_trifecta.get("202301010904"), ("1-2-3", 700))
+
+    def test_late_start_without_course_ok(self):
+        racers = synth.std_k_racers()
+        racers[5] = synth.k_racer("L0", 6, racer_no="4006", course="", st="L .", rt=".  .")
+        p = self.k(racers)
+        self.assertEqual(p.issues, [])
+
+    def test_empty_bet_line(self):
+        pays = synth.std_pays()
+        pays[1] = "        複勝     "
+        p = self.k(synth.std_k_racers(), pays)
+        self.assertEqual(p.issues, [])
+        self.assertIn(("place", "none"), [(x["bet_type"], x["payout_kind"]) for x in p.payouts])
 
     def test_conditions_missing_warns(self):
         p = self.k(synth.std_k_racers(), cond="不明")

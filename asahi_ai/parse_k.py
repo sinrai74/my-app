@@ -43,17 +43,23 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
     header_date_ok = None
     header_text = ""
     in_summary = False
+    md_ok = None
+    seen_race = False
     for lineno, raw in enumerate(txt.split(b"\r\n"), 1):
         m = re.fullmatch(rb"(\d{2})KBGN", raw)
         if m:
             venue = m.group(1).decode()
-            race, bet, header_date_ok, in_summary = None, None, None, False
+            race, bet, header_date_ok, in_summary, header_text, md_ok, seen_race = None, None, None, False, "", None, False
             if venue not in VENUE_CODES or venue in out.venues:
                 out.issues.append({"level": "stop", "check": "k_venue_code", "venue": venue, "line": lineno})
             out.venues.append(venue)
             continue
         if re.fullmatch(rb"\d{2}KEND", raw):
-            if venue is not None and header_date_ok is not True:
+            if venue is not None and header_date_ok is None and md_ok is True:
+                # 年つきの日付の行が無い（場の全レース中止の日など）。場名の行の月日が一致すれば記録だけ
+                out.issues.append({"level": "warn", "check": "k_header_year_missing", "venue": venue,
+                                   "detail": header_text})
+            elif venue is not None and header_date_ok is not True:
                 out.issues.append({"level": "stop", "check": "k_header_date", "venue": venue,
                                    "detail": f"見出しの日付が無い、または対象日と違う: {header_text!r}"})
             venue = None
@@ -102,7 +108,8 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
             if cls["result_class"] != "absent":
                 if not st_ok:
                     bad.append("st")
-                if course is None:
+                # 進入コースが無いのは、出走しなかった艇（出遅れで「L .」の艇など）。完走した艇で無ければ異常
+                if course is None and (cls["result_class"] == "finished" or st_value is not None):
                     bad.append("course")
             if not ex_ok:
                 bad.append("exhibition")
@@ -124,7 +131,7 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
             continue
         mr = RE_RACE.match(s)
         if mr:
-            in_summary, bet = False, None
+            in_summary, bet, seen_race = False, None, True
             no = int(mr.group(1))
             cond = RE_COND.match(mr.group(4).strip())
             race = {
@@ -145,13 +152,13 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
                                    "race_id": race["race_id"], "detail": mr.group(4).strip()})
             out.races.append(race)
             continue
-        if in_summary:  # 払戻の要約の表。要約の形でない行が来たら表は終わり
+        if in_summary and not seen_race and re.match(r"^\s{9,}\d{1,2}R\s", s):
+            # 払戻の要約の表（最初のレースの見出しより前）。中止・不成立の行もここに来る
             ms = RE_SUMMARY.match(s)
-            if ms and race is None:
+            if ms:
                 rid = f"{date:%Y%m%d}{venue}{int(ms.group(1)):02d}"
                 out.summary_trifecta[rid] = (ms.group(2), int(ms.group(3)))
-                continue
-            in_summary = False
+            continue
         mcan = RE_CANCEL.match(s)
         if mcan:  # 「1R  中 止」：K に中止と明記されたレース
             rid = f"{date:%Y%m%d}{venue}{int(mcan.group(1)):02d}"
@@ -164,6 +171,10 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
             race, bet = None, None
             continue
         if race is None:
+            mmd = re.search(r"［成績］\s+(\d{1,2})/\s*(\d{1,2})", s)
+            if mmd:  # 場名の行「鳴 門［成績］      9/ 1」
+                md_ok = (int(mmd.group(1)), int(mmd.group(2))) == (date.month, date.day)
+                header_text = s.strip()[:80]
             md = RE_DATE.search(s)
             if md:
                 header_date_ok = tuple(int(md.group(i)) for i in (1, 2, 3)) == (date.year, date.month, date.day)
@@ -189,6 +200,10 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
                 body = mc.group(1)
             items = RE_PAY_ITEM.findall(body)
             rest = RE_PAY_ITEM.sub("", body).strip()
+            if not body.strip():  # 「複勝」だけの行：その券種の払戻が無い
+                out.payouts.append({"race_id": race["race_id"], "bet_type": bet, "combination": "",
+                                    "payout_yen": None, "popularity": None, "payout_kind": "none"})
+                continue
             if not items or rest:
                 out.issues.append({"level": "quarantined", "check": "k_payout_line", "venue": venue,
                                    "race_id": race["race_id"], "detail": s.strip()})
