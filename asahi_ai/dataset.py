@@ -25,8 +25,21 @@ def _days_in(raw: Path, year: int) -> list[dt.date]:
     return sorted(days)
 
 
-def _fingerprint(raw: Path, year: int) -> str:
+_CODE_FILES = ("layout.py", "archive.py", "codes.py", "parse_b.py", "parse_k.py", "build.py", "cli.py", "dataset.py")
+
+
+def code_fingerprint() -> str:
+    """解析に関わるソースの SHA-256（版の番号の上げ忘れでも、古い表を使わないように）。"""
     h = hashlib.sha256(PARSER_VERSION.encode())
+    base = Path(__file__).resolve().parent
+    for name in _CODE_FILES:
+        h.update(name.encode())
+        h.update((base / name).read_bytes())
+    return h.hexdigest()
+
+
+def _fingerprint(raw: Path, year: int) -> str:
+    h = hashlib.sha256(code_fingerprint().encode())
     for kind in ("B", "K"):
         for p in sorted((raw / kind / str(year)).glob("*.lzh")):
             h.update(p.name.encode())

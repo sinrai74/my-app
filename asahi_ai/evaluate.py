@@ -4,6 +4,7 @@
 
 - 学習：2021-01-01 〜 検証の開始の前日。検証（早期終了・λ の推定）：テスト開始の前の 90 日。テスト：1年（最後は直近まで）。
 - 回収率は「確定配当での仮想購入」（各レースで確率最大の3連単を100円）。オッズは使わない。
+  返還・不成立・特払いを反映する。予測は番組表の全艇で行い、欠場（結果の情報）は採点のときだけ使う。
 """
 from __future__ import annotations
 
@@ -17,9 +18,35 @@ import pandas as pd
 from . import dataset, features, model
 
 
+def _ticket_return(race_id: str, pick: tuple[int, int, int], tri_pay: dict, absent: set) -> float:
+    """3連単1点（100円）の払戻（円）。確定配当での仮想購入。
+
+    - 券種が不成立（全返還）：100
+    - 買い目に欠場の艇がいる：返還 100
+    - 的中：その配当
+    - 特払い（的中が無いときの払戻）：特払いの額
+    - それ以外：0
+    """
+    kinds = tri_pay.get(race_id, [])  # [(payout_kind, combination, 円), ...]
+    if any(k == "不成立" for k, _, _ in kinds):
+        return 100.0
+    if any((race_id, lane) in absent for lane in pick):
+        return 100.0
+    combo = "-".join(str(x) for x in pick)
+    for k, c, y in kinds:
+        if k == "hit" and c == combo:
+            return float(y or 0)
+    for k, _, y in kinds:
+        if k == "特払い":
+            return float(y or 0)
+    return 0.0
+
+
 def _metrics(pred: pd.DataFrame, test: pd.DataFrame, payouts: pd.DataFrame) -> dict:
+    """pred は番組表の全艇（欠場を含む）で作った予測。欠場は採点のときだけ扱う。"""
     t = test.sort_values(["race_id", "lane"])
-    win = t[t["won"] == 1].drop_duplicates("race_id").set_index("race_id")["lane"]
+    winners = t[t["won"] == 1].groupby("race_id")["lane"]
+    win = winners.first()[winners.size() == 1]  # 1着の同着のレースは採点から除く（学習と同じ）
     pr = pred.set_index("race_id")
     common = win.index.intersection(pr.index)
     pw = np.array([pr.at[r, f"p_win_{int(win[r])}"] for r in common])
@@ -30,33 +57,34 @@ def _metrics(pred: pd.DataFrame, test: pd.DataFrame, payouts: pd.DataFrame) -> d
     tri = np.stack(pr.loc[ac, "tri"].to_numpy())
     ai = act.loc[ac].to_numpy().astype(int)
     tri_ll = -np.log(np.clip(tri[np.arange(len(ai)), ai], 1e-12, 1)).mean()
-    pick = tri.argmax(1)
-    hit = (pick == ai).mean()
-    # 較正（1着の確率、10区分）
+    hit = (tri.argmax(1) == ai).mean()
     flat_p = pmat.ravel()
     flat_y = (np.arange(1, 7)[None, :] == win.loc[common].to_numpy()[:, None]).ravel()
     bins = np.clip((flat_p * 10).astype(int), 0, 9)
     calib = [{"bin": b, "n": int((bins == b).sum()), "pred": float(flat_p[bins == b].mean()),
               "actual": float(flat_y[bins == b].mean())} for b in range(10) if (bins == b).sum() > 0]
-    # 確定配当での仮想購入（3連単の本命1点、100円）
-    tp = payouts[(payouts["bet_type"] == "trifecta") & (payouts["payout_kind"] == "hit")]
-    paymap = {(r, c): y for r, c, y in zip(tp["race_id"], tp["combination"], tp["payout_yen"])}
-    all_r = pr.index.intersection(t["race_id"].unique())
-    tri_all = np.stack(pr.loc[all_r, "tri"].to_numpy())
-    picks = tri_all.argmax(1)
+    # 確定配当での仮想購入（3連単の本命1点、100円）。結果のあるレース（completed）すべて
+    tp = payouts[payouts["bet_type"] == "trifecta"]
+    tri_pay = {}
+    for r, k, c, y in zip(tp["race_id"], tp["payout_kind"], tp["combination"], tp["payout_yen"]):
+        tri_pay.setdefault(r, []).append((k, c, y))
+    absent = set(zip(t.loc[t["result_class"] == "absent", "race_id"], t.loc[t["result_class"] == "absent", "lane"]))
+    bet_races = pr.index.intersection(pd.Index(tri_pay.keys()))
     ret = 0.0
-    for r, k in zip(all_r, picks):
-        a, b, c = model.PERMS[k] + 1
-        ret += float(paymap.get((r, f"{a}-{b}-{c}"), 0) or 0)
+    for r in bet_races:
+        k = int(np.argmax(pr.at[r, "tri"]))
+        ret += _ticket_return(r, tuple(int(x) for x in model.PERMS[k] + 1), tri_pay, absent)
     return {"races": int(len(common)), "win_logloss": float(-np.log(np.clip(pw, 1e-12, 1)).mean()),
             "top1_acc": float(top1), "tri_races": int(len(ai)), "tri_logloss": float(tri_ll),
-            "tri_top_hit": float(hit), "roi_tri_top_pick": ret / (100 * len(all_r)) if len(all_r) else None,
-            "bets": int(len(all_r)), "calibration": calib}
+            "tri_top_hit": float(hit), "roi_tri_top_pick": ret / (100 * len(bet_races)) if len(bet_races) else None,
+            "bets": int(len(bet_races)), "calibration": calib}
 
 
-def _baseline_lane(f: pd.DataFrame) -> pd.DataFrame:
-    d = f.sort_values(["race_id", "lane"]).copy()
-    rate = d["vl365_win"].fillna(d.groupby("lane")["won"].transform("mean")).clip(1e-3, 1)
+def _baseline_lane(te: pd.DataFrame, tr: pd.DataFrame) -> pd.DataFrame:
+    """場×艇番の1着率（過去の窓）だけの基準。無いときは学習期間の艇番別の1着率で補う（テストの正解は使わない）。"""
+    d = te.sort_values(["race_id", "lane"]).copy()
+    lane_rate = tr[tr["result_class"].notna() & (tr["result_class"] != "absent")].groupby("lane")["won"].mean()
+    rate = d["vl365_win"].where(d["vl365_n"] > 0).fillna(d["lane"].map(lane_rate)).fillna(1 / 6).clip(1e-3, 1)
     d["score"] = np.log(rate)
     return model.race_probabilities(d, (1.0, 1.0))
 
@@ -94,14 +122,14 @@ def run(raw: str, years: list[int], cache: str | None, first_test: str, lags=(1,
             row = {"lag": lag, **{k: [str(x.date()) for x in v] for k, v in fd.items()},
                    "n_train_races": int(tr["race_id"].nunique())}
             m = model.StrengthModel().fit(tr, va, cols)
-            row["model"] = _metrics(m.predict(te[te["result_class"] != "absent"]), te, data["payouts"])
+            row["model"] = _metrics(m.predict(te), te, data["payouts"])
             row["model"]["lambda"] = m.lam
             row["model"]["best_iter"] = int(m.booster.best_iteration)
             imp = pd.Series(m.booster.feature_importance("gain"), index=cols).sort_values(ascending=False)
             row["model"]["top_features"] = {k: round(float(v), 1) for k, v in imp.head(15).items()}
             mb = model.StrengthModel().fit(tr, va, prog_cols)
-            row["program_only"] = _metrics(mb.predict(te[te["result_class"] != "absent"]), te, data["payouts"])
-            row["lane_baseline"] = _metrics(_baseline_lane(te[te["result_class"] != "absent"]), te, data["payouts"])
+            row["program_only"] = _metrics(mb.predict(te), te, data["payouts"])
+            row["lane_baseline"] = _metrics(_baseline_lane(te, tr), te, data["payouts"])
             report["folds"].append(row)
             print("FOLD " + json.dumps({k: (v if k not in ("model", "program_only", "lane_baseline") else
                                             {kk: vv for kk, vv in v.items() if kk != "calibration"})

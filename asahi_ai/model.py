@@ -87,22 +87,33 @@ class StrengthModel:
         return race_probabilities(d, self.lam)
 
 
+# 2着・3着の段の分母は「残っている艇の重みの和」。引き算（全体 − 1着 − 2着）は桁落ちするので使わない
+_M2 = np.ones((120, 6))
+_M2[np.arange(120), PERMS[:, 0]] = 0
+_M3 = _M2.copy()
+_M3[np.arange(120), PERMS[:, 1]] = 0
+
+
 def _trifecta_matrix(s: np.ndarray, lam: tuple[float, float]) -> np.ndarray:
-    """s：(レース数, 6) の点数（艇がいない所は −inf）。返り値：(レース数, 120) の確率。"""
+    """s：(レース数, 6) の点数（艇がいない所は −inf）。返り値：(レース数, 120) の確率。
+
+    出走が3艇未満のレースは、3連単が成り立たないので全部 0（合計 0）。
+    """
     a, b, c = PERMS[:, 0], PERMS[:, 1], PERMS[:, 2]
+    finite = np.isfinite(s)
 
     def stage(weight):
-        w = np.exp(weight - np.nanmax(np.where(np.isfinite(weight), weight, np.nan), axis=1, keepdims=True))
-        return np.where(np.isfinite(weight), w, 0.0)
+        mx = np.max(np.where(finite, weight, -np.inf), axis=1, keepdims=True)
+        mx = np.where(np.isfinite(mx), mx, 0.0)
+        return np.where(finite, np.exp(np.where(finite, weight, 0.0) - mx), 0.0)
     w1, w2, w3 = stage(s), stage(lam[0] * s), stage(lam[1] * s)
-    t1 = w1.sum(1, keepdims=True)
-    t2 = w2.sum(1, keepdims=True)
-    t3 = w3.sum(1, keepdims=True)
-    p1 = w1[:, a] / t1
-    p2 = w2[:, b] / (t2 - w2[:, a])
-    p3 = w3[:, c] / (t3 - w3[:, a] - w3[:, b])
-    p = p1 * p2 * p3
-    return np.nan_to_num(p, nan=0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        p1 = w1[:, a] / w1.sum(1, keepdims=True)
+        p2 = w2[:, b] / (w2 @ _M2.T)
+        p3 = w3[:, c] / (w3 @ _M3.T)
+        p = p1 * p2 * p3
+    p = np.where(np.isfinite(p), p, 0.0)
+    return p
 
 
 def _to_matrix(d: pd.DataFrame, col: str) -> tuple[np.ndarray, list[str], np.ndarray]:

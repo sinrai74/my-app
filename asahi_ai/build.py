@@ -138,6 +138,8 @@ def build_day(date: dt.date, b: BParse | None, k: KParse | None,
             status, evidence = "cancelled", f"K: {k.cancelled[rid]}"
         else:
             status = "result_missing"
+            _check(checks, ds, "warn", "k_result_missing", "race", rid,
+                   detail="B にあるが K に結果も中止の記載も無い（学習・評価から除く）")
         t.races.append({**r, "race_status": status, "status_evidence": evidence, "quarantined": rid in quarantined,
                         "b_file_id": b_file_id, "k_file_id": k_file_id if rid in k_races else None})
     if b is None:  # B が無い日は K だけのレースを記録（予測には使えない）

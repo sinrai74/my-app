@@ -51,6 +51,18 @@ class TestTrifecta(unittest.TestCase):
             bad = [i for i, t in enumerate(model.PERMS) if 2 in t]
             self.assertEqual(p[0, bad].sum(), 0.0)
 
+    def test_large_spread_is_stable(self):
+        for spread in (30, 40, 80):
+            s = np.array([[spread, 0.0, -1.0, -2.0, -3.0, -spread]])
+            for lam in [(1.0, 1.0), (2.0, 2.0), (0.3, 0.2)]:
+                p = model._trifecta_matrix(s, lam)
+                self.assertTrue(np.isfinite(p).all())
+                self.assertAlmostEqual(p.sum(), 1.0, places=9, msg=(spread, lam))
+
+    def test_fewer_than_three_boats(self):
+        s = np.array([[0.1, 0.2, -np.inf, -np.inf, -np.inf, -np.inf]])
+        self.assertEqual(model._trifecta_matrix(s, (1.0, 1.0)).sum(), 0.0)
+
     def test_actual_trifecta(self):
         d = pd.DataFrame({"race_id": ["A"] * 6, "lane": range(1, 7), "finish_position": [3, 1, 2, 4, 5, 6]})
         self.assertEqual(model.actual_trifecta(d)["A"], model.trifecta_index((2, 3, 1)))

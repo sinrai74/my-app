@@ -109,7 +109,7 @@ def main(argv=None) -> int:
         else:
             t = process(d, data["B"], data["K"], recs["B"]["lzh_sha256"], recs["K"]["lzh_sha256"])
             for kind in ("B", "K"):
-                if recs[kind]["capture_status"] in ("fetch_failed",):
+                if recs[kind]["capture_status"] in ("fetch_failed", "bad_archive"):
                     build._check(t.checks, d.isoformat(), "stop", f"{kind.lower()}_fetch_failed",
                                  detail=recs[kind]["error"])
                     t.day_verdict = "stop"
@@ -143,7 +143,7 @@ def backfill(args) -> int:
             recs[kind], raw[kind] = fe.get(kind, d)
             store.append_manifest(data, recs[kind])
         st = {k: recs[k]["capture_status"] for k in recs}
-        if "fetch_failed" in st.values():
+        if "fetch_failed" in st.values() or "bad_archive" in st.values():
             failed.append(d.isoformat())
             print("DAY " + json.dumps({"date": d.isoformat(), "verdict": "fetch_failed", "fetch": st}), flush=True)
             continue

@@ -26,10 +26,9 @@ WINDOWS = [
 def history(data: dict) -> pd.DataFrame:
     """過去の結果の1艇1行（集計の元）。出走した艇だけ（欠場は除く）。"""
     races = data["races"]
-    ok_days = set(data["days"].loc[data["days"]["day_verdict"] != "stop", "date"].astype(str).str[:10]) \
-        if len(data["days"]) else set()
+    ok_days = set(data["days"].loc[data["days"]["day_verdict"] != "stop", "date"].astype(str).str[:10])
     rr = races[(races["race_status"] == "completed") & (~races["quarantined"].astype(bool))]
-    rr = rr[rr["date"].dt.strftime("%Y-%m-%d").isin(ok_days)] if ok_days else rr
+    rr = rr[rr["date"].dt.strftime("%Y-%m-%d").isin(ok_days)]  # stop の日は使わない（全日 stop なら何も使わない）
     h = data["results"].merge(rr[["race_id", "date", "venue"]], on="race_id", how="inner", suffixes=("_x", ""))
     if "date_x" in h:
         h = h.drop(columns=["date_x"])

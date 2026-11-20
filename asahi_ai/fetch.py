@@ -32,9 +32,10 @@ def url_for(kind: str, d: dt.date) -> str:
 
 
 def _default_opener(url: str, timeout: float):
+    """返り値：(HTTP の状態, 本体, Last-Modified の値 or None)。"""
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.status, r.read()
+        return r.status, r.read(), r.headers.get("Last-Modified")
 
 
 class Fetcher:
@@ -53,20 +54,24 @@ class Fetcher:
                 self.sleep(gap)
 
     def _open(self, url):
+        """返り値：(状態, 本体, Last-Modified, エラー)。通信の失敗と 5xx・429 は1回だけ再試行する。"""
+        status, err = None, "unreachable"
         for attempt in (1, 2):
             self._wait()
             try:
-                status, data = self.opener(url, 60)
-                return status, data, None
+                r = self.opener(url, 60)
+                status, data = r[0], r[1]
+                lm = r[2] if len(r) > 2 else None
+                return status, data, lm, None
             except urllib.error.HTTPError as e:
-                return e.code, None, None
+                status, err = e.code, f"HTTP {e.code}: {e.reason}"
+                if not (e.code >= 500 or e.code == 429):
+                    return status, None, None, err
             except Exception as e:  # noqa: BLE001  通信の失敗
-                err = f"{type(e).__name__}: {e}"
-                if attempt == 2:
-                    return None, None, err
+                status, err = None, f"{type(e).__name__}: {e}"
             finally:
                 self._last = self.clock()
-        return None, None, "unreachable"
+        return status, None, None, err
 
     def path_for(self, kind: str, d: dt.date) -> Path:
         return self.raw_dir / kind / f"{d:%Y}" / f"{kind.lower()}{d:%y%m%d}.lzh"
@@ -75,10 +80,10 @@ class Fetcher:
         """取得して保存する。返り値は (manifest の1行, LZH のバイト列 or None)。"""
         url = url_for(kind, d)
         fetched_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-        status, data, err = self._open(url)
+        status, data, last_modified, err = self._open(url)
         rec = {
             "kind": kind, "date": d.isoformat(), "source_url": url, "fetched_at": fetched_at,
-            "http_status": status, "error": err, "lzh_sha256": None, "lzh_size": None,
+            "http_status": status, "last_modified": last_modified, "error": err, "lzh_sha256": None, "lzh_size": None,
             "member_name": None, "txt_sha256": None, "txt_size": None, "crc_ok": None,
             "capture_status": None, "layout_version": LAYOUT_VERSION, "parser_version": PARSER_VERSION,
         }
@@ -91,17 +96,23 @@ class Fetcher:
             rec.update(member_name=m.name, txt_sha256=archive.sha256(m.data), txt_size=len(m.data), crc_ok=True)
         except archive.ArchiveError as e:
             rec.update(crc_ok=False, error=str(e))
+            # 壊れたファイルは原本の場所に置かない（別の場所に残し、次の実行で取り直す）
+            bad = self.raw_dir / "_bad" / kind / f"{kind.lower()}{d:%y%m%d}.{rec['lzh_sha256'][:12]}.lzh"
+            bad.parent.mkdir(parents=True, exist_ok=True)
+            bad.write_bytes(data)
+            rec["capture_status"] = "bad_archive"
+            return rec, None
         p = self.path_for(kind, d)
         if p.exists():
             old = p.read_bytes()
             if archive.sha256(old) != rec["lzh_sha256"]:
                 rec["capture_status"] = "conflict"
                 raise RawConflict(f"{p} の既存の原本と内容が違います（上書きしない）: {json.dumps(rec, ensure_ascii=False)}")
-            rec["capture_status"] = "unchanged" if rec["crc_ok"] else "bad_archive"
+            rec["capture_status"] = "unchanged"
         else:
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_suffix(".tmp")
             tmp.write_bytes(data)
             tmp.replace(p)
-            rec["capture_status"] = "saved" if rec["crc_ok"] else "bad_archive"
+            rec["capture_status"] = "saved"
         return rec, data

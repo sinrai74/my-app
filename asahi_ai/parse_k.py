@@ -163,15 +163,27 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
                                    "race_id": race["race_id"], "detail": mr.group(4).strip()})
             out.races.append(race)
             continue
+        if in_summary and not seen_race and re.match(r"^\s{9,}\d-\d", s):
+            # 要約の表の、同着による続きの行（「1-2-5    1880 …」）。本文に同じ内容があるので記録だけ
+            out.issues.append({"level": "warn", "check": "k_summary_extra_combo", "venue": venue,
+                               "detail": s.strip()[:80]})
+            continue
         if in_summary and not seen_race and re.match(r"^\s{9,}\d{1,2}R\s", s):
             # 払戻の要約の表（最初のレースの見出しより前）。中止・不成立の行もここに来る
             ms = RE_SUMMARY.match(s)
             mcan = RE_CANCEL.match(s)
             if mcan:  # 要約の表の「1R  中 止」：中止と明記されたレース
                 out.cancelled[f"{date:%Y%m%d}{venue}{int(mcan.group(1)):02d}"] = s.strip()
-            elif ms:
+            elif ms and re.fullmatch(r"\d-\d-\d", ms.group(2)):
                 rid = f"{date:%Y%m%d}{venue}{int(ms.group(1)):02d}"
-                out.summary_trifecta[rid] = (ms.group(2), int(ms.group(3)))
+                if rid in out.summary_trifecta:  # 同着で2行目（3連単が複数）
+                    out.issues.append({"level": "warn", "check": "k_summary_extra_combo", "venue": venue,
+                                       "race_id": rid, "detail": s.strip()[:80]})
+                else:
+                    out.summary_trifecta[rid] = (ms.group(2), int(ms.group(3)))
+            else:  # 「11R  不成立 …」・同着の続きの行など。本文に同じ内容があるので記録だけ
+                out.issues.append({"level": "warn", "check": "k_summary_line", "venue": venue,
+                                   "detail": s.strip()[:80]})
             continue
         mcan = RE_CANCEL.match(s)
         if mcan:  # 「1R  中 止」：K に中止と明記されたレース
