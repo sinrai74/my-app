@@ -124,6 +124,16 @@ class TestParseB(unittest.TestCase):
         p2 = parse_b.parse_b(b"\r\n".join(lines), dt.date(2023, 1, 2))
         self.assertIn(("b_header_date", "stop"), [(i["check"], i["level"]) for i in p2.issues])
 
+    def test_placeholder_venue_warns(self):
+        raw = b"\r\n".join([b"STARTB", b"11BBGN", "ボートレースびわこ".encode("cp932"),
+                             "この場のデータ更新は、いましばらくお待ちください。".encode("cp932"), b"11BEND", b"FINALB", b""])
+        p = parse_b.parse_b(raw, D)
+        self.assertEqual([(i["check"], i["level"]) for i in p.issues], [("b_venue_placeholder", "warn")])
+        rawk = b"\r\n".join([b"STARTK", b"11KBGN", "ボートレースびわこ".encode("cp932"),
+                              "データは、この場の全レース終了後に登録されます。".encode("cp932"), b"11KEND", b"FINALK", b""])
+        pk = parse_k.parse_k(rawk, D)
+        self.assertEqual([(i["check"], i["level"]) for i in pk.issues], [("k_venue_placeholder", "warn")])
+
     def test_bad_value_quarantined(self):
         racers = synth.std_b_racers()
         racers[0] = synth.b_racer(1, racer_no="4001", cls="Z9")

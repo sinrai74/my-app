@@ -14,6 +14,9 @@ RE_DATE = re.compile(r"([０-９\d]{4})年[\s　]*([０-９\d]{1,2})月[\s　]*(
 RE_DAY = re.compile(r"第[\s　]*([０-９\d]{1,2})[\s　]*日|(初)[\s　]*日|(最[\s　]*終)[\s　]*日")
 
 
+PLACEHOLDER_WORDS = ("いましばらくお待ちください", "全レース終了後に登録")
+
+
 @dataclass
 class BParse:
     races: list[dict] = field(default_factory=list)
@@ -59,6 +62,10 @@ def parse_b(txt: bytes, date: dt.date) -> BParse:
             if venue is not None and header_date_ok is None and md_ok is True:
                 out.issues.append({"level": "warn", "check": "b_header_year_missing", "venue": venue,
                                    "detail": header_text})
+            elif venue is not None and header_date_ok is None and any(w in x for x in block_head for w in PLACEHOLDER_WORDS):
+                # 「この場のデータ更新は、いましばらくお待ちください。」などの仮の場（データが無い）
+                out.issues.append({"level": "warn", "check": "b_venue_placeholder", "venue": venue,
+                                   "detail": block_head})
             elif venue is not None and header_date_ok is not True:
                 out.issues.append({"level": "stop", "check": "b_header_date", "venue": venue,
                                    "detail": {"header": header_text, "block_head": block_head}})

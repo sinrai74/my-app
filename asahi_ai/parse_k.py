@@ -20,6 +20,9 @@ RE_SUMMARY = re.compile(r"^\s+(\d{1,2})R\s+(\d-\d-\d|\S+)\s+(\d+)\s+")
 RE_SUMMARY_HEAD = re.compile(r"^\s+\[払戻金\]")
 
 
+PLACEHOLDER_WORDS = ("いましばらくお待ちください", "全レース終了後に登録")
+
+
 @dataclass
 class KParse:
     races: list[dict] = field(default_factory=list)      # K にあったレース（race_id・気象・決まり手）
@@ -61,6 +64,10 @@ def parse_k(txt: bytes, date: dt.date) -> KParse:
                 # 年つきの日付の行が無い（場の全レース中止の日など）。場名の行の月日が一致すれば記録だけ
                 out.issues.append({"level": "warn", "check": "k_header_year_missing", "venue": venue,
                                    "detail": header_text})
+            elif venue is not None and header_date_ok is None and any(w in x for x in block_head for w in PLACEHOLDER_WORDS):
+                # 「この場のデータ更新は、いましばらくお待ちください。」などの仮の場（データが無い）
+                out.issues.append({"level": "warn", "check": "k_venue_placeholder", "venue": venue,
+                                   "detail": block_head})
             elif venue is not None and header_date_ok is not True:
                 out.issues.append({"level": "stop", "check": "k_header_date", "venue": venue,
                                    "detail": {"header": header_text, "block_head": block_head}})
