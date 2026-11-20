@@ -1,0 +1,41 @@
+# 朝刊AI 新モデル P1（データの土台）の検証 run（読み取り専用）
+# - 作業ブランチ asahi-ai-p1 への push でのみ動く（main・既存 workflow には影響しない）
+# - 試験を実行し、公式 B/K を 46 日分（第4・5段階で問題のあった日を中心に）1件ずつ3秒の間隔で取得して、
+#   新しいパーサ・検査の結果をログに出す（行頭 "DAY "）。リポジトリへの書き込み・通知はしない。
+name: "Asahi AI P1 verify (read-only)"
+
+on:
+  push:
+    branches: [asahi-ai-p1]
+    paths:
+      - "asahi_ai/**"
+      - "tests/asahi_ai/**"
+      - ".github/workflows/asahi_ai_p1_verify.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asahi-ai-p1-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11.9"
+
+      - name: Unit tests
+        run: python -B -m unittest discover -s tests/asahi_ai -t . -v
+
+      - name: Fetch and build (46 days)
+        run: python -B -u -m asahi_ai.cli fetch-build --dates-file asahi_ai/verify_days.txt --out p1_out || echo "EXIT=$?"
