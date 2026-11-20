@@ -21,7 +21,7 @@ concurrency:
 jobs:
   probe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -36,8 +36,8 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --quiet pandas numpy
 
-      - name: Run probe
-        run: python -u asahi_probe/probe_stage4.py --out probe_out
+      - name: Run probe (stage5 追加調査：2006〜2022年の抜き出し・ST 不一致6件・2026-02-01 の B)
+        run: python -u asahi_probe/probe_stage5.py
 
       - name: Upload results
         if: always()
