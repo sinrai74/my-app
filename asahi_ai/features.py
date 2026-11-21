@@ -9,15 +9,17 @@ import numpy as np
 import pandas as pd
 
 CLASS_MAP = {"A1": 4, "A2": 3, "B1": 2, "B2": 1}
-SUM_COLS = ["n", "win", "top2", "top3", "fin_sum", "st_sum", "st_sq", "st_n", "f_cnt", "late_cnt",
+SUM_COLS = ["n", "win", "top2", "top3", "fin_sum", "st_sum", "st_sq", "st_n", "f_cnt", "late_cnt", "mae_cnt",
             "ex_rank_sum", "ex_n", "cdiff_sum", "cdiff_n"]
 
 # (名前, キー, 窓の日数)
 WINDOWS = [
+    ("r30", ["racer_no"], 30),
     ("r180", ["racer_no"], 180),
     ("r365", ["racer_no"], 365),
     ("rl365", ["racer_no", "lane"], 365),
     ("rv730", ["racer_no", "venue"], 730),
+    ("m60", ["venue", "motor_no"], 60),
     ("m120", ["venue", "motor_no"], 120),
     ("vl365", ["venue", "lane"], 365),
 ]
@@ -52,6 +54,7 @@ def history(data: dict) -> pd.DataFrame:
     h["ex_n"] = h["ex_rank"].notna().astype(int)
     course = pd.to_numeric(h["course"], errors="coerce")
     h["cdiff_sum"] = (course - h["lane"]).fillna(0)
+    h["mae_cnt"] = (course < h["lane"]).astype(int)  # 前付け（艇番より内のコースに入った）
     h["cdiff_n"] = course.notna().astype(int)
     h["motor_no"] = pd.to_numeric(h["motor_no"], errors="coerce")
     return h
@@ -95,7 +98,7 @@ def window_features(target: pd.DataFrame, h: pd.DataFrame, lag: int) -> pd.DataF
         out[f"{name}_win"] = s["win"] / n
         out[f"{name}_top2"] = s["top2"] / n
         out[f"{name}_top3"] = s["top3"] / n
-        if name in ("r180", "r365", "rv730", "rl365"):
+        if name in ("r30", "r180", "r365", "rv730", "rl365"):
             out[f"{name}_fin"] = s["fin_sum"] / n
         if name in ("r180", "r365"):
             stn = s["st_n"].replace(0, np.nan)
@@ -106,8 +109,18 @@ def window_features(target: pd.DataFrame, h: pd.DataFrame, lag: int) -> pd.DataF
             out[f"{name}_late"] = s["late_cnt"]
             out[f"{name}_exrank"] = s["ex_rank_sum"] / s["ex_n"].replace(0, np.nan)
             out[f"{name}_cdiff"] = s["cdiff_sum"] / s["cdiff_n"].replace(0, np.nan)
-        if name == "m120":
-            out["m120_exrank"] = s["ex_rank_sum"] / s["ex_n"].replace(0, np.nan)
+            out[f"{name}_mae"] = s["mae_cnt"] / s["cdiff_n"].replace(0, np.nan)
+        if name in ("m60", "m120"):
+            out[f"{name}_exrank"] = s["ex_rank_sum"] / s["ex_n"].replace(0, np.nan)
+    # 前に走った日からの日数（休み明け）。lag の日までの最後の出走日
+    last = h[["racer_no", "date"]].drop_duplicates().rename(columns={"date": "_last"})
+    last["_end"] = last["_last"]
+    tt = t[["racer_no", "_end", "_row"]].dropna(subset=["racer_no"]).copy()
+    tt["racer_no"], last["racer_no"] = tt["racer_no"].astype(str), last["racer_no"].astype(str)
+    tt["_end"], last["_end"] = tt["_end"].astype("datetime64[ns]"), last["_end"].astype("datetime64[ns]")
+    m = pd.merge_asof(tt.sort_values("_end"), last.sort_values("_end"), on="_end", by="racer_no", direction="backward")
+    gap = (m.set_index("_row")["_end"] - m.set_index("_row")["_last"]).dt.days
+    out["rest_days"] = gap.reindex(t["_row"]).to_numpy() + lag
     return pd.DataFrame(out, index=target.index)
 
 
@@ -137,7 +150,8 @@ def program_features(data: dict) -> pd.DataFrame:
     return f
 
 
-RELATIVE = ["nat_win", "loc_win", "motor_2r", "cls", "r180_win", "r180_top2", "r180_st", "rl365_win",
+RELATIVE = ["nat_win", "nat_2r", "loc_win", "motor_2r", "cls", "r30_top2", "r180_win", "r180_top2", "r180_st",
+            "r180_fin", "rl365_top2", "r365_st", "m60_top2", "ser_mean", "rl365_win",
             "r180_exrank", "m120_top2"]
 
 

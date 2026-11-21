@@ -54,6 +54,7 @@ class StrengthModel:
         self.booster = None
         self.features: list[str] = []
         self.lam = (1.0, 1.0)
+        self.temp = 1.0
 
     def fit(self, train: pd.DataFrame, valid: pd.DataFrame, features: list[str]):
         import lightgbm as lgb
@@ -74,11 +75,13 @@ class StrengthModel:
         self.booster = lgb.train(params, dtr, num_boost_round=self.num_rounds, valid_sets=[dva],
                                  valid_names=["valid"], feval=feval,
                                  callbacks=[lgb.early_stopping(100, verbose=False), lgb.record_evaluation(evals)])
+        raw = self.booster.predict(va[features], num_iteration=self.booster.best_iteration)
+        self.temp = fit_temperature(raw, gva, va["won"].to_numpy())
         self.lam = fit_lambda(self.score(va), va)
         return self
 
     def score(self, df: pd.DataFrame) -> np.ndarray:
-        return self.booster.predict(df[self.features], num_iteration=self.booster.best_iteration)
+        return self.temp * self.booster.predict(df[self.features], num_iteration=self.booster.best_iteration)
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         """df：1艇1行（同じ race_id に 6 行以内）。1着の確率と3連単120通りの確率。"""
@@ -169,3 +172,14 @@ def fit_lambda(score: np.ndarray, va: pd.DataFrame) -> tuple[float, float]:
         return -np.log(np.clip(p, 1e-12, 1)).mean()
     r = minimize(nll, x0=[0.8, 0.6], bounds=[(0.1, 2.0), (0.1, 2.0)], method="L-BFGS-B")
     return float(r.x[0]), float(r.x[1])
+
+
+def fit_temperature(raw: np.ndarray, group_idx: np.ndarray, y: np.ndarray) -> float:
+    """1着の確率の較正：点数に掛ける係数 a を、検証の期間のレース内の対数損失が最小になるように決める。"""
+    from scipy.optimize import minimize_scalar
+
+    def nll(a):
+        p = _group_softmax(a * raw, group_idx)
+        return -np.log(np.clip(p[y == 1], 1e-12, 1)).mean()
+    r = minimize_scalar(nll, bounds=(0.3, 3.0), method="bounded")
+    return float(r.x)
