@@ -79,7 +79,8 @@ def run(data: Path, day: dt.date, stop_after_min: float, sleep=time.sleep, now=l
         out = data / "odds" / str(day.year) / day.isoformat() / f"{t['race_id']}_{label}.json"
         if out.exists():
             continue
-        if (now() - t_start).total_seconds() / 60 > stop_after_min:
+        # 区切りの時刻より後に予定された取得は、待たずに次の実行へ回す（長く待つと実行の時間の上限を超えるため）
+        if max(at, now()) > t_start + dt.timedelta(minutes=stop_after_min):
             stats["remaining"] = sum(1 for j in jobs[i:] if not (data / "odds" / str(day.year) / day.isoformat()
                                                                    / f"{j[2]['race_id']}_{j[1]}.json").exists())
             break

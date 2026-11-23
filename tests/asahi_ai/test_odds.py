@@ -116,6 +116,38 @@ class TestCapture(unittest.TestCase):
             self.assertTrue(all(2.9 <= r["minutes_before"] <= 10.1 for r in saved))  # 締切の 10 分前・3 分前
             self.assertEqual({r["snapshot"] for r in saved}, {"m10", "m3"})
 
+    @unittest.skipUnless(HAS_BS4, "bs4 が無い")
+    def test_stop_before_long_wait_and_resume(self):
+        """区切りの時刻より後の取得は待たずに残し（実行の時間の上限を超えない）、次の実行で続きを取る。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._pred(tmp, n=6)   # 締切 10:00〜10:35 → 取得の予定は 09:50〜10:32
+            clock = {"t": dt.datetime(2026, 11, 24, 8, 0, tzinfo=odds_capture.JST)}
+            def now():
+                return clock["t"]
+            def sleep(s):
+                clock["t"] += dt.timedelta(seconds=s)
+            saved = []
+            with mock.patch.object(odds, "fetch_html", return_value=(200, page().encode(), None)), \
+                    mock.patch.object(odds_capture, "_save_and_push", side_effect=lambda d, p, r: (saved.append(r), p.parent.mkdir(parents=True, exist_ok=True), p.write_text("x"))):
+                st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 150, sleep=sleep, now=now)   # 区切り 10:30
+                self.assertEqual(st["remaining"], 1)
+                self.assertLessEqual(clock["t"], dt.datetime(2026, 11, 24, 10, 31, tzinfo=odds_capture.JST))
+                st2 = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 150, sleep=sleep, now=now)
+            self.assertEqual(st["captured"] + st2["captured"], 12)
+            self.assertEqual(st2["remaining"], 0)
+            self.assertEqual(len({(r["race_id"], r["snapshot"]) for r in saved}), 12)
+
+    @unittest.skipUnless(HAS_BS4, "bs4 が無い")
+    def test_long_wait_beyond_limit_is_not_slept(self):
+        """朝早くに起動して最初の取得が区切りより後なら、待たずに次の実行へ回す。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._pred(tmp, n=6)
+            clock = {"t": dt.datetime(2026, 11, 24, 3, 0, tzinfo=odds_capture.JST)}
+            slept = []
+            st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 330, sleep=slept.append, now=lambda: clock["t"])
+            self.assertEqual(st["remaining"], 12)
+            self.assertEqual(slept, [])
+
 
 if __name__ == "__main__":
     unittest.main()
