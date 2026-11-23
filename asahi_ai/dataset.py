@@ -63,8 +63,34 @@ def build_year(raw: Path, year: int) -> dict:
     return out
 
 
-def load(raw_dir: str | Path, years: list[int], cache_dir: str | Path | None = None) -> dict:
-    """年をまたいで表を読み込む。date は datetime64 にそろえる。"""
+# 学習・評価で使う列だけに絞る（7年分を 7GB のメモリに収めるため）
+SLIM = {
+    "races": ["race_id", "date", "venue", "race_no", "distance_m", "meet_day", "deadline_time", "race_status",
+              "quarantined"],
+    "entries": ["race_id", "date", "lane", "racer_no", "age", "weight", "class", "nat_win", "nat_2r", "loc_win",
+                "loc_2r", "motor_no", "motor_2r", "boat_no", "boat_2r", "series_orders"],
+    "results": ["race_id", "date", "lane", "racer_no", "finish_position", "result_class", "course", "st_value",
+                "st_flag", "exhibition_time", "motor_no"],
+    "race_conditions": ["race_id", "weather", "wind_dir", "wind_speed_m", "wave_cm", "winning_technique"],
+    "payouts": ["race_id", "bet_type", "combination", "payout_yen", "popularity", "payout_kind"],
+}
+CATEGORY: set[str] = set()  # 文字列の列はそのまま（category にすると groupby・map の挙動が変わるため）
+
+
+def _slim(name: str, df: pd.DataFrame) -> pd.DataFrame:
+    if name not in SLIM or df.empty:
+        return df
+    df = df[[c for c in SLIM[name] if c in df.columns]].copy()
+    if name == "payouts":  # 評価で使うのは3連単だけ
+        df = df[df["bet_type"] == "trifecta"]
+    for c in df.columns:
+        if df[c].dtype == "float64":
+            df[c] = df[c].astype("float32")
+    return df
+
+
+def load(raw_dir: str | Path, years: list[int], cache_dir: str | Path | None = None, slim: bool = False) -> dict:
+    """年をまたいで表を読み込む。date は datetime64 にそろえる。slim=True で学習・評価に要る列だけにする。"""
     raw = Path(raw_dir)
     parts = []
     for y in years:
@@ -84,11 +110,17 @@ def load(raw_dir: str | Path, years: list[int], cache_dir: str | Path | None = N
                     pickle.dump({"fingerprint": fp, "data": data}, f)
         else:
             data = build_year(raw, y)
+        if slim:
+            data = {k: _slim(k, v) for k, v in data.items()}
         parts.append(data)
     out = {}
     for name in TABLES + ("days",):
         frames = [p[name] for p in parts if len(p[name])]
         df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        if slim:
+            for c in df.columns:
+                if c in CATEGORY and df[c].dtype != "category":
+                    df[c] = df[c].astype("category")
         if "date" in df:
             df["date"] = pd.to_datetime(df["date"])
         out[name] = df

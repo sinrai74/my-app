@@ -62,8 +62,8 @@ class StrengthModel:
         self.features = features
         gtr = pd.factorize(tr["race_id"])[0]
         gva = pd.factorize(va["race_id"])[0]
-        dtr = lgb.Dataset(tr[features], label=tr["won"], free_raw_data=False)
-        dva = lgb.Dataset(va[features], label=va["won"], reference=dtr, free_raw_data=False)
+        dtr = lgb.Dataset(tr[features], label=tr["won"], free_raw_data=True)
+        dva = lgb.Dataset(va[features], label=va["won"], reference=dtr, free_raw_data=True)
         params = {**self.params, "objective": make_objective(gtr), "metric": "None"}
         # 検証の評価は検証の集合のグループで行う
         evals = {}

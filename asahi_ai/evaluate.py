@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -103,17 +104,44 @@ def folds(dates: pd.Series, first_test: str, train_start: str = "2021-01-01", te
 def run(raw: str, years: list[int], cache: str | None, first_test: str, lags=(1, 2),
         train_start: str = "2021-01-01", test_months: int = 12, valid_days: int = 90) -> dict:
     t0 = time.time()
-    data = dataset.load(raw, years, cache)
+    data = dataset.load(raw, years, cache, slim=True)
     report = {"data": dataset.summary(data), "folds": []}
     h = features.history(data)
+    data["race_conditions"] = None  # 評価では使わない（メモリを空ける）
     races = data["races"]
-    usable = races[(races["race_status"] == "completed") & (~races["quarantined"].astype(bool))]["race_id"]
+    usable = set(races[(races["race_status"] == "completed") & (~races["quarantined"].astype(bool))]["race_id"])
+    del races
     stop_days = set(data["days"].loc[data["days"]["day_verdict"] == "stop", "date"].astype(str).str[:10])
+    import gc
+    import pickle
+    import tempfile
+    payouts = data["payouts"]
+    tmp = Path(tempfile.mkdtemp(prefix="asahi_feat_", dir=cache))
+    # 第1段：lag ごと・年ごとに特徴量を作ってファイルに置く（元の表と同時にメモリに置かないため）
     for lag in lags:
-        f = features.build(data, lag=lag, h=h)
-        f = f[f["race_id"].isin(set(usable)) & ~f["date"].dt.strftime("%Y-%m-%d").isin(stop_days)]
+        for y, fy in features.build_years(data, lag, h):
+            fy = fy[fy["race_id"].isin(usable) & ~fy["date"].dt.strftime("%Y-%m-%d").isin(stop_days)]
+            cols = features.feature_columns(fy)
+            fy[cols] = fy[cols].astype("float32")
+            with (tmp / f"lag{lag}_{y}.pkl").open("wb") as fh:
+                pickle.dump(fy, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            del fy
+            gc.collect()
+    del data, h
+    gc.collect()
+    # 第2段：特徴量だけを読み込んで学習・評価
+    for lag in lags:
+        parts = []
+        for p in sorted(tmp.glob(f"lag{lag}_*.pkl")):
+            with p.open("rb") as fh:
+                parts.append(pickle.load(fh))
+        f = pd.concat(parts, ignore_index=True)
+        del parts
+        gc.collect()
         cols = features.feature_columns(f)
-        prog_cols = [c for c in cols if not any(c.startswith(p) for p in ("r180", "r365", "rl365", "rv730", "m120", "vl365"))]
+        # 番組表だけの基準：過去の結果から作った特徴量（窓の集計・休み明け）と、それを使ったレース内の比較を除く
+        hist_prefix = tuple(name + "_" for name, _, _ in features.WINDOWS) + ("rest_days",)
+        prog_cols = [c for c in cols if not c.startswith(hist_prefix)]
         for fd in folds(f["date"], first_test, train_start, test_months, valid_days):
             sel = lambda a, b: f[(f["date"] >= a) & (f["date"] <= b)]
             tr, va, te = sel(*fd["train"]), sel(*fd["valid"]), sel(*fd["test"])
@@ -122,18 +150,27 @@ def run(raw: str, years: list[int], cache: str | None, first_test: str, lags=(1,
             row = {"lag": lag, **{k: [str(x.date()) for x in v] for k, v in fd.items()},
                    "n_train_races": int(tr["race_id"].nunique())}
             m = model.StrengthModel().fit(tr, va, cols)
-            row["model"] = _metrics(m.predict(te), te, data["payouts"])
+            row["model"] = _metrics(m.predict(te), te, payouts)
             row["model"]["lambda"] = m.lam
+            row["model"]["temp"] = m.temp
             row["model"]["best_iter"] = int(m.booster.best_iteration)
             imp = pd.Series(m.booster.feature_importance("gain"), index=cols).sort_values(ascending=False)
             row["model"]["top_features"] = {k: round(float(v), 1) for k, v in imp.head(15).items()}
+            del m
             mb = model.StrengthModel().fit(tr, va, prog_cols)
-            row["program_only"] = _metrics(mb.predict(te), te, data["payouts"])
-            row["lane_baseline"] = _metrics(_baseline_lane(te, tr), te, data["payouts"])
+            row["program_only"] = _metrics(mb.predict(te), te, payouts)
+            del mb
+            row["lane_baseline"] = _metrics(_baseline_lane(te, tr), te, payouts)
             report["folds"].append(row)
             print("FOLD " + json.dumps({k: (v if k not in ("model", "program_only", "lane_baseline") else
                                             {kk: vv for kk, vv in v.items() if kk != "calibration"})
                                         for k, v in row.items()}, ensure_ascii=False, default=str), flush=True)
+            del tr, va, te
+            gc.collect()
+        del f
+        gc.collect()
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
     report["seconds"] = round(time.time() - t0)
     return report
 

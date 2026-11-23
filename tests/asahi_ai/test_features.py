@@ -45,6 +45,15 @@ class TestAsOf(unittest.TestCase):
         self.assertAlmostEqual(w.loc[0, "r180_win"], 0.5)
         self.assertAlmostEqual(w.loc[0, "r180_fin"], 2.0)
 
+    def test_target_index_not_starting_at_zero(self):
+        # 年ごとに分けて作るとき、target の索引は 0 から始まらない（11/23 に見つけた欠陥：値が全部 NaN になった）
+        h = hist_rows([("2024-03-09", "4001", "01", 1, 1, 10), ("2024-03-08", "4001", "01", 1, 4, 10)])
+        t = target()
+        t.index = [12345]
+        w = features.window_features(t, h, lag=1)
+        self.assertEqual(w.loc[12345, "r180_n"], 2)
+        self.assertAlmostEqual(w.loc[12345, "r180_win"], 0.5)
+
     def test_lag2_excludes_previous_day(self):
         h = hist_rows([("2024-03-09", "4001", "01", 1, 1, 10), ("2024-03-08", "4001", "01", 1, 4, 10)])
         self.assertEqual(features.window_features(target(), h, lag=1).loc[0, "r180_n"], 2)

@@ -57,6 +57,11 @@ def history(data: dict) -> pd.DataFrame:
     h["mae_cnt"] = (course < h["lane"]).astype(int)  # 前付け（艇番より内のコースに入った）
     h["cdiff_n"] = course.notna().astype(int)
     h["motor_no"] = pd.to_numeric(h["motor_no"], errors="coerce")
+    # 集計に要る列だけを残す（メモリを抑える）。race_id は試験・確認のために残す
+    keep = ["race_id", "date", "racer_no", "venue", "lane", "motor_no"] + SUM_COLS
+    h = h[keep].copy()
+    h[SUM_COLS] = h[SUM_COLS].astype("float32")
+    h["lane"] = h["lane"].astype("int8")
     return h
 
 
@@ -92,7 +97,7 @@ def window_features(target: pd.DataFrame, h: pd.DataFrame, lag: int) -> pd.DataF
         t["_start"] = t["_end"] - pd.Timedelta(days=days)
         hi = _asof(t, cum, keys, "_end")
         lo = _asof(t, cum, keys, "_start")
-        s = pd.DataFrame(hi - lo, columns=SUM_COLS)
+        s = pd.DataFrame((hi - lo).astype("float32"), columns=SUM_COLS)
         n = s["n"].replace(0, np.nan)
         out[f"{name}_n"] = s["n"]
         out[f"{name}_win"] = s["win"] / n
@@ -121,7 +126,8 @@ def window_features(target: pd.DataFrame, h: pd.DataFrame, lag: int) -> pd.DataF
     m = pd.merge_asof(tt.sort_values("_end"), last.sort_values("_end"), on="_end", by="racer_no", direction="backward")
     gap = (m.set_index("_row")["_end"] - m.set_index("_row")["_last"]).dt.days
     out["rest_days"] = gap.reindex(t["_row"]).to_numpy() + lag
-    return pd.DataFrame(out, index=target.index)
+    # 値は位置で対応づける（target の索引が 0 から始まらなくても、ずれないように）
+    return pd.DataFrame({k: np.asarray(v, dtype="float32") for k, v in out.items()}, index=target.index)
 
 
 def program_features(data: dict) -> pd.DataFrame:
@@ -141,6 +147,8 @@ def program_features(data: dict) -> pd.DataFrame:
               "distance_m", "meet_day"]:
         f[c] = pd.to_numeric(e[c], errors="coerce")
     f["deadline_hour"] = pd.to_numeric(e["deadline_time"].astype(str).str[:2], errors="coerce")
+    num = [c for c in f.columns if c not in ("race_id", "date", "venue", "racer_no") and f[c].dtype == "float64"]
+    f[num] = f[num].astype("float32")
     ser = e["series_orders"].fillna("").astype(str)
     digits = ser.apply(lambda s: [int(ch) for ch in s if ch.isdigit() and ch != "0"])
     f["ser_n"] = ser.str.len()
@@ -155,22 +163,40 @@ RELATIVE = ["nat_win", "nat_2r", "loc_win", "motor_2r", "cls", "r30_top2", "r180
             "r180_exrank", "m120_top2"]
 
 
-def build(data: dict, lag: int, h: pd.DataFrame | None = None) -> pd.DataFrame:
-    """全レースの1艇1行の特徴量と正解。"""
-    if h is None:
-        h = history(data)
-    f = program_features(data)
-    w = window_features(f, h, lag)
-    f = pd.concat([f, w], axis=1)
+def _finish(f: pd.DataFrame, results: pd.DataFrame) -> pd.DataFrame:
+    """レース内の比較と正解を付ける（レースの単位で閉じた計算なので、年ごとに分けても同じ）。"""
+    rel = {}
     for c in RELATIVE:
         g = f.groupby("race_id")[c]
-        f[f"{c}_rank"] = g.rank(ascending=False, method="average")
-        f[f"{c}_diff"] = f[c] - g.transform("mean")
-    res = data["results"][["race_id", "lane", "finish_position", "result_class"]]
+        rel[f"{c}_rank"] = g.rank(ascending=False, method="average").astype("float32")
+        rel[f"{c}_diff"] = (f[c] - g.transform("mean")).astype("float32")
+    f = pd.concat([f, pd.DataFrame(rel, index=f.index)], axis=1)
+    res = results[["race_id", "lane", "finish_position", "result_class"]]
     f = f.merge(res, on=["race_id", "lane"], how="left")
     f["finish_position"] = pd.to_numeric(f["finish_position"], errors="coerce")
-    f["won"] = (f["finish_position"] == 1).astype(int)
+    f["won"] = (f["finish_position"] == 1).astype("int8")
     return f
+
+
+def build_years(data: dict, lag: int, h: pd.DataFrame | None = None):
+    """年ごとに特徴量を作って順に返す（メモリを抑えるため）。各年の結果は build() の該当部分と同じ。"""
+    import gc
+    if h is None:
+        h = history(data)
+    prog = program_features(data)
+    years = prog["date"].dt.year
+    for y in sorted(years.unique()):
+        f = prog.loc[years == y]
+        f = pd.concat([f, window_features(f, h, lag)], axis=1)
+        race_ids = set(f["race_id"])
+        res = data["results"][data["results"]["race_id"].isin(race_ids)]
+        yield int(y), _finish(f.reset_index(drop=True), res)
+        gc.collect()
+
+
+def build(data: dict, lag: int, h: pd.DataFrame | None = None) -> pd.DataFrame:
+    """全レースの1艇1行の特徴量と正解。"""
+    return pd.concat([f for _, f in build_years(data, lag, h)], ignore_index=True)
 
 
 FEATURES_EXCLUDE = {"race_id", "date", "venue", "racer_no", "motor_no", "finish_position", "result_class", "won"}
