@@ -14,6 +14,7 @@ SUM_COLS = ["n", "win", "top2", "top3", "fin_sum", "st_sum", "st_sq", "st_n", "f
 
 # (名前, キー, 窓の日数)
 WINDOWS = [
+    ("rv7", ["racer_no", "venue"], 7),   # 今節（同じ場の直近7日）。朝の番組表には今節成績が無いので K から作る
     ("r30", ["racer_no"], 30),
     ("r180", ["racer_no"], 180),
     ("r365", ["racer_no"], 365),
@@ -103,7 +104,7 @@ def window_features(target: pd.DataFrame, h: pd.DataFrame, lag: int) -> pd.DataF
         out[f"{name}_win"] = s["win"] / n
         out[f"{name}_top2"] = s["top2"] / n
         out[f"{name}_top3"] = s["top3"] / n
-        if name in ("r30", "r180", "r365", "rv730", "rl365"):
+        if name in ("rv7", "r30", "r180", "r365", "rv730", "rl365"):
             out[f"{name}_fin"] = s["fin_sum"] / n
         if name in ("r180", "r365"):
             stn = s["st_n"].replace(0, np.nan)
@@ -158,8 +159,8 @@ def program_features(data: dict) -> pd.DataFrame:
     return f
 
 
-RELATIVE = ["nat_win", "nat_2r", "loc_win", "motor_2r", "cls", "r30_top2", "r180_win", "r180_top2", "r180_st",
-            "r180_fin", "rl365_top2", "r365_st", "m60_top2", "ser_mean", "rl365_win",
+RELATIVE = ["nat_win", "nat_2r", "motor_2r", "cls", "r30_top2", "r180_win", "r180_top2", "r180_st",
+            "r180_fin", "rl365_top2", "r365_st", "m60_top2", "rv7_fin", "rv730_win", "rl365_win",
             "r180_exrank", "m120_top2"]
 
 
@@ -200,7 +201,11 @@ def build(data: dict, lag: int, h: pd.DataFrame | None = None) -> pd.DataFrame:
 
 
 FEATURES_EXCLUDE = {"race_id", "date", "venue", "racer_no", "motor_no", "finish_position", "result_class", "won"}
+# 朝の番組表（BoatraceOpenAPI programs）では、公式の B と値が違う・無い項目（2026-11-23 の調査、Project 18）。
+# 学習と毎朝の予測で同じ定義にするため、モデルには入れない。
+# weight：朝は小数（その時点の体重）で B は整数。loc_win・loc_2r：約13% が違う。今節成績・節日：朝には無い。
+NOT_IN_MORNING = {"weight", "loc_win", "loc_2r", "meet_day", "ser_n", "ser_mean", "ser_win", "ser_bad"}
 
 
 def feature_columns(f: pd.DataFrame) -> list[str]:
-    return [c for c in f.columns if c not in FEATURES_EXCLUDE]
+    return [c for c in f.columns if c not in FEATURES_EXCLUDE and c not in NOT_IN_MORNING]
