@@ -1,0 +1,65 @@
+# 朝刊AI 新モデル：オッズの記録（研究用。予測には使わない。公開・投稿・通知はしない）
+# - 非公開の asahi-ai-data の毎朝の予測のあとで起動される（workflow_dispatch。起動用の鍵は asahi-ai-data 側）
+# - 対象：1号艇危険の上位20と荒れの上位20を合わせたレース。締切の10分前・3分前に、公式の3連単オッズを1件ずつ取得
+# - 保存先は asahi-ai-data（ASAHI_DATA_TOKEN：asahi-ai-data の Contents だけ書ける鍵）
+# - この公開リポジトリのログには、レースの番号・予想・オッズを出さない（件数と時刻だけ）
+name: "Asahi AI odds capture (record only)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "対象の日（YYYY-MM-DD。空なら今日）"
+        default: ""
+
+permissions:
+  contents: read
+  actions: write   # 6時間の上限に近づいたら、続きの実行を始めるため
+
+concurrency:
+  group: asahi-odds-capture
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            asahi_ai
+            lzh_extract.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with: {python-version: "3.11.9"}
+      - run: python -m pip install --quiet beautifulsoup4==4.12.3
+      - name: Clone data (private)
+        env:
+          TOKEN: ${{ secrets.ASAHI_DATA_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 "https://x-access-token:${TOKEN}@github.com/sinrai74/asahi-ai-data.git" data
+          git -C data config user.name "github-actions[bot]"
+          git -C data config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Capture
+        env:
+          DATE_IN: ${{ inputs.date }}
+        run: |
+          set -euo pipefail
+          D="${DATE_IN:-$(TZ=Asia/Tokyo date +%F)}"
+          echo "date=$D" >> "$GITHUB_ENV"
+          python -B -u -m asahi_ai.odds_capture --data data --date "$D" --stop-after-min 330
+      - name: Continue if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          R=$(python -c "import json;print(json.load(open('odds_result.json')).get('remaining',0))")
+          echo "remaining=$R"
+          if [ "$R" != "0" ]; then
+            gh workflow run asahi_odds_capture.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}" -f date="$date"
+          fi
+      - name: Remove clone
+        if: always()
+        run: rm -rf data
