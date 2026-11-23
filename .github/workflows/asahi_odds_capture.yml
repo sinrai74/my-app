@@ -40,7 +40,12 @@ jobs:
           TOKEN: ${{ secrets.ASAHI_DATA_TOKEN }}
         run: |
           set -euo pipefail
-          git clone -q --depth 1 "https://x-access-token:${TOKEN}@github.com/sinrai74/asahi-ai-data.git" data
+          T="$(printf '%s' "$TOKEN" | tr -d '[:space:]')"
+          # 鍵の中身は出さない。長さ・前置き・空白の有無・API の応答コードだけ出す
+          echo "token_len=${#T} raw_len=${#TOKEN} prefix_ok=$([[ "$T" == github_pat_* || "$T" == ghp_* ]] && echo yes || echo no)"
+          echo "api_user=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $T" https://api.github.com/user)"
+          echo "api_repo=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $T" https://api.github.com/repos/sinrai74/asahi-ai-data)"
+          git clone -q --depth 1 "https://x-access-token:${T}@github.com/sinrai74/asahi-ai-data.git" data
           git -C data config user.name "github-actions[bot]"
           git -C data config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - name: Capture
