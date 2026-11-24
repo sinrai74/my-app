@@ -104,15 +104,38 @@ class LoadedModel(model.StrengthModel):
 
 
 # ---------------------------------------------------------------- 毎朝の予測
-def _ensure_k(data_dir: Path, d: dt.date) -> bool:
-    """前日の K が手元に無ければ取りに行く（1件・3秒の間隔は Fetcher が守る）。"""
+def _ensure_raw(data_dir: Path, kind: str, d: dt.date, purpose: str = "morning") -> bool:
+    """公式の B/K が手元に無ければ取りに行く（1件・3秒の間隔は Fetcher が守る）。"""
     fe = fetch.Fetcher(data_dir / "raw")
-    if fe.path_for("K", d).exists():
+    if fe.path_for(kind, d).exists():
         return True
-    rec, raw = fe.get("K", d)
+    rec, raw = fe.get(kind, d)
     from . import store
-    store.append_manifest(data_dir, {**rec, "purpose": "morning"})
+    store.append_manifest(data_dir, {**rec, "purpose": purpose})
     return raw is not None
+
+
+def _ensure_k(data_dir: Path, d: dt.date) -> bool:
+    """前日の K が手元に無ければ取りに行く。"""
+    return _ensure_raw(data_dir, "K", d)
+
+
+def b_to_tables(b, d: dt.date) -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
+    """公式の B → 朝の番組表と同じ形の (races, entries, issues)。朝の番組表が出ないときの予備（2026-11-24 本人の承認）。
+    モデルに入れる項目は、朝の番組表と B で一致することを確かめてある（Project 18）。"""
+    issues = [i for i in b.issues if i.get("level") in ("stop", "quarantined")]
+    races = []
+    for r in b.races:
+        closed = f"{d.isoformat()} {r['deadline_time']}:00" if r.get("deadline_time") else None
+        races.append({"race_id": r["race_id"], "date": d.isoformat(), "venue": r["venue"], "race_no": r["race_no"],
+                      "distance_m": r.get("distance_m"), "deadline_time": r.get("deadline_time"),
+                      "race_closed_at": closed, "meet_day": None, "race_status": "scheduled", "quarantined": False})
+    cols = ["race_id", "date", "lane", "racer_no", "age", "weight", "class", "nat_win", "nat_2r", "loc_win", "loc_2r",
+            "motor_no", "motor_2r", "boat_no", "boat_2r"]
+    entries = pd.DataFrame([{k: e.get(k) for k in cols} for e in b.entries], columns=cols)
+    entries["date"] = d.isoformat()
+    entries["series_orders"] = ""   # 朝の番組表に無い項目は、朝と同じく空にする
+    return pd.DataFrame(races), entries, issues
 
 
 def run_morning(data_dir: Path, d: dt.date, cache: Path | None) -> dict:
@@ -121,12 +144,20 @@ def run_morning(data_dir: Path, d: dt.date, cache: Path | None) -> dict:
     if out_pred.exists():
         return {"date": d.isoformat(), "status": "already_done"}
     status, body, lm, err = morning.fetch(d)
-    if body is None:
-        return {"date": d.isoformat(), "status": "no_program", "http": status, "error": err}
-    pdir = data_dir / "programs" / str(d.year)
-    pdir.mkdir(parents=True, exist_ok=True)
-    (pdir / f"{d.isoformat()}.json").write_bytes(body)
-    races, entries, issues = morning.to_tables(body, d)
+    if body is not None:
+        source = "boatraceopenapi programs v2"
+        pdir = data_dir / "programs" / str(d.year)
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / f"{d.isoformat()}.json").write_bytes(body)
+        races, entries, issues = morning.to_tables(body, d)
+    else:
+        # 予備：朝の番組表がまだ無いときは、公式の B（当日の朝から公開される）を使う
+        if not _ensure_raw(data_dir, "B", d):
+            return {"date": d.isoformat(), "status": "no_program", "http": status, "error": err, "b": "not_available"}
+        body = (data_dir / "raw" / "B" / str(d.year) / f"b{d:%y%m%d}.lzh").read_bytes()
+        lm = None
+        source = "official B (fallback)"
+        races, entries, issues = b_to_tables(parse_b.parse_b(archive.extract_single(body).data, d), d)
     if races.empty or any(i["level"] == "stop" for i in issues):
         return {"date": d.isoformat(), "status": "program_stop", "issues": issues[:5]}
     k1 = _ensure_k(data_dir, d - dt.timedelta(days=1))
@@ -166,7 +197,7 @@ def run_morning(data_dir: Path, d: dt.date, cache: Path | None) -> dict:
             "started_at": started.isoformat(timespec="seconds"), "lag_used": lag,
             "model_sha256": m.meta["model_sha256"], "model_train": m.meta["train"], "code_commit": _code_commit(),
             "parser_version": PARSER_VERSION, "layout_version": LAYOUT_VERSION,
-            "program_source": "boatraceopenapi programs v2", "program_sha256": _sha(body), "program_last_modified": lm,
+            "program_source": source, "program_sha256": _sha(body), "program_last_modified": lm,
             "k_files_used": len(k_files), "k_latest": k_files[-1] if k_files else None,
             "feature_snapshot_sha256": _sha(fcsv),
             "p_win": p1, "tri": tri, "win_sum": float(sum(p1)), "tri_sum": float(sum(tri)),
@@ -174,7 +205,7 @@ def run_morning(data_dir: Path, d: dt.date, cache: Path | None) -> dict:
         })
     out_pred.parent.mkdir(parents=True, exist_ok=True)
     out_pred.write_text("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in rows), encoding="utf-8")
-    return {"date": d.isoformat(), "status": "ok", "races": len(rows), "lag": lag,
+    return {"date": d.isoformat(), "status": "ok", "source": source, "races": len(rows), "lag": lag,
             "sum_ok": all(x["sum_ok"] for x in rows), "issues": len(issues),
             "cutoff": cutoff.isoformat(timespec="seconds")}
 
@@ -193,9 +224,12 @@ def score_day(data_dir: Path, d: dt.date) -> dict | None:
     k = parse_k.parse_k(archive.extract_single(kpath.read_bytes()).data, d)
     t = build.build_day(d, b, k)
     # 朝の番組表と公式 B の照合
-    body = (data_dir / "programs" / str(d.year) / f"{d.isoformat()}.json").read_bytes()
-    _, entries, _ = morning.to_tables(body, d)
-    cmp = morning.compare_with_b(entries, b.entries)
+    prog = data_dir / "programs" / str(d.year) / f"{d.isoformat()}.json"
+    if prog.exists():
+        _, entries, _ = morning.to_tables(prog.read_bytes(), d)
+        cmp = morning.compare_with_b(entries, b.entries)
+    else:
+        cmp = {"matched": 0, "diff": {}, "note": "予測は公式 B で行った（照合なし）"}
     # 予測の時刻が締切より後のレースは、採点から外す（事前の予想と言えない）
     races = pd.DataFrame(t.races)
     ok_status = set(races.loc[(races["race_status"] == "completed") & (~races["quarantined"]), "race_id"])
@@ -236,6 +270,8 @@ def main(argv=None) -> int:
     mo.add_argument("--cache")
     sc = sub.add_parser("score")
     sc.add_argument("--data", required=True)
+    sc.add_argument("--fetch-missing", action="store_true",
+                    help="採点がまだの日（今日より前）の B/K が無ければ取りに行く（夜の実行が飛んだときの取り戻し）")
     a = ap.parse_args(argv)
     data = Path(a.data)
     today = now_jst().date()
@@ -249,7 +285,11 @@ def main(argv=None) -> int:
         return 0 if r["status"] in ("ok", "already_done", "no_program") else 2
     elif a.cmd == "score":
         for p in sorted((data / "predictions").rglob("*.jsonl")):
-            r = score_day(data, dt.date.fromisoformat(p.stem))
+            day = dt.date.fromisoformat(p.stem)
+            if a.fetch_missing and day < today and not (data / "scores" / str(day.year) / f"{p.stem}.json").exists():
+                for kind in ("B", "K"):
+                    _ensure_raw(data, kind, day, purpose="score")
+            r = score_day(data, day)
             if r:
                 print("SCORE " + json.dumps({k: v for k, v in r.items() if k != "program_vs_b"} |
                                             {"program_vs_b_diff": r["program_vs_b"]["diff"]}, ensure_ascii=False,

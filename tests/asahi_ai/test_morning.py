@@ -52,3 +52,22 @@ class TestMorning(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBFallback(unittest.TestCase):
+    def test_b_to_tables_shape(self):
+        import datetime as dt
+        from types import SimpleNamespace
+        from asahi_ai import daily
+        d = dt.date(2026, 11, 24)
+        e = {"race_id": "202611240101", "lane": 1, "racer_no": "4444", "age": 30, "weight": 52, "class": "A1",
+             "nat_win": 7.1, "nat_2r": 50.0, "loc_win": 6.0, "loc_2r": 40.0, "motor_no": 11, "motor_2r": 33.3,
+             "boat_no": 22, "boat_2r": 30.0, "series_raw": "x", "series_orders": "12", "hayami": ""}
+        b = SimpleNamespace(races=[{"race_id": "202611240101", "venue": "01", "race_no": 1, "distance_m": 1800,
+                                    "deadline_time": "10:45", "meet_day": 3}],
+                            entries=[e], issues=[{"level": "warn", "check": "x"}])
+        races, entries, issues = daily.b_to_tables(b, d)
+        self.assertEqual(races.loc[0, "race_closed_at"], "2026-11-24 10:45:00")
+        self.assertIsNone(races.loc[0, "meet_day"])            # 朝の番組表に無い項目は入れない
+        self.assertEqual(entries.loc[0, "series_orders"], "")  # 同上
+        self.assertEqual(issues, [])
