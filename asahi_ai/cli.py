@@ -107,7 +107,7 @@ def main(argv=None) -> int:
         if all(recs[k]["capture_status"] == "not_found" for k in ("B", "K")):
             print("DAY " + json.dumps({"date": d.isoformat(), "verdict": "no_files"}), flush=True)
         else:
-            t = process(d, data["B"], data["K"], recs["B"]["lzh_sha256"], recs["K"]["lzh_sha256"])
+            t = process(d, data["B"], data["K"], _used_sha(recs["B"]), _used_sha(recs["K"]))
             for kind in ("B", "K"):
                 if recs[kind]["capture_status"] in ("fetch_failed", "bad_archive"):
                     build._check(t.checks, d.isoformat(), "stop", f"{kind.lower()}_fetch_failed",
@@ -120,11 +120,16 @@ def main(argv=None) -> int:
     return worst
 
 
+def _used_sha(rec: dict) -> str | None:
+    """処理に使った原本の SHA-256（出し直しの版を別に置いたときは、残した原本の方）。"""
+    return rec.get("kept_sha256") or rec["lzh_sha256"]
+
+
 def backfill(args) -> int:
     """未処理の日（checks/<年>/<日>.jsonl が無い日）を古い順に max-days 日まで処理する。
 
     - 取得に失敗した日は checks を書かない（次の実行で取り直す）。
-    - 原本の内容が前回と違えば RawConflict で止まる（上書きしない）。
+    - 原本の内容が前回と違えば、原本は残し、新しい版を raw/_revised/ に置いて、原本で処理を続ける。
     - 標準出力の最後に "BACKFILL {...}"（処理した日数・残り・stop の日）を出す。
     """
     import time
@@ -158,7 +163,7 @@ def backfill(args) -> int:
             print("DAY " + json.dumps({"date": d.isoformat(), "verdict": "no_files"}), flush=True)
             done += 1
             continue
-        t = process(d, raw["B"], raw["K"], recs["B"]["lzh_sha256"], recs["K"]["lzh_sha256"])
+        t = process(d, raw["B"], raw["K"], _used_sha(recs["B"]), _used_sha(recs["K"]))
         store.write_day(data, t, tables=False)
         if t.day_verdict == "stop":
             stops.append(d.isoformat())

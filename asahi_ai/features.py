@@ -205,7 +205,11 @@ FEATURES_EXCLUDE = {"race_id", "date", "venue", "racer_no", "motor_no", "finish_
 # 学習と毎朝の予測で同じ定義にするため、モデルには入れない。
 # weight：朝は小数（その時点の体重）で B は整数。loc_win・loc_2r：約13% が違う。今節成績・節日：朝には無い。
 NOT_IN_MORNING = {"weight", "loc_win", "loc_2r", "meet_day", "ser_n", "ser_mean", "ser_win", "ser_bad"}
+# 公式の B が当日に出し直されて変わる項目（2026-11-25 の調査、Project 20）。過去の B は出し直し後の版なので、
+# 学習には朝に分からない値（周回短縮の距離・交換後のボート）が入る。モデルには入れない（本人の承認 2026-11-25）。
+CHANGES_DURING_DAY = {"distance_m", "boat_2r"}
 
 
 def feature_columns(f: pd.DataFrame) -> list[str]:
-    return [c for c in f.columns if c not in FEATURES_EXCLUDE and c not in NOT_IN_MORNING]
+    return [c for c in f.columns
+            if c not in FEATURES_EXCLUDE and c not in NOT_IN_MORNING and c not in CHANGES_DURING_DAY]

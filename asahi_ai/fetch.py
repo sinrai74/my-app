@@ -2,13 +2,14 @@
 
 - 1件ずつ、前の取得から INTERVAL 秒以上あけて取りに行く。
 - 通信の失敗は1回だけ再試行する。HTTP の 404 は「ファイルが無い」として記録する（開催が無い日を含む）。
-- 原本はそのまま保存する。同じ名前ですでにあり、SHA-256 が違えば例外（上書きしない）。
+- 原本はそのまま保存する。同じ名前ですでにあり、SHA-256 が違えば、原本は残したまま、新しい版を
+  raw/_revised/ に別に保存する（上書きしない）。公式の B は、当日に周回短縮・ボート交換などを書き足して
+  出し直される（2026-11-25 の調査、Project 20）。朝に保存した版が「朝に分かっていたこと」の記録になる。
 - 取得のたびに manifest（raw_files の1行）を返す。
 """
 from __future__ import annotations
 
 import datetime as dt
-import json
 import time
 import urllib.error
 import urllib.request
@@ -105,9 +106,18 @@ class Fetcher:
         p = self.path_for(kind, d)
         if p.exists():
             old = p.read_bytes()
-            if archive.sha256(old) != rec["lzh_sha256"]:
-                rec["capture_status"] = "conflict"
-                raise RawConflict(f"{p} の既存の原本と内容が違います（上書きしない）: {json.dumps(rec, ensure_ascii=False)}")
+            old_sha = archive.sha256(old)
+            if old_sha != rec["lzh_sha256"]:
+                # 原本は書き換えず、新しい版は別の場所に置く。処理には原本を使う（本人の承認 2026-11-25）
+                rev = self.raw_dir / "_revised" / kind / f"{d:%Y}" / f"{p.stem}.{rec['lzh_sha256'][:12]}.lzh"
+                if not rev.exists():
+                    rev.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = rev.with_suffix(".tmp")
+                    tmp.write_bytes(data)
+                    tmp.replace(rev)
+                rec.update(capture_status="revised", kept_sha256=old_sha,
+                           revised_path=str(rev.relative_to(self.raw_dir)))
+                return rec, old
             rec["capture_status"] = "unchanged"
         else:
             p.parent.mkdir(parents=True, exist_ok=True)

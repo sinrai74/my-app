@@ -356,9 +356,12 @@ class TestFetch(unittest.TestCase):
             self.assertTrue(f.path_for("B", D).exists())
             rec2, _ = f.get("K", D)                         # 404
             self.assertEqual(rec2["capture_status"], "not_found")
-            with self.assertRaises(fetch.RawConflict):      # 中身の違う原本は上書きしない
-                f.get("B", D)
+            rec3, data3 = f.get("B", D)                     # 中身の違う版：原本は残し、新しい版は _revised/ に置く
+            self.assertEqual(rec3["capture_status"], "revised")
+            self.assertEqual(data3, lzh_ok)                 # 処理には原本を使う
             self.assertEqual(f.path_for("B", D).read_bytes(), lzh_ok)
+            self.assertEqual((Path(tmp) / rec3["revised_path"]).read_bytes(), lzh_ok + b"X")
+            self.assertEqual(rec3["kept_sha256"], archive.sha256(lzh_ok))
         self.assertTrue(all(s <= 3.0 for s in fc.sleeps) and len(fc.sleeps) == 3)  # 毎回3秒あける
         self.assertEqual(calls[0], "http://www1.mbrace.or.jp/od2/B/202301/b230101.lzh")
 
