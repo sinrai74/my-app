@@ -92,19 +92,27 @@ def _git(data: Path, *args):
     subprocess.run(["git", "-C", str(data), *args], check=True, capture_output=True)
 
 
+def _push(data: Path, tries: int = 6, sleep=time.sleep) -> bool:
+    """まだ送っていない commit を送る。ほかの実行と重なって失敗したら、間をあけてやり直す。"""
+    for attempt in range(tries):
+        try:
+            _git(data, "pull", "-q", "--rebase", "origin", "main")
+            _git(data, "push", "-q", "origin", "HEAD:main")
+            return True
+        except subprocess.CalledProcessError:
+            subprocess.run(["git", "-C", str(data), "rebase", "--abort"], capture_output=True)
+            sleep(min(5 * 2 ** attempt, 60))
+    return False
+
+
 def _save_and_push(data: Path, path: Path, rec: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
     _git(data, "add", str(path.relative_to(data)))
     _git(data, "commit", "-q", "-m", f"odds: {path.name[:2]}…")
-    for attempt in range(3):
-        try:
-            _git(data, "pull", "-q", "--rebase", "origin", "main")
-            _git(data, "push", "-q", "origin", "HEAD:main")
-            return
-        except subprocess.CalledProcessError:
-            time.sleep(5)
-    raise RuntimeError("push に失敗")
+    # 送れなくても止めない（commit は手元に残り、次に送れたときに一緒に送られる。最後にもう一度送る）
+    if not _push(data):
+        print("PUSH_DEFERRED", flush=True)
 
 
 def run(data: Path, day: dt.date, stop_after_min: float, sleep=time.sleep, now=lambda: dt.datetime.now(JST),
@@ -200,6 +208,16 @@ def run(data: Path, day: dt.date, stop_after_min: float, sleep=time.sleep, now=l
     return stats
 
 
+def flush(data: Path) -> bool:
+    """実行の最後に、送れていない commit を送る。"""
+    try:
+        ahead = subprocess.run(["git", "-C", str(data), "rev-list", "--count", "origin/main..HEAD"],
+                               capture_output=True, text=True, check=True).stdout.strip()
+    except subprocess.CalledProcessError:
+        return False
+    return ahead == "0" or _push(data, tries=8)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
@@ -208,6 +226,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     day = dt.date.fromisoformat(a.date) if a.date else dt.datetime.now(JST).date()
     r = run(Path(a.data), day, a.stop_after_min)
+    r["pushed"] = flush(Path(a.data))
     print("ODDS_DONE " + json.dumps(r), flush=True)
     with open("odds_result.json", "w") as f:
         json.dump(r, f)

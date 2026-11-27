@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -193,6 +194,20 @@ class TestCapture(unittest.TestCase):
             self.assertEqual({r["snapshot"] for r in got}, {"m10", "m3"})
             self.assertTrue(all(r["flags"] == ["news_rank"] for r in got))
             self.assertFalse(any(r["race_id"] == "202611249912" for r in saved))
+
+    def test_push_retries_then_gives_up_without_raising(self):
+        calls = {"n": 0}
+        def git(data, *args):
+            calls["n"] += 1
+            if args[0] == "pull" and calls["n"] < 5:
+                raise subprocess.CalledProcessError(1, "git")
+        slept = []
+        with mock.patch.object(odds_capture, "_git", side_effect=git), mock.patch.object(odds_capture.subprocess, "run"):
+            self.assertTrue(odds_capture._push(Path("."), tries=6, sleep=slept.append))
+        self.assertEqual(slept, [5, 10, 20, 40][:len(slept)])
+        with mock.patch.object(odds_capture, "_git", side_effect=subprocess.CalledProcessError(1, "git")), \
+                mock.patch.object(odds_capture.subprocess, "run"):
+            self.assertFalse(odds_capture._push(Path("."), tries=3, sleep=lambda s: None))
 
 
 if __name__ == "__main__":
