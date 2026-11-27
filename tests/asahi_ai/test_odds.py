@@ -109,7 +109,7 @@ class TestCapture(unittest.TestCase):
             saved = []
             with mock.patch.object(odds, "fetch_html", return_value=(200, page().encode(), None)), \
                     mock.patch.object(odds_capture, "_save_and_push", side_effect=lambda d, p, r: (saved.append(r), p.parent.mkdir(parents=True, exist_ok=True), p.write_text("x"))):
-                st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 600, sleep=sleep, now=now)
+                st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 600, sleep=sleep, now=now, news=lambda: {})
             self.assertEqual(st["targets"], 6)
             self.assertEqual(st["captured"], 12)                     # 6レース × 2回
             self.assertTrue(all(r["n_odds"] == 120 for r in saved))
@@ -129,10 +129,10 @@ class TestCapture(unittest.TestCase):
             saved = []
             with mock.patch.object(odds, "fetch_html", return_value=(200, page().encode(), None)), \
                     mock.patch.object(odds_capture, "_save_and_push", side_effect=lambda d, p, r: (saved.append(r), p.parent.mkdir(parents=True, exist_ok=True), p.write_text("x"))):
-                st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 150, sleep=sleep, now=now)   # 区切り 10:30
+                st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 150, sleep=sleep, now=now, news=lambda: {})   # 区切り 10:30
                 self.assertEqual(st["remaining"], 1)
                 self.assertLessEqual(clock["t"], dt.datetime(2026, 11, 24, 10, 31, tzinfo=odds_capture.JST))
-                st2 = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 150, sleep=sleep, now=now)
+                st2 = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 150, sleep=sleep, now=now, news=lambda: {})
             self.assertEqual(st["captured"] + st2["captured"], 12)
             self.assertEqual(st2["remaining"], 0)
             self.assertEqual(len({(r["race_id"], r["snapshot"]) for r in saved}), 12)
@@ -144,9 +144,55 @@ class TestCapture(unittest.TestCase):
             self._pred(tmp, n=6)
             clock = {"t": dt.datetime(2026, 11, 24, 3, 0, tzinfo=odds_capture.JST)}
             slept = []
-            st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 330, sleep=slept.append, now=lambda: clock["t"])
+            st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 330, sleep=slept.append, now=lambda: clock["t"], news=lambda: {})
             self.assertEqual(st["remaining"], 12)
             self.assertEqual(slept, [])
+
+    def test_news_races(self):
+        rc = {"date": "20261124",
+              "danger_boat1": [{"venue_num": 1, "race": 1}], "manshuu_alert": [{"venue_num": 2, "race": 3}],
+              "all_danger": [{"venue_num": 1, "race": 1, "score": 50}, {"venue_num": 4, "race": 5, "score": 65},
+                             {"venue_num": 6, "race": 7, "score": 90}],
+              "all_manshuu": [{"venue_num": 6, "race": 7, "score": 70}, {"venue_num": 8, "race": 9, "score": 85},
+                              {"venue_num": 2, "race": 3, "score": 40}]}
+        st = {"20261124": {"ranking": [{"venue_num": 6, "race": 7}]}}
+        got = odds_capture.news_races(dt.date(2026, 11, 24), fetch=lambda n: rc if n == "ranking_cache.json" else st)
+        self.assertEqual(got["202611240101"], ["news_danger"])           # スコア 50 は A 未満
+        self.assertEqual(got["202611240203"], ["news_manshuu"])
+        self.assertEqual(got["202611240405"], ["news_mi27"])             # 危険艇だけで 65 → 27.0
+        self.assertEqual(got["202611240809"], ["news_mi27"])             # 万舟だけで 85 → 29.6
+        self.assertEqual(got["202611240607"], ["news_rank"])             # 両方に載る → 27.0 ではない
+        # 日付が違う・読めないときは空
+        self.assertEqual(odds_capture.news_races(dt.date(2026, 11, 25), fetch=lambda n: rc if n == "ranking_cache.json" else st), {})
+        self.assertEqual(odds_capture.news_races(dt.date(2026, 11, 24), fetch=lambda n: None), {})
+
+    @unittest.skipUnless(HAS_BS4, "bs4 が無い")
+    def test_news_added_during_run(self):
+        """AI新聞が実行の途中で公開されても、読み直して対象に足す。予測に無いレースは足さない。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self._pred(tmp, n=30)
+            rows = [json.loads(l) for l in p.read_text().splitlines()]
+            extra = rows[0]["race_id"]
+            clock = {"t": dt.datetime(2026, 11, 24, 8, 0, tzinfo=odds_capture.JST)}
+            def now():
+                return clock["t"]
+            def sleep(s):
+                clock["t"] += dt.timedelta(seconds=s)
+            def news():   # 09:00 より後に公開される
+                if clock["t"] < dt.datetime(2026, 11, 24, 9, 0, tzinfo=odds_capture.JST):
+                    return {}
+                return {extra: ["news_rank"], "202611249912": ["news_danger"]}
+            saved = []
+            with mock.patch.object(odds, "fetch_html", return_value=(200, page().encode(), None)), \
+                    mock.patch.object(odds_capture, "_save_and_push", side_effect=lambda d, pp, r: (saved.append(r), pp.parent.mkdir(parents=True, exist_ok=True), pp.write_text("x"))):
+                base = [{"race_id": rows[5]["race_id"], "closed_at": rows[5]["race_closed_at"], "flags": ["danger"]}]
+                with mock.patch.object(odds_capture, "targets", return_value=base):
+                    st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 900, sleep=sleep, now=now, news=news)
+            self.assertEqual(st["news_added"], 1)
+            got = [r for r in saved if r["race_id"] == extra]
+            self.assertEqual({r["snapshot"] for r in got}, {"m10", "m3"})
+            self.assertTrue(all(r["flags"] == ["news_rank"] for r in got))
+            self.assertFalse(any(r["race_id"] == "202611249912" for r in saved))
 
 
 if __name__ == "__main__":
