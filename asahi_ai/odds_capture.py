@@ -6,6 +6,7 @@ AIランキングの上位10・一致指数が片方だけでAランク以上（
 ranking_cache.json・daily_stats.json に載るので、実行中に10分ごとに読み直して対象に足す（読むだけ。今の朝刊には触らない）。
 各レースの締切の 10 分前と 3 分前に、公式の3連単オッズのページを1件ずつ取得する（取得の間隔は3秒以上）。
 保存先：データリポジトリ（非公開）の odds/<年>/<日>/<race_id>_m10.json・_m3.json。取得ごとに commit・push する。
+m3 のときは直前情報のページ（展示・気象）も1件取り、原本を beforeinfo/<年>/<日>/<race_id>_m3.html.gz に置く（直前のモデル用、Project 21）。
 
 公開リポジトリのログには、レースの番号・予想の確率・買い目を出さない（件数と時刻だけ）。
 
@@ -105,9 +106,16 @@ def _push(data: Path, tries: int = 6, sleep=time.sleep) -> bool:
     return False
 
 
-def _save_and_push(data: Path, path: Path, rec: dict):
+BEFOREINFO = "https://www.boatrace.jp/owpc/pc/race/beforeinfo"
+
+
+def _save_and_push(data: Path, path: Path, rec):
+    """rec が bytes ならそのまま（直前情報のページの gzip）、dict なら JSON で保存する。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    if isinstance(rec, bytes):
+        path.write_bytes(rec)
+    else:
+        path.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
     _git(data, "add", str(path.relative_to(data)))
     _git(data, "commit", "-q", "-m", f"odds: {path.name[:2]}…")
     # 送れなくても止めない（commit は手元に残り、次に送れたときに一緒に送られる。最後にもう一度送る）
@@ -201,6 +209,18 @@ def run(data: Path, day: dt.date, stop_after_min: float, sleep=time.sleep, now=l
         stats["captured"] += rec["capture_status"] == "ok"
         stats["failed"] += rec["capture_status"] != "ok"
         _save_and_push(data, out_of((at, label, t, closed)), rec)
+        if label == "m3":   # 直前情報（展示タイム・展示の進入と ST・気象）の原本。解析はあとで手元で行う（Project 21）
+            bpath = data / "beforeinfo" / str(day.year) / day.isoformat() / f"{rid}_m3.html.gz"
+            if not bpath.exists():
+                sleep(max(0.0, INTERVAL - (time.time() - last)))
+                bstatus, bhtml, _ = odds.fetch_html(f"{BEFOREINFO}?rno={int(rid[10:12])}&jcd={rid[8:10]}&hd={rid[:8]}")
+                last = time.time()
+                if bhtml:
+                    import gzip
+                    _save_and_push(data, bpath, gzip.compress(bhtml, mtime=0))
+                    stats["beforeinfo"] = stats.get("beforeinfo", 0) + 1
+                else:
+                    stats["beforeinfo_failed"] = stats.get("beforeinfo_failed", 0) + 1
         print(f"ODDS {len(done)}/{len(jobs)} {label} status={rec['capture_status']} n={rec['n_odds']} "
               f"before={rec['minutes_before']}min", flush=True)
     stats["targets"] = len(tg)

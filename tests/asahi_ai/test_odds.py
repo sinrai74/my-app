@@ -109,13 +109,15 @@ class TestCapture(unittest.TestCase):
                 clock["t"] += dt.timedelta(seconds=s)
             saved = []
             with mock.patch.object(odds, "fetch_html", return_value=(200, page().encode(), None)), \
-                    mock.patch.object(odds_capture, "_save_and_push", side_effect=lambda d, p, r: (saved.append(r), p.parent.mkdir(parents=True, exist_ok=True), p.write_text("x"))):
+                    mock.patch.object(odds_capture, "_save_and_push", side_effect=lambda d, p, r: (saved.append(r) if isinstance(r, dict) else None, p.parent.mkdir(parents=True, exist_ok=True), p.write_text("x"))):
                 st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 600, sleep=sleep, now=now, news=lambda: {})
             self.assertEqual(st["targets"], 6)
             self.assertEqual(st["captured"], 12)                     # 6レース × 2回
             self.assertTrue(all(r["n_odds"] == 120 for r in saved))
             self.assertTrue(all(2.9 <= r["minutes_before"] <= 10.1 for r in saved))  # 締切の 10 分前・3 分前
             self.assertEqual({r["snapshot"] for r in saved}, {"m10", "m3"})
+            self.assertEqual(st["beforeinfo"], 6)                    # 直前情報は m3 のときに1回
+            self.assertEqual(len(list(Path(tmp).glob("beforeinfo/2026/2026-11-24/*_m3.html.gz"))), 6)
 
     @unittest.skipUnless(HAS_BS4, "bs4 が無い")
     def test_stop_before_long_wait_and_resume(self):
@@ -129,7 +131,7 @@ class TestCapture(unittest.TestCase):
                 clock["t"] += dt.timedelta(seconds=s)
             saved = []
             with mock.patch.object(odds, "fetch_html", return_value=(200, page().encode(), None)), \
-                    mock.patch.object(odds_capture, "_save_and_push", side_effect=lambda d, p, r: (saved.append(r), p.parent.mkdir(parents=True, exist_ok=True), p.write_text("x"))):
+                    mock.patch.object(odds_capture, "_save_and_push", side_effect=lambda d, p, r: (saved.append(r) if isinstance(r, dict) else None, p.parent.mkdir(parents=True, exist_ok=True), p.write_text("x"))):
                 st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 150, sleep=sleep, now=now, news=lambda: {})   # 区切り 10:30
                 self.assertEqual(st["remaining"], 1)
                 self.assertLessEqual(clock["t"], dt.datetime(2026, 11, 24, 10, 31, tzinfo=odds_capture.JST))
@@ -185,7 +187,7 @@ class TestCapture(unittest.TestCase):
                 return {extra: ["news_rank"], "202611249912": ["news_danger"]}
             saved = []
             with mock.patch.object(odds, "fetch_html", return_value=(200, page().encode(), None)), \
-                    mock.patch.object(odds_capture, "_save_and_push", side_effect=lambda d, pp, r: (saved.append(r), pp.parent.mkdir(parents=True, exist_ok=True), pp.write_text("x"))):
+                    mock.patch.object(odds_capture, "_save_and_push", side_effect=lambda d, pp, r: (saved.append(r) if isinstance(r, dict) else None, pp.parent.mkdir(parents=True, exist_ok=True), pp.write_text("x"))):
                 base = [{"race_id": rows[5]["race_id"], "closed_at": rows[5]["race_closed_at"], "flags": ["danger"]}]
                 with mock.patch.object(odds_capture, "targets", return_value=base):
                     st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 900, sleep=sleep, now=now, news=news)
