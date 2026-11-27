@@ -29,6 +29,8 @@ SNAPSHOTS = (("m10", 10), ("m3", 3))
 TOP_N = 20
 INTERVAL = 3.0
 REFRESH_MIN = 10
+BLOCK_AFTER = 5            # 拒否（403・429）がこの回数続いたら、その日の取得をやめる
+BLOCK_CODES = (403, 429)
 NEWS_BASE = "https://raw.githubusercontent.com/sinrai74/my-app/main/"
 MI_POINT = 25.7   # x_brand_config.MATCH_INDEX_POINTS の危険艇・万舟（同じ値）
 
@@ -129,6 +131,9 @@ def run(data: Path, day: dt.date, stop_after_min: float, sleep=time.sleep, now=l
     pred = data / "predictions" / str(day.year) / f"{day.isoformat()}.jsonl"
     if not pred.exists():
         return {"status": "no_predictions"}
+    blocked_mark = data / "odds" / str(day.year) / day.isoformat() / "_blocked.json"
+    if blocked_mark.exists():   # 今日はすでに拒否されて止めた（続きの実行も取りにいかない）
+        return {"status": "blocked_today", "remaining": 0}
     news = news or (lambda: news_races(day))
     closed_of = {}
     for l in pred.read_text(encoding="utf-8").splitlines():
@@ -161,6 +166,7 @@ def run(data: Path, day: dt.date, stop_after_min: float, sleep=time.sleep, now=l
     stats = {"targets": 0, "news_added": merge_news(), "planned": 0, "captured": 0, "parsed_120": 0, "failed": 0,
              "skipped_past": 0, "remaining": 0}
     last_refresh = now()
+    refused = 0
     done: set = set()
     last = 0.0
     limit = t_start + dt.timedelta(minutes=stop_after_min)
@@ -192,6 +198,7 @@ def run(data: Path, day: dt.date, stop_after_min: float, sleep=time.sleep, now=l
         url = odds.url_for(int(rid[10:12]), rid[8:10], rid[:8])
         status, html, err = odds.fetch_html(url)
         last = time.time()
+        refused = refused + 1 if status in BLOCK_CODES else 0
         captured_at = now().isoformat(timespec="seconds")
         rec = {"race_id": rid, "snapshot": label, "captured_at": captured_at, "race_closed_at": t["closed_at"],
                "minutes_before": round((closed - now()).total_seconds() / 60, 2), "flags": t["flags"],
@@ -209,12 +216,13 @@ def run(data: Path, day: dt.date, stop_after_min: float, sleep=time.sleep, now=l
         stats["captured"] += rec["capture_status"] == "ok"
         stats["failed"] += rec["capture_status"] != "ok"
         _save_and_push(data, out_of((at, label, t, closed)), rec)
-        if label == "m3":   # 直前情報（展示タイム・展示の進入と ST・気象）の原本。解析はあとで手元で行う（Project 21）
+        if label == "m3" and status not in BLOCK_CODES:   # 直前情報（展示タイム・展示の進入と ST・気象）の原本。解析はあとで手元で行う（Project 21）
             bpath = data / "beforeinfo" / str(day.year) / day.isoformat() / f"{rid}_m3.html.gz"
             if not bpath.exists():
                 sleep(max(0.0, INTERVAL - (time.time() - last)))
                 bstatus, bhtml, _ = odds.fetch_html(f"{BEFOREINFO}?rno={int(rid[10:12])}&jcd={rid[8:10]}&hd={rid[:8]}")
                 last = time.time()
+                refused = refused + 1 if bstatus in BLOCK_CODES else 0
                 if bhtml:
                     import gzip
                     _save_and_push(data, bpath, gzip.compress(bhtml, mtime=0))
@@ -223,6 +231,13 @@ def run(data: Path, day: dt.date, stop_after_min: float, sleep=time.sleep, now=l
                     stats["beforeinfo_failed"] = stats.get("beforeinfo_failed", 0) + 1
         print(f"ODDS {len(done)}/{len(jobs)} {label} status={rec['capture_status']} n={rec['n_odds']} "
               f"before={rec['minutes_before']}min", flush=True)
+        if refused >= BLOCK_AFTER:
+            # 公式サイトに拒否されている。相手の意思に従い、今日はこれ以上取りにいかない（続きの実行も起動しない）
+            _save_and_push(data, blocked_mark, {"blocked_at": now().isoformat(timespec="seconds"),
+                                                "consecutive_refusals": refused, "last_status": status})
+            stats["blocked"] = True
+            print(f"BLOCKED consecutive_refusals={refused}", flush=True)
+            break
     stats["targets"] = len(tg)
     stats["planned"] = len(jobs)
     return stats

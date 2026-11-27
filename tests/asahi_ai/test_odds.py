@@ -211,6 +211,29 @@ class TestCapture(unittest.TestCase):
                 mock.patch.object(odds_capture.subprocess, "run"):
             self.assertFalse(odds_capture._push(Path("."), tries=3, sleep=lambda s: None))
 
+    def test_stop_for_the_day_when_refused(self):
+        """公式サイトに続けて拒否（403）されたら、その日は取りにいかない。続きの実行も起動しない。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._pred(tmp, n=6)
+            clock = {"t": dt.datetime(2026, 11, 24, 8, 0, tzinfo=odds_capture.JST)}
+            def now():
+                return clock["t"]
+            def sleep(s):
+                clock["t"] += dt.timedelta(seconds=s)
+            calls = []
+            def fetch(url):
+                calls.append(url)
+                return 403, None, "HTTP 403"
+            with mock.patch.object(odds, "fetch_html", side_effect=fetch), \
+                    mock.patch.object(odds_capture, "_save_and_push", side_effect=lambda d, pp, r: (pp.parent.mkdir(parents=True, exist_ok=True), pp.write_text("x"))):
+                st = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 900, sleep=sleep, now=now, news=lambda: {})
+                self.assertTrue(st["blocked"])
+                self.assertEqual(st["remaining"], 0)
+                self.assertEqual(len(calls), odds_capture.BLOCK_AFTER)
+                st2 = odds_capture.run(Path(tmp), dt.date(2026, 11, 24), 900, sleep=sleep, now=now, news=lambda: {})
+            self.assertEqual(st2["status"], "blocked_today")
+            self.assertEqual(len(calls), odds_capture.BLOCK_AFTER)   # 2回目は1件も取りにいかない
+
 
 if __name__ == "__main__":
     unittest.main()
